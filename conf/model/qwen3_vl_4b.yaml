@@ -7,4 +7,4 @@ device_map: auto
 # Lower max_pixels to cap VRAM on high-res inputs; raise min_pixels to
 # preserve detail on small images.
 min_pixels: null
-max_pixels: null
+max_pixels: 802816
