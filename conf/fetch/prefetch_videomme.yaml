@@ -1,0 +1,63 @@
+# @package _global_
+defaults:
+  - /wandb: default
+  - _self_
+
+# Override wandb defaults: progetto separato così i prefetch run non
+# inquinano la run list del progetto di inference.
+wandb:
+  project: video-mme-prefetch
+  tags: [prefetch, video_mme]
+
+# Repo HF che ospita metadata QA + video di Video-MME:
+#   videomme/test-00000-of-00001.parquet   — 2700 domande (4-MCQ)
+#   videos_chunked_01..20.zip              — ~101 GB tot, layout
+#                                            interno `data/<videoID>.mp4`
+#   subtitle.zip                           — .srt per videoID (opz.)
+hf_repo: lmms-lab/Video-MME
+# Config del dataset (un solo split: `videomme` / split=test).
+config: videomme
+
+# Filtro per durata: "short" | "medium" | "long" | "all" | null.
+# `all` (default) o null = nessun filtro. Override CLI per smoke test
+# mirato su una sola fascia, es. `duration=short`.
+duration: all
+
+# Numero massimo di domande da materializzare (null = tutte le 2700).
+# Per smoke test usa `n=K` combinato con `chunks=[...]` (vedi sotto),
+# altrimenti rischi che le prime K righe del parquet abbiano videoID
+# distribuiti su molti chunk diversi → download lunghissimo.
+n: null
+
+# Restrizione a un sottoinsieme di chunk (`videos_chunked_<idx>.zip`):
+#   null  (default, full run): scarica chunks 1..20 in ordine e si ferma
+#                              quando tutti i videoID dei `rows[:n]` sono
+#                              trovati.
+#   [1]   (smoke):             scarica solo chunk 01, filtra il parquet
+#                              ai videoID realmente presenti dentro, poi
+#                              tronca a `n`. Garantisce ~5 GB di
+#                              download e `metadata.jsonl` sempre
+#                              prodotto.
+# Override CLI: `chunks=[1]` o `chunks=[1,2,3]`.
+chunks: null
+
+# Se true, scarica anche `subtitle.zip` ed estrae i .srt sotto
+# `<out>/subtitle/<videoID>.srt`. I sample con sottotitolo mancante
+# avranno `subtitle: null` in metadata.jsonl.
+subtitles: false
+
+# Se true, mantiene i zip scaricati sotto `<out>/_zips/` dopo
+# l'estrazione (utile per re-run o ispezione). Default false:
+# i zip vengono cancellati dopo l'estrazione per risparmiare disco
+# (i chunk sono ~5 GB ciascuno).
+keep_zips: false
+
+# Dump self-contained letto poi da `evals.video_mme.load_video_mme`.
+# Default deriva da `$HOME` per i run locali; su HPC override con
+# `out_dir=/work/...` (via `scripts/fetch/hpc/videomme.sh`).
+out_dir: ${oc.env:HOME}/datasets/video_mme
+
+# HF cache root. null = lascia stare `os.environ` (HF userà
+# `~/.cache/huggingface`). Su HPC il `.bashrc` esporta HF_HOME=/work/...
+# e l'`oc.env` lo raccoglie automaticamente.
+hf_home: ${oc.env:HF_HOME,null}

@@ -1,0 +1,8 @@
+# LVBench. Long-video MCQ 4-options; video tipicamente >1h.
+name: lvbench
+# TODO: verificare il nome esatto del repo HF (candidato: THUDM/LVBench).
+hf_repo: null
+root: ${oc.env:HOME}/datasets/lvbench
+# fps molto basso: i video sono lunghi, va tenuta la finestra di
+# contesto del VLM sotto controllo. Alzare solo dopo aver misurato.
+fps: 0.1

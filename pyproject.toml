@@ -14,11 +14,15 @@ dependencies = [
     "opentelemetry-proto>=1.27",
     "torchvision>=0.22.1",
     "datasets>=3.0.0",
+    "yt-dlp>=2024.10.0",
 ]
 
 [project.scripts]
 main = "main:main"
-prefetch_egoschema = "utils.prefetch_egoschema:main"
+prefetch_egoschema = "fetch.prefetch_egoschema:main"
+prefetch_mvbench = "fetch.prefetch_mvbench:main"
+prefetch_lvbench = "fetch.prefetch_lvbench:main"
+prefetch_videomme = "fetch.prefetch_videomme:main"
 
 [tool.uv]
 link-mode = "copy"

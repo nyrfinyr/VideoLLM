@@ -16,9 +16,9 @@ layout (self-contained, no `datasets` dependency at read time):
             ...
 
 Hydra overrides:
-    uv run python utils/prefetch_egoschema.py n=50
-    uv run python utils/prefetch_egoschema.py wandb.mode=disabled
-    uv run python utils/prefetch_egoschema.py --cfg job
+    uv run python fetch/prefetch_egoschema.py n=50
+    uv run python fetch/prefetch_egoschema.py wandb.mode=disabled
+    uv run python fetch/prefetch_egoschema.py --cfg job
 """
 import json
 import logging
@@ -26,10 +26,10 @@ import os
 import sys
 from pathlib import Path
 
-# When invoked as `python utils/prefetch_egoschema.py`, only `utils/` is on
+# When invoked as `python fetch/prefetch_egoschema.py`, only `fetch/` is on
 # sys.path — add its parent (repo root) so the absolute import
 # `from utils.obs import ...` resolves regardless of invocation mode
-# (script, `python -m utils.prefetch_egoschema`, or installed entry point).
+# (script, `python -m fetch.prefetch_egoschema`, or installed entry point).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import hydra
@@ -125,7 +125,7 @@ def run(cfg: DictConfig) -> None:
     )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="prefetch_egoschema")
+@hydra.main(version_base=None, config_path="../conf", config_name="fetch/prefetch_egoschema")
 def main(cfg: DictConfig) -> None:
     run(cfg)
 

@@ -1,0 +1,14 @@
+# MVBench (OpenGVLab/MVBench). 20 task MCQ; i video vanno materializzati
+# su disco con uno script di prefetch analogo a `prefetch_egoschema.py`
+# (layout atteso: `<root>/metadata.jsonl` + `<root>/videos/...`).
+name: mvbench
+# HF repo da cui scaricare metadati + video.
+# TODO: verificare il nome esatto e i config disponibili prima del wiring.
+hf_repo: OpenGVLab/MVBench
+root: ${oc.env:HOME}/datasets/mvbench
+# Sottoinsieme di task da includere (null = tutti i 20). Esempi:
+# - action_sequence
+# - action_prediction
+# - scene_transition
+tasks: null
+fps: 0.5

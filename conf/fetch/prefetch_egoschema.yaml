@@ -1,5 +1,6 @@
+# @package _global_
 defaults:
-  - wandb: default
+  - /wandb: default
   - _self_
 
 # Override wandb defaults for this script (separate project so prefetch
@@ -24,9 +25,9 @@ n: null
 # Self-contained dump path; sbatch jobs read the .mp4 + metadata.jsonl
 # from here. Default derives from `$HOME` so PyCharm run configs work
 # without overrides; on the cluster pass `out_dir=/work/...` on the CLI.
-out_dir: /work/tesi_avalenza/datasets/egoschema
+out_dir: ${oc.env:HOME}/datasets/egoschema
 # HF cache root. Resolves to `$HF_HOME` if exported (e.g. on HPC where
 # `.bashrc` sets `/work/tesi_avalenza/hf`), otherwise `null` → script
 # leaves `os.environ` alone and `datasets` falls back to
 # `~/.cache/huggingface`.
-hf_home: ${oc.env:HF_HOME,/work/tesi_avalenza/hf}
+hf_home: ${oc.env:HF_HOME,null}

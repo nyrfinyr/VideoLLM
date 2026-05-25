@@ -1,0 +1,44 @@
+# @package _global_
+defaults:
+  - /wandb: default
+  - _self_
+
+# Override wandb defaults: progetto separato così i prefetch run non
+# inquinano la run list del progetto di inference.
+wandb:
+  project: mvbench-prefetch
+  tags: [prefetch, mvbench]
+
+# Repo HF che impacchetta metadati QA + video di MVBench:
+#   json/<task>.json        — 20 file di QA (uno per task)
+#   video/<source>.zip      — 11 zip per dataset sorgente (~17.3 GB tot)
+# NTU RGB+D non è incluso (licenza) → `fine_grained_pose` non è
+# fetchabile da qui ed è escluso da `TASKS` lato script.
+hf_repo: OpenGVLab/MVBench
+
+# Task da includere. null = tutti i 19 supportati (NTU/Fine-grained
+# Pose escluso). Override CLI per smoke test mirato, es.:
+#   tasks='[action_antonym]'   (~17 MB di download, ssv2_video.zip)
+#   tasks='[action_antonym,object_existence]'
+# Lo script scarica solo i zip effettivamente toccati dalla selezione.
+tasks: null
+
+# Numero massimo di sample per task (null = tutti; tipicamente
+# ~200/task). Override CLI per smoke test, es. `n=5`. NB: non influenza
+# il download dei zip (atomici), solo le righe scritte in metadata.jsonl.
+n: null
+
+# Se true, mantiene i zip dopo l'estrazione. Default false per
+# risparmiare disco (la cache HF tiene comunque una copia se serve
+# rieseguire — usa `hf_home` per controllare dove).
+keep_zips: false
+
+# Dump self-contained letto poi dal loader `evals.mvbench.load_mvbench`.
+# Default deriva da `$HOME` per i run locali; su HPC override con
+# `out_dir=/work/...` (in genere via sbatch/run config).
+out_dir: ${oc.env:HOME}/datasets/mvbench
+
+# HF cache root. null = lascia stare `os.environ` (HF userà
+# `~/.cache/huggingface`). Su HPC esporta `HF_HOME` nel `.bashrc`
+# o passa `hf_home=/work/...` da CLI.
+hf_home: ${oc.env:HF_HOME,null}

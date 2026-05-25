@@ -1,0 +1,47 @@
+# @package _global_
+defaults:
+  - /wandb: default
+  - _self_
+
+# Override wandb defaults: progetto separato così i prefetch run non
+# inquinano la run list del progetto di inference.
+wandb:
+  project: lvbench-prefetch
+  tags: [prefetch, lvbench]
+
+# Repo HF che hosta solo il file di metadata di LVBench. I video stessi
+# vivono su YouTube e vengono scaricati via yt-dlp usando il campo
+# `key` di ogni riga (= YouTube video ID).
+metadata_repo: zai-org/LVBench
+metadata_file: video_info.meta.jsonl
+
+# Numero massimo di *video* da scaricare (null = tutti, ~500). Override
+# CLI per smoke test, es. `n=3`. NB: limita i video, non le QA — ogni
+# video ha tipicamente 1-N domande, tutte tenute se il video c'è.
+n: null
+
+# yt-dlp format selector. Default: miglior progressive mp4 (single
+# stream, niente merge audio+video → niente ffmpeg required). Override
+# per downgrade aggressivo se lo storage scarseggia, es.:
+#   format='best[height<=360][ext=mp4]'
+#   format='worst[ext=mp4]'
+format: best[ext=mp4]/best
+
+# Auth opzionale per video con restrizioni o per evitare il blocco
+# anti-bot di YouTube ("Sign in to confirm you're not a bot").
+# - `cookies_from_browser`: nome browser (firefox/chrome/...). yt-dlp
+#   legge i cookie dal profilo locale.
+# - `cookiefile`: path a un file Netscape `cookies.txt` esportato.
+# null su entrambi = nessun auth.
+cookies_from_browser: null
+cookiefile: null
+
+# Dump self-contained letto poi da `evals.lvbench.load_lvbench`.
+# Default deriva da `$HOME` per i run locali; su HPC override con
+# `out_dir=/work/...` (via `scripts/fetch/hpc/lvbench.sh`).
+out_dir: ${oc.env:HOME}/datasets/lvbench
+
+# HF cache root. null = lascia stare `os.environ` (HF userà
+# `~/.cache/huggingface`). Su HPC il `.bashrc` esporta HF_HOME=/work/...
+# e l'`oc.env` lo raccoglie automaticamente.
+hf_home: ${oc.env:HF_HOME,null}

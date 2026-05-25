@@ -1,0 +1,11 @@
+# Video-MME (lmms-lab/Video-MME). MCQ 4-options con 3 split per durata.
+name: video_mme
+# TODO: verificare il nome esatto del repo HF prima del wiring.
+hf_repo: lmms-lab/Video-MME
+root: ${oc.env:HOME}/datasets/video_mme
+# "short" | "medium" | "long" | "all" (all = unione dei tre).
+duration: all
+# Se true, includere i sottotitoli (.srt) nel prompt. Richiede schema
+# extra `subtitle_path` lato loader e gestione lato predict.
+use_subtitles: false
+fps: 0.5

@@ -1,7 +1,7 @@
 """Observability: wandb + weave initialization for the project.
 
 Single source of truth so `main.py` and ad-hoc scripts (e.g.
-`utils/prefetch_egoschema.py`) share identical setup:
+`fetch/prefetch_egoschema.py`) share identical setup:
 
 - `wandb.init(...)` captures stdout/stderr — i.e. every Python `logging`
   line that hits Hydra's default StreamHandler ends up in the W&B run's
