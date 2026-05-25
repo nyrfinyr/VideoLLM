@@ -1,7 +1,7 @@
 defaults:
   - model: qwen2_5_vl_3b
   - generation: balanced
-  - run: default
+  - run: egoschema
   - wandb: default
   - _self_
 

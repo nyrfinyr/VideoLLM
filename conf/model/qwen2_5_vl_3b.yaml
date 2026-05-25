@@ -8,3 +8,7 @@ device_map: auto
 # preserve detail on small images.
 min_pixels: null
 max_pixels: 802816
+
+# SMOKE TEST KNOBS (default null = niente troncamento):
+num_text_layers: null
+num_vision_layers: null

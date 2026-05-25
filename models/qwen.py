@@ -1,5 +1,4 @@
 import logging
-from dataclasses import asdict
 
 import torch
 from transformers import (
@@ -11,7 +10,7 @@ from transformers import (
 )
 from qwen_vl_utils import process_vision_info
 from .base import BaseVLM
-from .media import MediaItem, Text
+from .media import MediaItem, Text, to_content_dict
 import weave
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,8 @@ class Qwen(BaseVLM):
         device_map,
         min_pixels: int | None = None,
         max_pixels: int | None = None,
+        num_text_layers: int | None = None,
+        num_vision_layers: int | None = None,
         **kwargs,
     ):
         """Load the Qwen-VL processor + model.
@@ -40,6 +41,16 @@ class Qwen(BaseVLM):
         `min_pixels` and `max_pixels` cap the per-image visual-token budget
         (forwarded to `AutoProcessor`); leave as `None` to keep the model's
         default range.
+
+        `num_text_layers` / `num_vision_layers` (entrambi `None` di default)
+        sono knob per **smoke test su GPU piccola**: troncano il decoder
+        testuale e/o il ViT al numero indicato di layer, prima del
+        `from_pretrained`. Il caricamento usa il config troncato, gli
+        weight oltre il limite sono scartati (HF stampa il warning
+        "Some weights ... were not used", è atteso). NB:
+        l'output del modello sarà casuale — questo serve solo a validare
+        il code path (load → preprocess → generate → parse → scorer)
+        senza occupare la VRAM piena, non a produrre metriche utili.
         """
         processor_kwargs = {}
         if min_pixels is not None:
@@ -52,11 +63,47 @@ class Qwen(BaseVLM):
             self.model_id, torch_dtype, device_map, min_pixels, max_pixels,
         )
         processor = AutoProcessor.from_pretrained(self.model_id, **processor_kwargs)
+
+        model_kwargs = dict(kwargs)
+        if num_text_layers is not None or num_vision_layers is not None:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(self.model_id)
+            if num_text_layers is not None:
+                orig = config.text_config.num_hidden_layers
+                config.text_config.num_hidden_layers = num_text_layers
+                logger.warning(
+                    "SMOKE TEST: text decoder troncato da %d a %d layer. "
+                    "L'output sarà casuale (utile solo a validare il code path).",
+                    orig, num_text_layers,
+                )
+            if num_vision_layers is not None:
+                # Qwen2.5-VL usa `depth`, Qwen3-VL usa `num_hidden_layers`
+                # nel vision_config: tentiamo entrambi.
+                vc = config.vision_config
+                if hasattr(vc, "depth"):
+                    orig = vc.depth
+                    vc.depth = num_vision_layers
+                elif hasattr(vc, "num_hidden_layers"):
+                    orig = vc.num_hidden_layers
+                    vc.num_hidden_layers = num_vision_layers
+                else:
+                    raise AttributeError(
+                        f"vision_config di {self.model_id} non ha né 'depth' "
+                        "né 'num_hidden_layers' — schema sconosciuto, "
+                        "estendere _load per gestire questa famiglia."
+                    )
+                logger.warning(
+                    "SMOKE TEST: vision encoder troncato da %d a %d layer.",
+                    orig, num_vision_layers,
+                )
+            model_kwargs["config"] = config
+
         model = self.model_cls.from_pretrained(
             self.model_id,
             torch_dtype=torch_dtype,
             device_map=device_map,
-            **kwargs,
+            **model_kwargs,
         )
         logger.info("Model loaded on device=%s", getattr(model, "device", "?"))
         return processor, model
@@ -66,17 +113,20 @@ class Qwen(BaseVLM):
 
         Produces a single-turn user message whose `content` is the list of
         parts the Qwen chat template expects: each `MediaItem` / `Text`
-        dataclass is flattened via `asdict` into the `{"type": ..., ...}`
-        dict the template (and `process_vision_info`) keys off — e.g.
-        `{"type": "image", "image": "..."}` or `{"type": "text", "text": "..."}`.
-        Media is placed before text to match the official quickstart ordering.
+        dataclass is flattened via `to_content_dict` into the
+        `{"type": ..., ...}` dict the template (and `process_vision_info`)
+        keys off — e.g. `{"type": "image", "image": "..."}` or
+        `{"type": "text", "text": "..."}`. `to_content_dict` droppa i
+        field `None` (es. `video_start`/`video_end` opzionali su `Video`)
+        per non passare `None` ai backend video di qwen-vl-utils. Media è
+        prima del testo, come negli example ufficiali.
         """
         return [
             {
                 "role": "user",
                 "content": [
-                    asdict(media),
-                    asdict(text),
+                    to_content_dict(media),
+                    to_content_dict(text),
                 ]
             }
         ]

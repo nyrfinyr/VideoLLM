@@ -1,48 +1,171 @@
-"""MVBench loader (skeleton).
+"""MVBench loader (classe `MVBench`).
 
-Sorgente: `OpenGVLab/MVBench` su HuggingFace. 20 task MCQ; lo split di
-ogni task è un config separato del dataset, e i video stanno in tar
-shards che vanno materializzati su disco con `fetch/prefetch_mvbench.py`.
+Legge il dump prodotto da `fetch/prefetch_mvbench.py`:
 
-Schema sorgente (per task), per riferimento:
-    task_type:  str
-    video:      str               # nome file relativo all'archivio del task
-    question:   str
-    candidates: list[str]
-    answer:     str               # stringa testuale della candidate corretta,
-                                  # NON una lettera — va matchata contro
-                                  # `candidates` per ricavare l'indice.
+    <root>/
+        metadata.jsonl     # una riga per QA, schema normalizzato:
+                           #   {id, task_type, video, data_type,
+                           #    question, options, answer, answer_idx,
+                           #    [start, end]}
+        videos/<source>/...   # mp4 (data_type=video) o sequenze jpg
+                              #   (data_type=frame, solo episodic_reasoning)
 
-Per il `predict` MCQ riusa `evals.egoschema.make_predict`: la firma
-(`video_path`, `question`, `options`) è la stessa.
+`MVBench.loader` rimappa al contratto Weave (`video_path, data_type,
+question, options, answer, task_type, video_start, video_end`);
+`MVBench.predict_factory` discrimina `Video` vs `VideoFrames` in base a
+`data_type`.
+
+Scorer: `evals.base.mcq_accuracy` (condiviso). Il breakdown per
+`task_type` in UI Weave funziona perché `task_type` è una colonna del
+dataset, non un arg dello scorer.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 import weave
 from omegaconf import DictConfig
 
+from .base import Dataset, format_mcq_prompt, parse_mcq_letter
+
+if TYPE_CHECKING:
+    from transformers import GenerationConfig
+
+    from models.base import BaseVLM
+
 logger = logging.getLogger(__name__)
 
 
-def load_mvbench(cfg: DictConfig) -> list[dict]:
-    """Carica MVBench in righe normalizzate per Weave.
-
-    Schema di output (chiavi matchate da `predict` / scorer):
-        id:         str
-        video_path: str
-        question:   str
-        options:    list[str]
-        answer:     int           # indice in `options`
-        task_type:  str           # per breakdown per categoria
-    """
-    raise NotImplementedError("TODO: implementare loader MVBench")
+# Estensioni considerate quando `data_type=frame` (Episodic Reasoning su
+# TVQA): qwen-vl-utils accetta una lista di path frame come `video`.
+# In MVBench-tvqa i frame sono jpg numerati progressivamente
+# (es. `00001.jpg`, ...): `sorted` su nome basta.
+_FRAME_EXTS = (".jpg", ".jpeg", ".png")
 
 
-@weave.op
-def mvbench_accuracy(answer: int, task_type: str, output: dict) -> dict:
-    """Accuracy MCQ; porta avanti `task_type` per consentire breakdown
-    per categoria nella UI Weave (aggregazione lato server)."""
-    raise NotImplementedError("TODO: implementare scorer MVBench")
+def _list_frames(folder: Path) -> list[str]:
+    """Lista i frame jpg/png in `folder`, ordinati per nome."""
+    out: list[Path] = []
+    for ext in _FRAME_EXTS:
+        out.extend(folder.glob(f"*{ext}"))
+    if not out:
+        raise FileNotFoundError(
+            f"frame folder {folder} vuota (atteso .jpg/.png numerati)."
+        )
+    return [str(p) for p in sorted(out)]
+
+
+class MVBench(Dataset):
+    name = "mvbench"
+
+    def loader(self, cfg: DictConfig) -> list[dict]:
+        """Carica MVBench in righe normalizzate per Weave.
+
+        Legge `cfg.root` (assoluto) e `cfg.tasks` (lista task da
+        includere, o `null` = tutti).
+
+        Schema di output:
+            id:           str    # "<task_type>/<idx>"
+            video_path:   str    # mp4 (video) o cartella (frame)
+            data_type:    str    # "video" | "frame"
+            question:     str
+            options:      list[str]
+            answer:       int    # indice in `options`
+            task_type:    str    # per breakdown UI Weave
+            video_start:  float | None
+            video_end:    float | None
+
+        Filtri:
+        - `cfg.tasks` non null → tieni solo righe in quel set; warning
+          per task richiesti ma non presenti (typo guard).
+        - `answer_idx is None` → skip + log + counter (dato dataset
+          sporco flaggato dal prefetch; non penalizza il modello).
+        """
+        root = Path(cfg.root)
+        metadata_path = root / "metadata.jsonl"
+        with metadata_path.open() as f:
+            rows = [json.loads(line) for line in f]
+        logger.info("MVBench: %d righe raw da %s", len(rows), metadata_path)
+
+        if cfg.tasks is not None:
+            wanted = set(cfg.tasks)
+            present = {r["task_type"] for r in rows}
+            missing = wanted - present
+            if missing:
+                logger.warning("MVBench: task richiesti ma assenti in metadata: %s", sorted(missing))
+            before = len(rows)
+            rows = [r for r in rows if r["task_type"] in wanted]
+            logger.info("MVBench: filtro tasks=%s: %d → %d righe", sorted(wanted), before, len(rows))
+
+        skipped_no_answer = 0
+        out: list[dict] = []
+        for r in rows:
+            if r.get("answer_idx") is None:
+                skipped_no_answer += 1
+                continue
+            out.append({
+                "id": r["id"],
+                "video_path": str(root / r["video"]),
+                "data_type": r["data_type"],
+                "question": r["question"],
+                "options": r["options"],
+                "answer": int(r["answer_idx"]),
+                "task_type": r["task_type"],
+                "video_start": r.get("start"),
+                "video_end": r.get("end"),
+            })
+        if skipped_no_answer:
+            logger.warning(
+                "MVBench: scartate %d righe con answer_idx=None (answer ∉ options nel dataset)",
+                skipped_no_answer,
+            )
+        logger.info("MVBench: %d sample finali", len(out))
+        return out
+
+    def predict_factory(
+        self,
+        vlm: BaseVLM,
+        gen_cfg: GenerationConfig,
+        cfg: DictConfig,
+    ) -> Callable:
+        """Discrimina per `data_type`:
+
+        - `video`  → `Video(path, fps, video_start=..., video_end=...)`.
+                     I backend decord/torchvision/torchcodec di
+                     qwen-vl-utils fanno il trim a `[video_start,
+                     video_end]` al decode.
+        - `frame`  → `VideoFrames([list di jpg ordinati])`. fps/start/end
+                     sono ignorati (frame già pre-estratti).
+        """
+        from models import Text, Video, VideoFrames
+
+        fps = cfg.fps
+
+        @weave.op
+        def predict(
+            video_path: str,
+            data_type: str,
+            question: str,
+            options: list[str],
+            video_start: float | None,
+            video_end: float | None,
+        ) -> dict:
+            prompt = format_mcq_prompt(question, options)
+            if data_type == "frame":
+                media = VideoFrames(video=_list_frames(Path(video_path)))
+            else:
+                media = Video(
+                    video_path,
+                    fps=fps,
+                    video_start=video_start,
+                    video_end=video_end,
+                )
+            messages = vlm.build_messages(media, Text(prompt))
+            raw = vlm.generate(messages, generation_config=gen_cfg)
+            return {"raw": raw, "pred": parse_mcq_letter(raw, len(options))}
+
+        return predict

@@ -1,0 +1,14 @@
+# Eval su MVBench. `dataset` è il nome logico usato dal dispatch
+# `_DATASETS` in `main.py` per scegliere loader + predict; `root` è la
+# directory locale prodotta da `fetch/prefetch_mvbench.py` (layout:
+# metadata.jsonl + videos/<source>/...).
+dataset: mvbench
+root: ${oc.env:HOME}/datasets/mvbench
+# Sample rate per i task `data_type=video`. Le clip MVBench sono brevi
+# (~5-30s) → fps moderato basta. Il task `episodic_reasoning`
+# (data_type=frame) ignora questo valore: i jpg sono già pre-estratti.
+fps: 0.5
+# Sottoinsieme di task da includere (null = tutti i 19 del prefetch:
+# fine_grained_pose escluso a monte, NTU non redistribuita su HF).
+# Esempi: [action_antonym], [action_sequence, action_prediction, ...]
+tasks: null

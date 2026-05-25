@@ -1,7 +1,10 @@
 # wandb run configuration.
 # `mode: disabled` turns off both wandb and weave (offline debug).
 # `mode: offline` logs locally — sync later with `wandb sync <run-dir>`.
-project: egoschema
+# `project` segue il dataset attivo via interpolazione: ogni dataset
+# popola il proprio progetto wandb senza dover override-are manualmente.
+# Override esplicito quando serve, es. `wandb.project=my-experiment`.
+project: ${run.dataset}
 entity: alesvale97-unimore
 mode: online       # online | offline | disabled
 tags: []

@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-from pathlib import Path
 from typing import cast
 
 import hydra
@@ -9,7 +8,7 @@ import torch
 import weave
 from omegaconf import DictConfig, OmegaConf
 
-from evals.egoschema import load_egoschema, make_predict, mcq_accuracy
+from evals import Dataset, mcq_accuracy
 from utils.obs import init_observability
 
 logger = logging.getLogger(__name__)
@@ -45,19 +44,20 @@ def run(cfg: DictConfig) -> None:
     model_cfg: dict = cast(dict, OmegaConf.to_container(cfg.model, resolve=True))
     vlm_cls = _MODELS[model_cfg.pop("name")]
     model_cfg["torch_dtype"] = _DTYPES[model_cfg.pop("torch_dtype")]
-    vlm = vlm_cls(**model_cfg)
-    gen_cfg = GenerationConfig(**cast(dict, OmegaConf.to_container(cfg.generation, resolve=True)))
+    vlm: BaseVLM = vlm_cls(**model_cfg)
+    gen_cfg: GenerationConfig = GenerationConfig(**cast(dict, OmegaConf.to_container(cfg.generation, resolve=True)))
 
-    samples = load_egoschema(Path(cfg.run.root))
-    logger.info("Loaded %d samples from %s (%s)", len(samples), cfg.run.dataset, cfg.run.root)
+    dataset: Dataset = Dataset.get(cfg.run.dataset)
+    samples: list[dict] = dataset.loader(cfg.run)
+    logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.run.root)
 
-    dataset = weave.Dataset(name=cfg.run.dataset, rows=weave.Table(samples))
+    weave_dataset = weave.Dataset(name=dataset.name, rows=weave.Table(samples))
     evaluation = weave.Evaluation(
-        name=f"{cfg.run.dataset}-{cfg.model.name}",
-        dataset=dataset,
+        name=f"{dataset.name}-{cfg.model.name}",
+        dataset=weave_dataset,
         scorers=[mcq_accuracy],
     )
-    summary = asyncio.run(evaluation.evaluate(make_predict(vlm, gen_cfg, cfg.run.fps)))
+    summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.run)))
     logger.info("Eval summary: %s", summary)
 
 
