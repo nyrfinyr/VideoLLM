@@ -4,7 +4,7 @@
 # `project` segue il dataset attivo via interpolazione: ogni dataset
 # popola il proprio progetto wandb senza dover override-are manualmente.
 # Override esplicito quando serve, es. `wandb.project=my-experiment`.
-project: ${run.dataset}
+project: ${dataset.name}
 entity: alesvale97-unimore
 mode: online       # online | offline | disabled
 tags: []

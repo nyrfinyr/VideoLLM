@@ -1,0 +1,7 @@
+# EgoSchema. `name` è la chiave usata dal dispatch `Dataset.get` in
+# `main.py`; `root` è la directory locale prodotta da
+# `fetch/prefetch_egoschema.py` (layout: metadata.jsonl +
+# videos/<video_idx>.mp4).
+name: egoschema
+root: /work/tesi_avalenza/datasets/egoschema
+fps: 0.25

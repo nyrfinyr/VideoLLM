@@ -1,7 +1,0 @@
-# Eval su EgoSchema. `dataset` è il nome logico usato dal dispatch
-# `_DATASETS` in `main.py` per scegliere loader + predict; `root` è la
-# directory locale prodotta da `fetch/prefetch_egoschema.py` (layout:
-# metadata.jsonl + videos/<video_idx>.mp4).
-dataset: egoschema
-root: ${oc.env:HOME}/datasets/egoschema_subset_20
-fps: 0.25

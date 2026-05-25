@@ -23,8 +23,8 @@ conf/
 │   ├── precise.yaml
 │   ├── balanced.yaml
 │   └── creative.yaml
-└── run/
-    └── default.yaml
+└── dataset/
+    └── egoschema.yaml
 ```
 
 Ogni sottocartella di `conf/` è un **config group**: contiene varianti mutuamente esclusive di uno stesso "slot" della config.
@@ -37,7 +37,7 @@ Ogni sottocartella di `conf/` è un **config group**: contiene varianti mutuamen
 defaults:
   - model: qwen_vl
   - generation: balanced
-  - run: default
+  - dataset: egoschema
   - _self_
 
 seed: 42
@@ -47,7 +47,7 @@ La `defaults list` dice a Hydra **quali file comporre**:
 
 - `model: qwen_vl` → carica `conf/model/qwen_vl.yaml` sotto la chiave `cfg.model`.
 - `generation: balanced` → carica `conf/generation/balanced.yaml` sotto `cfg.generation`.
-- `run: default` → carica `conf/run/default.yaml` sotto `cfg.run`.
+- `dataset: egoschema` → carica `conf/dataset/egoschema.yaml` sotto `cfg.dataset`.
 - `_self_` → applica i valori scritti direttamente in `config.yaml` (es. `seed: 42`).
 
 L'ordine conta: chi viene **dopo** sovrascrive chi viene prima. Mettere `_self_` per ultimo significa "i valori in `config.yaml` vincono sui gruppi"; metterlo per primo significa il contrario.
@@ -65,9 +65,10 @@ generation:
   top_p: 0.9
   max_new_tokens: 512
   repetition_penalty: 1.1
-run:
-  prompt: "Describe this image."
-  image_url: "https://..."
+dataset:
+  name: egoschema
+  root: /home/alesvale/datasets/egoschema_subset_20
+  fps: 0.25
 seed: 42
 ```
 

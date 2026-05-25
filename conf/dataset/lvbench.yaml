@@ -1,8 +1,16 @@
-# LVBench. Long-video MCQ 4-options; video tipicamente >1h.
+# LVBench. `name` è la chiave usata dal dispatch `Dataset.get` in
+# `main.py`; `root` è la directory locale prodotta da
+# `fetch/prefetch_lvbench.py` (layout: metadata.jsonl + videos/<id>.mp4
+# + dropped.jsonl per forensics dei video YouTube non più disponibili).
 name: lvbench
-# TODO: verificare il nome esatto del repo HF (candidato: THUDM/LVBench).
-hf_repo: null
-root: ${oc.env:HOME}/datasets/lvbench
-# fps molto basso: i video sono lunghi, va tenuta la finestra di
-# contesto del VLM sotto controllo. Alzare solo dopo aver misurato.
+root: /work/tesi_avalenza/datasets/lvbench
+# fps molto basso: i video sono long-form (1-2h tipici, max 2h20m).
+# Anche a 0.1 fps un video da 1h sono 360 frame — Qwen subsampla
+# ulteriormente in base a max_pixels, ma è opportuno tenerlo conservativo.
 fps: 0.1
+# Se true, trimma il video a `[video_start, video_end]` letti da
+# `time_reference` (GT del segmento rilevante). Default false: è la
+# metodologia *ufficiale* di LVBench — il modello deve trovare il
+# segmento da solo. true = eval "open-book" / oracle baseline, utile
+# per misurare l'upper bound se il modello sapesse già dove guardare.
+use_time_reference: false

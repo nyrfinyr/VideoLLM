@@ -10,7 +10,7 @@ MVBench, ...) e implementa due metodi:
   `@weave.op predict(...)` la cui signature matcha le colonne ritornate
   da `loader`.
 
-Il dispatch da `cfg.run.dataset` (stringa) alla classe avviene via
+Il dispatch da `cfg.dataset.name` (stringa) alla classe avviene via
 `Dataset.get(name)`, che scansiona `__subclasses__()`. Per essere
 visibile, una sottoclasse deve essere importata almeno una volta —
 `evals/__init__.py` si occupa di farlo.
@@ -96,9 +96,9 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
 class Dataset(ABC):
     """ABC per i dataset di evaluation.
 
-    Le sottoclassi pinnano `name` (chiave usata in `conf/run/<x>.yaml`
-    sotto `dataset:` e nel dispatch di `main.py`) e implementano
-    `loader` + `predict_factory`. Restano stateless: `Dataset.get(name)`
+    Le sottoclassi pinnano `name` (chiave usata in `conf/dataset/<x>.yaml`
+    sotto `name:` e nel dispatch di `main.py`) e implementano `loader`
+    + `predict_factory`. Restano stateless: `Dataset.get(name)`
     instanzia al volo.
     """
 
@@ -108,8 +108,9 @@ class Dataset(ABC):
     def loader(self, cfg: DictConfig) -> list[dict]:
         """Legge il dump locale e ritorna le righe normalizzate.
 
-        `cfg` è `cfg.run` di Hydra: contiene almeno `root` (path dump
-        on-disk) e i field dataset-specifici (`tasks`, `duration`, ...).
+        `cfg` è `cfg.dataset` di Hydra: contiene almeno `name`, `root`
+        (path dump on-disk) e i field dataset-specifici (`tasks`,
+        `duration`, ...).
         """
 
     @abstractmethod
@@ -121,8 +122,8 @@ class Dataset(ABC):
     ) -> Callable:
         """Ritorna la closure `@weave.op predict(...)` traced da Weave.
 
-        `cfg` è `cfg.run` di Hydra: simmetrico a `loader`, ogni dataset
-        pesca i field che gli servono (es. `fps` ovunque,
+        `cfg` è `cfg.dataset` di Hydra: simmetrico a `loader`, ogni
+        dataset pesca i field che gli servono (es. `fps` ovunque,
         `use_subtitles` su Video-MME). Tenere la stessa signature in
         tutte le sottoclassi semplifica il dispatch in `main.py`.
         """

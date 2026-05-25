@@ -1,11 +1,17 @@
-# Video-MME (lmms-lab/Video-MME). MCQ 4-options con 3 split per durata.
+# Video-MME. `name` è la chiave usata dal dispatch `Dataset.get` in
+# `main.py`; `root` è la directory locale prodotta da
+# `fetch/prefetch_videomme.py` (layout: metadata.jsonl +
+# videos/data/<videoID>.<ext>, opzionale subtitle/<videoID>.srt).
 name: video_mme
-# TODO: verificare il nome esatto del repo HF prima del wiring.
-hf_repo: lmms-lab/Video-MME
-root: ${oc.env:HOME}/datasets/video_mme
-# "short" | "medium" | "long" | "all" (all = unione dei tre).
-duration: all
-# Se true, includere i sottotitoli (.srt) nel prompt. Richiede schema
-# extra `subtitle_path` lato loader e gestione lato predict.
-use_subtitles: false
+root: /work/tesi_avalenza/datasets/video_mme
 fps: 0.5
+# Filtro per fascia: "short" | "medium" | "long" | "all" (= no filter).
+# Per breakdown puoi tenerlo "all" e leggere la metrica per `duration`
+# in UI Weave (colonna del dataset).
+duration: all
+# Se true: legge i .srt da `<root>/subtitle/<videoID>.srt` e li prepend
+# al prompt MCQ (formulazione standard "This video's subtitles are
+# listed below:"). Richiede che il prefetch sia girato con
+# `subtitles=true`, altrimenti il loader fallisce loudly (campo
+# `subtitle` mancante in metadata.jsonl).
+use_subtitles: false

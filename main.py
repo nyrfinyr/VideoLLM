@@ -47,9 +47,9 @@ def run(cfg: DictConfig) -> None:
     vlm: BaseVLM = vlm_cls(**model_cfg)
     gen_cfg: GenerationConfig = GenerationConfig(**cast(dict, OmegaConf.to_container(cfg.generation, resolve=True)))
 
-    dataset: Dataset = Dataset.get(cfg.run.dataset)
-    samples: list[dict] = dataset.loader(cfg.run)
-    logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.run.root)
+    dataset: Dataset = Dataset.get(cfg.dataset.name)
+    samples: list[dict] = dataset.loader(cfg.dataset)
+    logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
 
     weave_dataset = weave.Dataset(name=dataset.name, rows=weave.Table(samples))
     evaluation = weave.Evaluation(
@@ -57,7 +57,7 @@ def run(cfg: DictConfig) -> None:
         dataset=weave_dataset,
         scorers=[mcq_accuracy],
     )
-    summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.run)))
+    summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.dataset)))
     logger.info("Eval summary: %s", summary)
 
 

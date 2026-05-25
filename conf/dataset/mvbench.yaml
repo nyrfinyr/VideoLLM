@@ -1,14 +1,13 @@
-# MVBench (OpenGVLab/MVBench). 20 task MCQ; i video vanno materializzati
-# su disco con uno script di prefetch analogo a `prefetch_egoschema.py`
-# (layout atteso: `<root>/metadata.jsonl` + `<root>/videos/...`).
+# MVBench. `name` è la chiave usata dal dispatch `Dataset.get` in
+# `main.py`; `root` è la directory locale prodotta da
+# `fetch/prefetch_mvbench.py` (layout: metadata.jsonl + videos/<source>/...).
 name: mvbench
-# HF repo da cui scaricare metadati + video.
-# TODO: verificare il nome esatto e i config disponibili prima del wiring.
-hf_repo: OpenGVLab/MVBench
-root: ${oc.env:HOME}/datasets/mvbench
-# Sottoinsieme di task da includere (null = tutti i 20). Esempi:
-# - action_sequence
-# - action_prediction
-# - scene_transition
-tasks: null
+root: /work/tesi_avalenza/datasets/mvbench
+# Sample rate per i task `data_type=video`. Le clip MVBench sono brevi
+# (~5-30s) → fps moderato basta. Il task `episodic_reasoning`
+# (data_type=frame) ignora questo valore: i jpg sono già pre-estratti.
 fps: 0.5
+# Sottoinsieme di task da includere (null = tutti i 19 del prefetch:
+# fine_grained_pose escluso a monte, NTU non redistribuita su HF).
+# Esempi: [action_antonym], [action_sequence, action_prediction, ...]
+tasks: null
