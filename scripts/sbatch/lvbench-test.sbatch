@@ -38,4 +38,4 @@ uv run python main.py \
     wandb.group=${MODEL}-lvbench-test \
     wandb.tags=[probe,lvbench,test] \
     wandb.name=${MODEL}-lvbench-test-${SLURM_JOB_ID} \
-    wandb.notes="throughput probe (slurm ${SLURM_JOB_ID} on $(hostname))"
+    wandb.notes="throughput probe slurm ${SLURM_JOB_ID} on $(hostname)"

@@ -37,4 +37,4 @@ uv run python main.py \
     wandb.group=${MODEL}-video_mme-test \
     wandb.tags=[probe,video_mme,test] \
     wandb.name=${MODEL}-video_mme-test-${SLURM_JOB_ID} \
-    wandb.notes="throughput probe (slurm ${SLURM_JOB_ID} on $(hostname))"
+    wandb.notes="throughput probe slurm ${SLURM_JOB_ID} on $(hostname)"
