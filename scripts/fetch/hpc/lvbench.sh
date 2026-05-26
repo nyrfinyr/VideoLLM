@@ -3,28 +3,27 @@
 # `hf_home` non lo passiamo: `.bashrc` su HPC esporta HF_HOME=/work/tesi_avalenza/hf
 # e l'`oc.env` nel yaml lo raccoglie da solo.
 #
-# Da lanciare dal LOGIN node (i compute node non hanno internet, e yt-dlp
-# qui non funzionerebbe).
+# Da lanciare dal LOGIN node (i compute node tipicamente non hanno
+# accesso internet).
 #
-# IMPORTANTE — YouTube anti-bot:
-# Senza cookies, yt-dlp dopo qualche decina di download viene bloccato con
-# "Sign in to confirm you're not a bot". Su HPC non esiste un browser per
-# `cookies_from_browser=`, va passato un file `cookies.txt`. Workflow:
-#   1) Sul tuo PC locale: installa l'estensione "Get cookies.txt LOCALLY"
-#      (Firefox o Chrome), apri youtube.com loggato, esporta cookies.txt.
-#   2) `scp cookies.txt avalenza@hpc:/work/tesi_avalenza/secrets/cookies.txt`
-#      (chmod 600).
-#   3) Lancia:
-#        ./scripts/fetch/hpc/lvbench.sh cookiefile=/work/tesi_avalenza/secrets/cookies.txt
+# DEFAULT (no override) = FULL RUN: scarica i `video_chunks/videos_chunk_NNN.zip`
+# (14 chunk, ~61 GB nominali) necessari a coprire tutti i 103 video. Lo
+# script estrae on-demand e cancella i zip dopo l'estrazione, fermandosi
+# appena tutti i video sono coperti. Conta alcune ore di wall-clock.
 #
-# RIESEGUIBILE: rilanciare lo script salta i video già scaricati e ritenta
-# quelli falliti. Conviene 2-3 run a distanza di qualche ora per assorbire
-# i fallimenti transient (rate-limit, network). I video definitivamente
-# morti restano in `dropped.jsonl` — quello è il sample size effettivo.
+# RIESEGUIBILE: rilanciare lo script salta i video già estratti su disco e
+# scarica solo i chunk ancora necessari. Tutto viene da lmms-lab/LVBench
+# (mirror HF self-contained) — niente più YouTube/yt-dlp, niente cookies.
 #
 # Override extra passabili come argomenti, es.:
-#   ./scripts/fetch/hpc/lvbench.sh n=3
-#   ./scripts/fetch/hpc/lvbench.sh cookiefile=/work/tesi_avalenza/secrets/cookies.txt
+#
+#   # smoke test (3 video, 1 chunk ~3.4 GB): SEMPRE passare `chunks=[K]`
+#   # insieme a `n=K`, altrimenti i primi N video del parquet potrebbero
+#   # essere sparsi su più chunk e il download diventa enorme.
+#   ./scripts/fetch/hpc/lvbench.sh chunks=[1] n=3 wandb.mode=disabled
+#
+#   # mantieni i zip scaricati (per re-run / ispezione):
+#   ./scripts/fetch/hpc/lvbench.sh keep_zips=true
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 exec uv run python fetch/prefetch_lvbench.py \

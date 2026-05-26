@@ -2,11 +2,12 @@ import logging
 
 import torch
 from transformers import (
-    AutoProcessor,
     BatchFeature,
     GenerationConfig,
     Qwen2_5_VLForConditionalGeneration,
+    Qwen2_5_VLProcessor,
     Qwen3VLForConditionalGeneration,
+    Qwen3VLProcessor,
 )
 from qwen_vl_utils import process_vision_info
 from .base import BaseVLM
@@ -24,7 +25,8 @@ class Qwen(BaseVLM):
     `model_cls` (the family-specific `*ForConditionalGeneration` class).
     """
 
-    model_cls: type  # override in subclass
+    model_cls: type  # override in subclass: *ForConditionalGeneration
+    processor_cls: type  # override in subclass: *Processor della famiglia
 
     def _load(
         self,
@@ -39,7 +41,7 @@ class Qwen(BaseVLM):
         """Load the Qwen-VL processor + model.
 
         `min_pixels` and `max_pixels` cap the per-image visual-token budget
-        (forwarded to `AutoProcessor`); leave as `None` to keep the model's
+        (forwarded to `processor_cls`); leave as `None` to keep the model's
         default range.
 
         `num_text_layers` / `num_vision_layers` (entrambi `None` di default)
@@ -62,7 +64,7 @@ class Qwen(BaseVLM):
             "Loading %s (dtype=%s, device_map=%s, min_pixels=%s, max_pixels=%s)",
             self.model_id, torch_dtype, device_map, min_pixels, max_pixels,
         )
-        processor = AutoProcessor.from_pretrained(self.model_id, **processor_kwargs)
+        processor = self.processor_cls.from_pretrained(self.model_id, **processor_kwargs)
 
         model_kwargs = dict(kwargs)
         if num_text_layers is not None or num_vision_layers is not None:
@@ -204,13 +206,16 @@ class Qwen(BaseVLM):
 class Qwen25VL3B(Qwen):
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     model_cls = Qwen2_5_VLForConditionalGeneration
+    processor_cls = Qwen2_5_VLProcessor
 
 
 class Qwen3VL2B(Qwen):
     model_id = "Qwen/Qwen3-VL-2B-Instruct"
     model_cls = Qwen3VLForConditionalGeneration
+    processor_cls = Qwen3VLProcessor
 
 
 class Qwen3VL4B(Qwen):
     model_id = "Qwen/Qwen3-VL-4B-Instruct"
     model_cls = Qwen3VLForConditionalGeneration
+    processor_cls = Qwen3VLProcessor

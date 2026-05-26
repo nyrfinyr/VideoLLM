@@ -13,9 +13,10 @@ Legge il dump prodotto da `fetch/prefetch_lvbench.py`:
                            # tipicamente 1-3 elementi)
                            # `time_reference` è "MM:SS-MM:SS" o
                            # "HH:MM:SS-HH:MM:SS"
-        videos/<youtube_id>.<ext>
-        dropped.jsonl      # forensics dei video che yt-dlp non è
-                           # riuscito a recuperare (non letto qui)
+        videos/<video_path>   # mp4 flat (es. <youtube_id>.mp4), estratti
+                              # dai chunk di lmms-lab/LVBench
+        dropped.jsonl      # forensics dei video selezionati ma non
+                           # estratti dai chunk scaricati (non letto qui)
 
 `LVBench.loader` parsea question/options dal testo embedded, converte
 time_reference in `video_start`/`video_end` (secondi), letter→int.

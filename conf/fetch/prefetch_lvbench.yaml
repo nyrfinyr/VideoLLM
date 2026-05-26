@@ -9,34 +9,39 @@ wandb:
   project: lvbench-prefetch
   tags: [prefetch, lvbench]
 
-# Repo HF che hosta solo il file di metadata di LVBench. I video stessi
-# vivono su YouTube e vengono scaricati via yt-dlp usando il campo
-# `key` di ogni riga (= YouTube video ID).
-metadata_repo: zai-org/LVBench
-metadata_file: video_info.meta.jsonl
+# Repo HF che ospita metadata QA + video di LVBench (mirror self-contained
+# di lmms-lab; non serve più YouTube/yt-dlp):
+#   data/train-00000-of-00001.parquet     — 1549 domande (4-MCQ), schema
+#                                            flat: una riga per QA.
+#   video_chunks/videos_chunk_001..014.zip — ~61 GB tot, mp4 flat nominati
+#                                            esattamente come `video_path`.
+hf_repo: lmms-lab/LVBench
+# Config del dataset (un solo subset: `default` / split=train).
+config: default
+split: train
 
-# Numero massimo di *video* da scaricare (null = tutti, ~500). Override
-# CLI per smoke test, es. `n=3`. NB: limita i video, non le QA — ogni
-# video ha tipicamente 1-N domande, tutte tenute se il video c'è.
+# Numero massimo di *video* da scaricare (null = tutti, 103). Override CLI
+# per smoke test, es. `n=3`. NB: limita i video distinti, non le QA — tiene
+# tutte le domande dei primi N video. È il knob che controlla il volume di
+# download (i video sono grandi, fino a ~2h ciascuno).
 n: null
 
-# yt-dlp format selector. Default: miglior progressive mp4 (single
-# stream, niente merge audio+video → niente ffmpeg required). Override
-# per downgrade aggressivo se lo storage scarseggia, es.:
-#   format='best[height<=360][ext=mp4]'
-#   format='worst[ext=mp4]'
-format: best[ext=mp4]/best
+# Restrizione a un sottoinsieme di chunk (`video_chunks/videos_chunk_<idx>.zip`):
+#   null  (default, full run): scarica chunks 001..014 in ordine e si ferma
+#                              quando tutti i video selezionati sono estratti.
+#   [1]   (smoke):             scarica solo il chunk 001, filtra il parquet
+#                              ai `video_path` realmente presenti dentro, poi
+#                              tronca a `n`. Garantisce un solo chunk di
+#                              download e `metadata.jsonl` sempre prodotto.
+# Override CLI: `chunks=[1]` o `chunks=[1,2,3]`.
+chunks: null
 
-# Auth opzionale per video con restrizioni o per evitare il blocco
-# anti-bot di YouTube ("Sign in to confirm you're not a bot").
-# - `cookies_from_browser`: nome browser (firefox/chrome/...). yt-dlp
-#   legge i cookie dal profilo locale.
-# - `cookiefile`: path a un file Netscape `cookies.txt` esportato.
-# null su entrambi = nessun auth.
-cookies_from_browser: null
-cookiefile: null
+# Se true, mantiene i zip scaricati sotto `<out>/_zips/` dopo l'estrazione
+# (utile per re-run o ispezione). Default false: i zip vengono cancellati
+# dopo l'estrazione per risparmiare disco (i chunk sono ~3-5 GB ciascuno).
+keep_zips: false
 
-# Dump self-contained letto poi da `evals.lvbench.load_lvbench`.
+# Dump self-contained letto poi da `evals.lvbench.LVBench.loader`.
 # Default deriva da `$HOME` per i run locali; su HPC override con
 # `out_dir=/work/...` (via `scripts/fetch/hpc/lvbench.sh`).
 out_dir: ${oc.env:HOME}/datasets/lvbench

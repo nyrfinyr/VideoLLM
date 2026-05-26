@@ -1,60 +1,79 @@
 """Prefetch LVBench videos + QA metadata for pipeline testing.
 
-LVBench (`zai-org/LVBench`) hosta solo `video_info.meta.jsonl` su HF —
-i video (~500, fino a 2h ciascuno) vivono su YouTube e vanno scaricati
-via `yt-dlp` usando il campo `key` (YouTube video ID).
+A differenza della versione precedente (che scaricava i video da YouTube
+via `yt-dlp` partendo dai metadata di `zai-org/LVBench`), questo script
+tira giù tutto da `lmms-lab/LVBench`, che ospita un mirror self-contained:
 
-Schema sorgente per riga del jsonl:
+    data/train-00000-of-00001.parquet   — 1549 domande (4-MCQ), schema
+                                           flat (una riga per QA):
+                                           {video_path, uid, question,
+                                            question_type, answer,
+                                            time_reference, type, key}
+    video_chunks/videos_chunk_001.zip … videos_chunk_014.zip
+                                         — ~61 GB tot; ogni zip contiene
+                                           gli mp4 flat, nominati esatta-
+                                           mente come il campo `video_path`
+                                           (es. `Cm73ma6Ibcs.mp4`).
 
-    {"key": "<youtube_id>",
-     "type": "<categoria_video>",
-     "qa": [{"uid", "question", "answer", "question_type", "time_reference"}, ...]}
+Vantaggio rispetto a YouTube: niente rate-limit / blocco anti-bot, niente
+mortalità irreversibile (video rimossi), download riproducibile. I 103
+video unici sono grandi (fino a ~2h) → lo script scarica i chunk solo
+quanto basta a coprire i video selezionati (vedi `n` / `chunks`).
 
 Le opzioni MCQ sono già embedded nel testo di `question` (formato
-"...\n(A) ...\n(B) ..."); il loader `evals.lvbench` le riparserà.
+"<stem>\n(A) ...\n(B) ...\n(C) ...\n(D) ..."); il loader `evals.lvbench`
+le riparserà.
 
-Output (self-contained, stesso schema degli altri prefetch):
+Output (self-contained, stesso schema della versione YouTube, così
+`evals.lvbench.LVBench.loader` resta invariato):
 
     out_dir/
-        metadata.jsonl     # una riga per QA; `video` path relativo a
-                           #   out_dir. Le righe relative a video che
-                           #   yt-dlp non è riuscito a recuperare
-                           #   (privati/rimossi/geo-bloccati) sono
-                           #   scartate.
-        dropped.jsonl      # una riga JSON per ogni video saltato, con
-                           #   `{key, type, num_qa, error}`. Sovrascritto
-                           #   a ogni run: re-eseguendo lo script, i video
-                           #   recuperati escono dalla lista. Usalo per
-                           #   documentare il sample size effettivo e per
-                           #   ritentare con cookies o più tardi.
+        metadata.jsonl     # una riga per QA:
+                           #   {id, key, type, video, uid, question,
+                           #    answer, question_type, time_reference}
+                           #   `id` = "<key>/<uid>", `video` path
+                           #   relativo a out_dir. Le righe relative a
+                           #   video non estratti (assenti nei chunk
+                           #   scaricati) sono scartate.
+        dropped.jsonl      # una riga JSON per ogni video selezionato ma
+                           #   non estratto, con
+                           #   `{video_path, key, type, num_qa}`.
+                           #   Sovrascritto a ogni run. Con `lmms-lab`
+                           #   dovrebbe restare vuoto in full run; non
+                           #   vuoto solo se si restringe con `chunks=[...]`
+                           #   o per integrità incompleta del repo.
         videos/
-            <youtube_id>.<ext>     # mp4/webm/mkv in base al format
-                                   #   selector di yt-dlp.
+            <video_path>           # mp4 flat, nome == campo `video_path`.
 
 Note operative:
 - Run on the login node (compute nodes typically lack internet).
-- YouTube blocca aggressivamente i download anonimi: in caso di
-  "Sign in to confirm you're not a bot" passa cookies via
-  `cookies_from_browser=firefox` (o `cookiefile=/path/to/cookies.txt`).
-- Lo script è idempotente: rilanciandolo (a) salta i video già scaricati,
-  (b) ritenta quelli che prima erano falliti. Per un dataset completo
-  conviene rilanciare 2-3 volte a distanza di qualche ora per assorbire
-  rate-limit / network transient.
-- Mortalità irreversibile attesa su LVBench: i video YouTube vengono
-  rimossi nel tempo (account terminati, video privati, ecc.). Non esiste
-  un mirror ufficiale dei video. `dropped.jsonl` è la fonte di verità
-  per il sample size effettivo da riportare nei risultati.
+- Idempotente: rilanciandolo salta i video già estratti su disco e
+  scarica solo i chunk ancora necessari.
+- I chunk sono grandi (~3-5 GB ciascuno): per default vengono cancellati
+  dopo l'estrazione (`keep_zips=false`).
+
+Due modalità di selezione dei chunk:
+
+- `chunks=null` (default): scarica i chunk in ordine 001..014 finché tutti
+  i video selezionati sono estratti. OK per full run; pessimo per smoke
+  test perché la mappa video→chunk è opaca (i primi N video del parquet
+  possono richiedere chunk arbitrari).
+- `chunks=[i, j, ...]`: scarica solo quei chunk, **filtra** il parquet ai
+  `video_path` realmente presenti dentro, poi tronca a `n`. Smoke test
+  deterministico: con `chunks=[1] n=3` scarichi sempre un solo chunk e
+  produci un `metadata.jsonl` con le QA dei primi 3 video presenti.
 
 Hydra overrides:
     uv run python fetch/prefetch_lvbench.py n=3
-    uv run python fetch/prefetch_lvbench.py format='best[height<=360][ext=mp4]'
-    uv run python fetch/prefetch_lvbench.py cookies_from_browser=firefox
+    uv run python fetch/prefetch_lvbench.py chunks=[1] n=3
+    uv run python fetch/prefetch_lvbench.py keep_zips=true
     uv run python fetch/prefetch_lvbench.py --cfg job
 """
 import json
 import logging
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 # When invoked as `python fetch/prefetch_lvbench.py`, only `fetch/` is on
@@ -72,168 +91,295 @@ from utils.obs import init_observability
 logger = logging.getLogger(__name__)
 
 
-# Estensioni che yt-dlp può produrre. mp4 è il default per `best[ext=mp4]`;
-# webm/mkv possono comparire con format selectors più liberali o quando un
-# postprocessor effettua un merge audio/video.
-VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".m4v")
+NUM_VIDEO_CHUNKS = 14
+# Estensioni accettate dentro ai zip. In pratica i chunk LVBench
+# contengono solo .mp4 lowercase (il campo `video_path` è sempre
+# `<id>.mp4`), ma teniamo .MP4 / .mkv / .webm come fallback difensivo.
+VIDEO_EXTS = (".mp4", ".MP4", ".mkv", ".webm")
 
 
-def _existing_video(videos_dir: Path, key: str) -> Path | None:
-    """Ritorna il file già scaricato per `key`, o None se assente."""
-    for ext in VIDEO_EXTS:
-        p = videos_dir / f"{key}{ext}"
-        if p.exists():
-            return p
-    # Fallback: yt-dlp può salvare con suffissi inattesi (es. .mp4.part
-    # se interrotto, o estensioni non in lista). Glob largo ma filtrato.
-    for p in videos_dir.glob(f"{key}.*"):
-        if p.is_file() and not p.name.endswith(".part"):
-            return p
-    return None
+def _chunk_name(idx: int) -> str:
+    """`video_chunks/videos_chunk_007.zip` per idx=7. I chunk vanno 001..014."""
+    return f"video_chunks/videos_chunk_{idx:03d}.zip"
 
 
-def _download_one(
-    key: str,
-    videos_dir: Path,
-    format_selector: str,
-    cookiefile: str | None,
-    cookies_from_browser: str | None,
-) -> tuple[Path | None, str | None]:
-    """yt-dlp wrapper idempotente.
+def _list_videos_in_zip(zip_path: Path) -> set[str]:
+    """Ritorna i nomi-file (basename) dei video dentro a `zip_path`.
 
-    Ritorna `(path, None)` se ok, `(None, error_msg)` se fallisce.
-    `error_msg` è la stringa di errore raw (utile per `dropped.jsonl`).
+    Usato in modalità `chunks=[...]` per pre-filtrare i rows del parquet
+    ai `video_path` realmente presenti nei chunk richiesti, prima di
+    applicare `n` truncation.
     """
-    import yt_dlp
+    names: set[str] = set()
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            p = Path(info.filename)
+            if p.suffix in VIDEO_EXTS:
+                names.add(p.name)
+    return names
 
-    existing = _existing_video(videos_dir, key)
-    if existing is not None:
-        return existing, None
 
-    url = f"https://www.youtube.com/watch?v={key}"
-    ydl_opts: dict = {
-        "outtmpl": str(videos_dir / "%(id)s.%(ext)s"),
-        "format": format_selector,
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "retries": 3,
-        "fragment_retries": 3,
-    }
-    if cookiefile:
-        ydl_opts["cookiefile"] = cookiefile
-    if cookies_from_browser:
-        # yt-dlp accetta una tupla `(browser, profile, keyring, container)`;
-        # nel 99% dei casi basta il browser.
-        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+def _extract_targets_from_zip(
+    zip_path: Path,
+    target_names: set[str],
+    videos_dir: Path,
+) -> dict[str, str]:
+    """Estrae da `zip_path` solo i video il cui basename ∈ target_names.
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except yt_dlp.utils.DownloadError as e:
-        msg = str(e)
-        logger.warning("yt-dlp DownloadError per %s: %s", key, msg)
-        return None, msg
-    except Exception as e:
-        msg = f"{type(e).__name__}: {e}"
-        logger.warning("errore inatteso scaricando %s: %s", key, msg)
-        return None, msg
+    I file vengono scritti **flat** sotto `videos_dir/<video_path>`,
+    coerentemente col campo `video_path` del parquet (che non ha
+    sottocartelle). Ritorna `{video_path: video_path}` per i video
+    estratti — il valore è il path relativo a `videos_dir`, identico al
+    nome perché il layout è piatto.
+    """
+    extracted: dict[str, str] = {}
+    with zipfile.ZipFile(zip_path) as zf:
+        # Indicizza per basename: gestiamo zip flat o con prefisso-dir
+        # senza assumere il layout interno.
+        members_by_name: dict[str, zipfile.ZipInfo] = {}
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            p = Path(info.filename)
+            if p.suffix in VIDEO_EXTS:
+                members_by_name.setdefault(p.name, info)
 
-    local = _existing_video(videos_dir, key)
-    if local is None:
-        # yt-dlp non ha sollevato eccezione ma il file non c'è —
-        # raro (format selector che non matcha nulla, ecc.).
-        return None, "yt-dlp non ha prodotto file dopo download"
-    return local, None
+        for name in target_names:
+            info = members_by_name.get(name)
+            if info is None:
+                continue
+            # Riscrive flat: legge i bytes e li deposita in
+            # `videos_dir/<name>`, ignorando eventuale prefisso-dir interno.
+            with zf.open(info) as src:
+                (videos_dir / name).write_bytes(src.read())
+            extracted[name] = name
+    return extracted
+
+
+def _fetch_video_chunks(
+    hf_repo: str,
+    target_names: set[str],
+    out: Path,
+    keep_zips: bool,
+) -> dict[str, str]:
+    """Scarica chunk in ordine ed estrae i target. Si ferma appena tutti
+    i target sono estratti. Ritorna `{video_path: path_relativo a
+    `<out>/videos/`}`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    videos_dir = out / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    zips_dir = out / "_zips"
+    zips_dir.mkdir(parents=True, exist_ok=True)
+
+    # Quali sono già su disco? Permette re-run idempotenti senza
+    # ri-scaricare nulla. Layout flat: `videos/<video_path>`.
+    found: dict[str, str] = {}
+    for name in target_names:
+        if (videos_dir / name).exists():
+            found[name] = name
+    remaining = target_names - set(found.keys())
+    if not remaining:
+        logger.info("tutti i %d video target sono già estratti, skip download", len(target_names))
+        return found
+    logger.info(
+        "già su disco: %d/%d; da fetchare via chunk: %d",
+        len(found), len(target_names), len(remaining),
+    )
+
+    for i in range(1, NUM_VIDEO_CHUNKS + 1):
+        if not remaining:
+            break
+        zip_name = _chunk_name(i)
+        logger.info(
+            "[chunk %d/%d] scarico %s (target rimanenti: %d)",
+            i, NUM_VIDEO_CHUNKS, zip_name, len(remaining),
+        )
+        # `local_dir=zips_dir` mette il file sotto
+        # `<out>/_zips/video_chunks/<zip_name>` così possiamo cancellarlo a
+        # fine estrazione senza toccare la cache HF condivisa.
+        local_zip = Path(hf_hub_download(
+            repo_id=hf_repo,
+            repo_type="dataset",
+            filename=zip_name,
+            local_dir=str(zips_dir),
+        ))
+
+        extracted = _extract_targets_from_zip(local_zip, remaining, videos_dir)
+        found.update(extracted)
+        remaining -= set(extracted.keys())
+        logger.info(
+            "[chunk %d/%d] estratti %d video, rimanenti %d",
+            i, NUM_VIDEO_CHUNKS, len(extracted), len(remaining),
+        )
+
+        if not keep_zips:
+            local_zip.unlink(missing_ok=True)
+
+    if not keep_zips:
+        # Rimuove le dir solo se vuote; se l'utente ha keep_zips a metà
+        # run, lasciamo intatto.
+        for d in (zips_dir / "video_chunks", zips_dir):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+    return found
 
 
 @weave.op()
 def prefetch(
-    metadata_repo: str,
-    metadata_file: str,
+    hf_repo: str,
+    config: str,
+    split: str,
     n: int | None,
     out_dir: str,
-    format_selector: str,
-    cookiefile: str | None,
-    cookies_from_browser: str | None,
+    keep_zips: bool,
+    chunks: list[int] | None,
 ) -> dict:
+    from datasets import load_dataset
     from huggingface_hub import hf_hub_download
 
     out: Path = Path(out_dir)
-    videos_dir = out / "videos"
-    videos_dir.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
 
-    logger.info("scarico %s da %s", metadata_file, metadata_repo)
-    local_meta = hf_hub_download(
-        repo_id=metadata_repo,
-        repo_type="dataset",
-        filename=metadata_file,
-    )
-    with open(local_meta) as f:
-        videos: list[dict] = [json.loads(line) for line in f if line.strip()]
-    total_qa = sum(len(v.get("qa", [])) for v in videos)
-    logger.info("metadata: %d video, %d QA totali", len(videos), total_qa)
+    logger.info("carico metadata: %s [%s] split=%s", hf_repo, config, split)
+    # Parquet piccolo (~170 KB, 1549 righe) → non serve streaming.
+    ds = load_dataset(hf_repo, config, split=split)
+    rows: list[dict] = [dict(r) for r in ds]
+    logger.info("metadata: %d righe (QA), columns=%s", len(rows), list(rows[0].keys()))
 
-    if n is not None:
-        videos = videos[:n]
-        logger.info("tronca a n=%d video", n)
+    # `chunks` mode: pre-scarica i chunk indicati e filtra i rows ai
+    # `video_path` disponibili in essi. Garantisce smoke test
+    # deterministico (esattamente N chunk scaricati).
+    prescanned_chunks: list[Path] = []
+    if chunks is not None:
+        zips_dir = out / "_zips"
+        zips_dir.mkdir(parents=True, exist_ok=True)
+        available_names: set[str] = set()
+        for i in chunks:
+            zip_name = _chunk_name(i)
+            logger.info("[chunk %d] scarico %s per scansione contenuto", i, zip_name)
+            local_zip = Path(hf_hub_download(
+                repo_id=hf_repo,
+                repo_type="dataset",
+                filename=zip_name,
+                local_dir=str(zips_dir),
+            ))
+            prescanned_chunks.append(local_zip)
+            names_here = _list_videos_in_zip(local_zip)
+            available_names |= names_here
+            logger.info("[chunk %d] %d video dentro", i, len(names_here))
 
-    found: dict[str, Path] = {}
-    dropped_log: list[dict] = []
-    for i, v in enumerate(videos):
-        key = v["key"]
-        local, err = _download_one(
-            key, videos_dir, format_selector, cookiefile, cookies_from_browser,
+        before = len(rows)
+        rows = [r for r in rows if r["video_path"] in available_names]
+        logger.info(
+            "filtro chunks=%s: %d → %d righe (video_path matching)",
+            chunks, before, len(rows),
         )
-        if local is None:
-            logger.warning(
-                "[%d/%d] %s: DROP (%s)", i + 1, len(videos), key, err,
-            )
-            dropped_log.append({
-                "key": key,
-                "type": v.get("type"),
-                "num_qa": len(v.get("qa", [])),
-                "error": err,
-            })
-            continue
-        found[key] = local
-        logger.info("[%d/%d] %s → %s", i + 1, len(videos), key, local.name)
 
-    logger.info("scaricati %d/%d video", len(found), len(videos))
+    # `n` limita il numero di *video* (non di QA): tiene tutte le domande
+    # dei primi N `video_path` distinti incontrati nel parquet. È il knob
+    # che controlla il volume di download (i video sono grandi, ~600 MB).
+    if n is not None:
+        keep_videos: list[str] = []
+        seen: set[str] = set()
+        for r in rows:
+            vp = r["video_path"]
+            if vp not in seen:
+                seen.add(vp)
+                keep_videos.append(vp)
+            if len(keep_videos) >= n:
+                break
+        keep_set = set(keep_videos)
+        before = len(rows)
+        rows = [r for r in rows if r["video_path"] in keep_set]
+        logger.info("trunca a n=%d video: %d → %d righe (QA)", n, before, len(rows))
 
-    # `dropped.jsonl` è la fonte di verità per la documentazione del
-    # sample size effettivo. Sovrascritto a ogni run: re-eseguendo lo
-    # script i video che ora vanno escono dalla lista, quelli ancora
-    # morti restano. Utile per riprovare con cookies diversi o più tardi.
+    if not rows:
+        raise RuntimeError("Nessuna riga selezionata dopo filtri.")
+
+    # Una riga = una domanda; più domande condividono lo stesso video.
+    target_names: set[str] = {r["video_path"] for r in rows}
+    logger.info("video unici da fetchare: %d (su %d domande)", len(target_names), len(rows))
+
+    if chunks is not None:
+        # Estrai dai chunk già scaricati nel pre-scan.
+        videos_dir = out / "videos"
+        videos_dir.mkdir(parents=True, exist_ok=True)
+        found_videos: dict[str, str] = {}
+        for local_zip in prescanned_chunks:
+            extracted = _extract_targets_from_zip(local_zip, target_names, videos_dir)
+            found_videos.update(extracted)
+            logger.info("[%s] estratti %d video", local_zip.name, len(extracted))
+            if not keep_zips:
+                local_zip.unlink(missing_ok=True)
+        if not keep_zips:
+            for d in ((out / "_zips" / "video_chunks"), (out / "_zips")):
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+    else:
+        found_videos = _fetch_video_chunks(hf_repo, target_names, out, keep_zips)
+
+    missing_videos = target_names - set(found_videos)
+    if missing_videos:
+        logger.warning(
+            "%d video non trovati in nessun chunk: %s",
+            len(missing_videos), sorted(missing_videos)[:5],
+        )
+
+    # `dropped.jsonl`: video selezionati ma non estratti (con `lmms-lab`
+    # normalmente vuoto in full run; non vuoto solo restringendo `chunks`).
+    # Sovrascritto a ogni run. Una riga per video mancante.
+    qa_per_video: dict[str, int] = {}
+    type_per_video: dict[str, str | None] = {}
+    for r in rows:
+        vp = r["video_path"]
+        qa_per_video[vp] = qa_per_video.get(vp, 0) + 1
+        type_per_video.setdefault(vp, r.get("type"))
     dropped_path = out / "dropped.jsonl"
     with dropped_path.open("w") as f:
-        for d in dropped_log:
-            f.write(json.dumps(d) + "\n")
-    if dropped_log:
-        logger.info(
-            "scritto %s con %d video falliti (riprovare con cookies o ritentare più tardi)",
-            dropped_path, len(dropped_log),
-        )
+        for vp in sorted(missing_videos):
+            f.write(json.dumps({
+                "video_path": vp,
+                "key": Path(vp).stem,
+                "type": type_per_video.get(vp),
+                "num_qa": qa_per_video.get(vp, 0),
+            }) + "\n")
 
     metadata: list[dict] = []
-    for v in videos:
-        key = v["key"]
-        local = found.get(key)
-        if local is None:
+    dropped = 0
+    for r in rows:
+        vp = r["video_path"]
+        rel_video = found_videos.get(vp)
+        if rel_video is None:
+            dropped += 1
             continue
-        video_rel = str(local.relative_to(out))
-        for qa in v.get("qa", []):
-            metadata.append({
-                "id": f"{key}/{qa['uid']}",
-                "key": key,
-                "type": v.get("type"),
-                "video": video_rel,
-                "uid": qa["uid"],
-                "question": qa["question"],
-                "answer": qa["answer"],
-                "question_type": qa.get("question_type"),
-                "time_reference": qa.get("time_reference"),
-            })
+        key = r["key"]
+        uid = r["uid"]
+        # `question_type` arriva come list[str] da `datasets`; lo forziamo
+        # a lista per robustezza (json non serializza ndarray).
+        qtype = r.get("question_type")
+        qtype = list(qtype) if qtype is not None else []
+        metadata.append({
+            "id": f"{key}/{uid}",
+            "key": key,
+            "type": r.get("type"),
+            "video": str(Path("videos") / rel_video),
+            "uid": uid,
+            "question": r["question"],
+            "answer": r["answer"],
+            "question_type": qtype,
+            "time_reference": r.get("time_reference"),
+        })
+    if dropped:
+        logger.warning("scartate %d domande prive di video", dropped)
 
     metadata_path = out / "metadata.jsonl"
     with metadata_path.open("w") as f:
@@ -243,8 +389,8 @@ def prefetch(
     logger.info("Wrote %d sample + metadata.jsonl in %s", len(metadata), out)
     return {
         "subset_size": len(metadata),
-        "num_videos": len(found),
-        "missing_videos": len(videos) - len(found),
+        "num_videos": len(found_videos),
+        "missing_videos": len(missing_videos),
         "out_dir": str(out),
         "metadata_path": str(metadata_path),
         "dropped_path": str(dropped_path),
@@ -252,20 +398,21 @@ def prefetch(
 
 
 def run(cfg: DictConfig) -> None:
-    # `huggingface_hub` legge HF_HOME al primo import; settalo prima
-    # dell'import lazy dentro `prefetch`.
+    # `datasets` / `huggingface_hub` leggono HF_HOME al primo import, va
+    # settato prima dell'import lazy dentro `prefetch`.
     if cfg.hf_home:
         os.environ["HF_HOME"] = cfg.hf_home
 
     init_observability(cfg)
+    chunks = None if cfg.chunks is None else [int(i) for i in cfg.chunks]
     prefetch(
-        cfg.metadata_repo,
-        cfg.metadata_file,
+        cfg.hf_repo,
+        cfg.config,
+        cfg.split,
         cfg.n,
         cfg.out_dir,
-        cfg.format,
-        cfg.cookiefile,
-        cfg.cookies_from_browser,
+        bool(cfg.keep_zips),
+        chunks,
     )
 
 
