@@ -134,16 +134,16 @@ class MVBench(Dataset):
     ) -> Callable:
         """Discrimina per `data_type`:
 
-        - `video`  → `Video(path, fps, video_start=..., video_end=...)`.
+        - `video`  → `Video(path, nframes, video_start=..., video_end=...)`.
                      I backend decord/torchvision/torchcodec di
                      qwen-vl-utils fanno il trim a `[video_start,
-                     video_end]` al decode.
-        - `frame`  → `VideoFrames([list di jpg ordinati])`. fps/start/end
+                     video_end]` al decode, poi campionano `nframes`.
+        - `frame`  → `VideoFrames([list di jpg ordinati])`. nframes/start/end
                      sono ignorati (frame già pre-estratti).
         """
         from models import Text, Video, VideoFrames
 
-        fps = cfg.fps
+        nframes = cfg.nframes
 
         @weave.op
         def predict(
@@ -160,7 +160,7 @@ class MVBench(Dataset):
             else:
                 media = Video(
                     video_path,
-                    fps=fps,
+                    nframes=nframes,
                     video_start=video_start,
                     video_end=video_end,
                 )

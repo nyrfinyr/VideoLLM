@@ -3,10 +3,12 @@
 # `fetch/prefetch_mvbench.py` (layout: metadata.jsonl + videos/<source>/...).
 name: mvbench
 root: /work/tesi_avalenza/datasets/mvbench
-# Sample rate per i task `data_type=video`. Le clip MVBench sono brevi
-# (~5-30s) → fps moderato basta. Il task `episodic_reasoning`
-# (data_type=frame) ignora questo valore: i jpg sono già pre-estratti.
-fps: 0.5
+# Numero fisso di frame per i task `data_type=video` (campionati
+# uniformemente da qwen-vl-utils), al posto di un sample-rate fps. Le clip
+# MVBench sono brevi (~5-30s) → 32 frame bastano (~2.9k token, ~9-10 GB
+# VRAM). Il task `episodic_reasoning` (data_type=frame) ignora questo
+# valore: i jpg sono già pre-estratti.
+nframes: 32
 # Sottoinsieme di task da includere (null = tutti i 19 del prefetch:
 # fine_grained_pose escluso a monte, NTU non redistribuita su HF).
 # Esempi: [action_antonym], [action_sequence, action_prediction, ...]

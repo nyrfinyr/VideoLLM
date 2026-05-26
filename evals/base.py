@@ -123,7 +123,7 @@ class Dataset(ABC):
         """Ritorna la closure `@weave.op predict(...)` traced da Weave.
 
         `cfg` è `cfg.dataset` di Hydra: simmetrico a `loader`, ogni
-        dataset pesca i field che gli servono (es. `fps` ovunque,
+        dataset pesca i field che gli servono (es. `nframes` ovunque,
         `use_subtitles` su Video-MME). Tenere la stessa signature in
         tutte le sottoclassi semplifica il dispatch in `main.py`.
         """

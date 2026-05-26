@@ -4,4 +4,8 @@
 # videos/<video_idx>.mp4).
 name: egoschema
 root: /work/tesi_avalenza/datasets/egoschema
-fps: 0.25
+# Numero fisso di frame per video (campionati uniformemente da
+# qwen-vl-utils), al posto di un sample-rate fps. Clip da ~3 min → 64
+# frame coprono bene (~5.8k token su Qwen2.5-VL con la max_pixels attuale
+# di Video, ~10-11 GB VRAM).
+nframes: 64
