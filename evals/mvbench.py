@@ -144,6 +144,7 @@ class MVBench(Dataset):
         from models import Text, Video, VideoFrames
 
         nframes = cfg.nframes
+        max_pixels = cfg.max_pixels
 
         @weave.op
         def predict(
@@ -161,11 +162,12 @@ class MVBench(Dataset):
                 media = Video(
                     video_path,
                     nframes=nframes,
+                    max_pixels=max_pixels,
                     video_start=video_start,
                     video_end=video_end,
                 )
             messages = vlm.build_messages(media, Text(prompt))
             raw = vlm.generate(messages, generation_config=gen_cfg)
-            return {"raw": raw, "pred": parse_mcq_letter(raw, len(options))}
+            return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
 
         return predict

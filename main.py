@@ -49,6 +49,20 @@ def run(cfg: DictConfig) -> None:
 
     dataset: Dataset = Dataset.get(cfg.dataset.name)
     samples: list[dict] = dataset.loader(cfg.dataset)
+    # `shuffle` (RNG seedato) prima di `limit`: un subset `limit=N` casuale è
+    # rappresentativo dell'intero dataset (i loader emettono in ordine, es.
+    # mvbench per task / lvbench per video → i primi N sarebbero biased).
+    if cfg.get("shuffle"):
+        import random
+        random.Random(cfg.seed).shuffle(samples)
+        logger.info("shuffle=true (seed=%d) → ordine sample randomizzato prima di limit", cfg.seed)
+    # `limit` (null = tutti) tronca i sample DOPO loader/shuffle e i filtri
+    # dataset-specifici: serve a smoke test / probe per chiudere in tempi
+    # brevi. Non produce metriche di accuracy significative.
+    limit = cfg.get("limit")
+    if limit is not None:
+        samples = samples[: int(limit)]
+        logger.warning("limit=%s attivo → eval su %d sample (SUBSET, metriche di accuracy non significative)", limit, len(samples))
     logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
 
     weave_dataset = weave.Dataset(name=dataset.name, rows=weave.Table(samples))

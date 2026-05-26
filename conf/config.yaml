@@ -1,6 +1,6 @@
 defaults:
   - model: qwen2_5_vl_3b
-  - generation: balanced
+  - generation: precise          # greedy: default per eval riproducibili
   - dataset: egoschema
   - wandb: default
   - _self_
@@ -14,3 +14,17 @@ seed: 42
 # valore PRIMA di importare transformers, perché `huggingface_hub` legge
 # le costanti di cache al momento dell'import.
 hf_home: ${oc.env:HF_HOME,null}
+
+# Numero massimo di sample da valutare (null = tutti). Tronca DOPO il
+# loader e i filtri dataset-specifici (duration/tasks/...). Pensato per gli
+# smoke test (`limit=5`): chiude la pipeline in pochi minuti ma le metriche
+# NON sono significative. Lascialo null per i run di prod.
+limit: null
+
+# Se true, mischia i sample (RNG seedato con `seed`) PRIMA di applicare
+# `limit`. Pensato per le probe di throughput: un subset `limit=N` così è
+# RAPPRESENTATIVO dell'intero dataset, mentre i loader restituiscono i
+# sample in ordine (mvbench per task, lvbench per video) → i primi N
+# sarebbero biased. Irrilevante a `limit=null` (accuracy invariata: ogni
+# sample è indipendente). Default false per i run di prod.
+shuffle: false

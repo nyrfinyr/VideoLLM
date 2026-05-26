@@ -7,8 +7,12 @@ root: /work/tesi_avalenza/datasets/video_mme
 # Numero fisso di frame per video (campionati uniformemente da
 # qwen-vl-utils), al posto di un sample-rate fps. Mix di durate
 # short/medium/long → 128 frame come compromesso (~11.5k token su
-# Qwen2.5-VL con la max_pixels attuale di Video, ~11-13 GB VRAM).
+# Qwen2.5-VL a max_pixels=151200, ~11-13 GB VRAM).
 nframes: 128
+# Budget di pixel per frame post-resize (1 token ogni 28x28 px). A 128
+# frame il budget di 24576 token non vincola → risoluzione piena:
+# 151200 ≈ 180 token/frame.
+max_pixels: 151200
 # Filtro per fascia: "short" | "medium" | "long" | "all" (= no filter).
 # Per breakdown puoi tenerlo "all" e leggere la metrica per `duration`
 # in UI Weave (colonna del dataset).
