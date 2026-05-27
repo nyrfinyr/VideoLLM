@@ -56,6 +56,20 @@ def run(cfg: DictConfig) -> None:
         import random
         random.Random(cfg.seed).shuffle(samples)
         logger.info("shuffle=true (seed=%d) → ordine sample randomizzato prima di limit", cfg.seed)
+    # `shard`/`num_shards`: sharding deterministico per job array SLURM. Slice
+    # strided → ogni shard mescola le fasce di durata, bilanciando il walltime
+    # fra i job. Applicato dopo shuffle, prima di limit.
+    num_shards = cfg.get("num_shards")
+    if num_shards is not None:
+        shard = cfg.get("shard")
+        if shard is None:
+            raise ValueError("num_shards impostato ma shard mancante")
+        shard, num_shards = int(shard), int(num_shards)
+        if not (0 <= shard < num_shards):
+            raise ValueError(f"shard={shard} fuori range [0, {num_shards})")
+        before = len(samples)
+        samples = samples[shard::num_shards]
+        logger.info("shard %d/%d → %d/%d sample (slice strided)", shard, num_shards, len(samples), before)
     # `limit` (null = tutti) tronca i sample DOPO loader/shuffle e i filtri
     # dataset-specifici: serve a smoke test / probe per chiudere in tempi
     # brevi. Non produce metriche di accuracy significative.

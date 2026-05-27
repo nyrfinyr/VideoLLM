@@ -28,3 +28,13 @@ limit: null
 # sarebbero biased. Irrilevante a `limit=null` (accuracy invariata: ogni
 # sample è indipendente). Default false per i run di prod.
 shuffle: false
+
+# Sharding per job array SLURM (run pesanti: lvbench). `num_shards` = numero
+# totale di job; `shard` = indice di QUESTO job (0..num_shards-1). Slice
+# strided `samples[shard::num_shards]` → ogni shard mescola le fasce di durata
+# (lvbench ha video 1-2h molto variabili) bilanciando il walltime fra i job.
+# Deterministico (no shuffle in prod) → i shard sono disgiunti e coprono tutto
+# il dataset. I risultati si combinano per `wandb.group` a fine array.
+# Entrambi null = nessuno sharding (default, singolo job).
+shard: null
+num_shards: null

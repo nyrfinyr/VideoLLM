@@ -6,7 +6,7 @@
 #SBATCH --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%j.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%j.err
 
