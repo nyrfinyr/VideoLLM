@@ -194,6 +194,7 @@ class VideoMME(Dataset):
 
         nframes = cfg.nframes
         max_pixels = cfg.max_pixels
+        min_pixels = cfg.get("min_pixels")
         use_subtitles = bool(cfg.use_subtitles)
 
         if use_subtitles:
@@ -210,7 +211,7 @@ class VideoMME(Dataset):
                     f"{sub_text}\n\n"
                     + format_mcq_prompt(question, options)
                 )
-                media = Video(video_path, nframes=nframes, max_pixels=max_pixels)
+                media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
                 messages = vlm.build_messages(media, Text(prompt))
                 raw = vlm.generate(messages, generation_config=gen_cfg)
                 return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
@@ -218,7 +219,7 @@ class VideoMME(Dataset):
             @weave.op
             def predict(video_path: str, question: str, options: list[str]) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                media = Video(video_path, nframes=nframes, max_pixels=max_pixels)
+                media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
                 messages = vlm.build_messages(media, Text(prompt))
                 raw = vlm.generate(messages, generation_config=gen_cfg)
                 return {"raw": raw, "pred": parse_mcq_letter(raw, options)}

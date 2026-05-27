@@ -17,6 +17,12 @@ class Video:
     type: str = field(default="video", init=False)
     video: str | Path
     max_pixels: int = 360 * 420
+    # `min_pixels` opzionale. Per i VIDEO qwen-vl-utils impone un floor di
+    # 128 token/frame (≈100352 px): per scendere sotto (molti frame a bassa
+    # risoluzione, es. setup paper a 64 token/frame) va abbassato anche
+    # min_pixels, altrimenti smart_resize asserisce `max_pixels >= min_pixels`.
+    # None = lascia il default di qwen-vl-utils.
+    min_pixels: int | None = None
     # Campionamento temporale: `nframes` (numero fisso di frame) OPPURE
     # `fps` (frame al secondo). qwen-vl-utils li rifiuta se passati insieme
     # (vedi `__post_init__`). Con `nframes` il conteggio token — e quindi la

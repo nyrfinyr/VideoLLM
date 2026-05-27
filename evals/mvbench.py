@@ -145,6 +145,7 @@ class MVBench(Dataset):
 
         nframes = cfg.nframes
         max_pixels = cfg.max_pixels
+        min_pixels = cfg.get("min_pixels")
 
         @weave.op
         def predict(
@@ -163,6 +164,7 @@ class MVBench(Dataset):
                     video_path,
                     nframes=nframes,
                     max_pixels=max_pixels,
+                    min_pixels=min_pixels,
                     video_start=video_start,
                     video_end=video_end,
                 )

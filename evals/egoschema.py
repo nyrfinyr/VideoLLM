@@ -60,11 +60,12 @@ class EgoSchema(Dataset):
 
         nframes = cfg.nframes
         max_pixels = cfg.max_pixels
+        min_pixels = cfg.get("min_pixels")
 
         @weave.op
         def predict(video_path: str, question: str, options: list[str]) -> dict:
             prompt = format_mcq_prompt(question, options)
-            media = Video(video_path, nframes=nframes, max_pixels=max_pixels)
+            media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
             messages = vlm.build_messages(media, Text(prompt))
             raw = vlm.generate(messages, generation_config=gen_cfg)
             return {"raw": raw, "pred": parse_mcq_letter(raw, options)}

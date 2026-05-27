@@ -4,19 +4,19 @@
 # + dropped.jsonl per video selezionati ma non estratti dai chunk).
 name: lvbench
 root: /work/tesi_avalenza/datasets/lvbench
-# Numero fisso di frame per video (campionati uniformemente da
-# qwen-vl-utils su tutta la durata), al posto di un sample-rate fps. I
-# video sono long-form (1-2h tipici, max 2h20m): si replica il cap del
-# paper Qwen2.5-VL (≤768 frame, ≤24576 token video). 768 frame
-# massimizzano la copertura temporale; per starci nel budget token va
-# abbassata `max_pixels` (sotto) — frame e risoluzione pescano dallo
-# stesso budget.
+# Setup paper Qwen2.5-VL: ≤768 frame, ≤24576 token video. 768 frame
+# campionati uniformemente sull'intera durata (video long-form 1-2h).
 nframes: 768
-# Budget di pixel per frame post-resize (1 token ogni 28x28 px). A 768
-# frame: 50176 px ≈ 64 token/frame → (768/2)*64 = 24576 token, esatto cap
-# del paper (~13-16 GB VRAM su 24 GB; è il run più pesante — se va OOM,
-# scendi a nframes=512 o abbassa ancora max_pixels).
+# 64 token/frame → (768/2)*64 = 24576 token, esatto cap del paper
+# (1 token = 28x28 px → 64 token = 50176 px). Run più pesante: se va OOM,
+# scendi a nframes o abbassa max_pixels (aggiornando min_pixels sotto).
 max_pixels: 50176
+# qwen-vl-utils impone un floor di 128 token/frame (100352 px) sui video:
+# senza abbassare min_pixels, max_pixels=50176 < floor → smart_resize
+# asserisce (`max_pixels >= min_pixels`). min_pixels basso (4 token) sblocca
+# i 64 token/frame; tanto è max_pixels a vincolare la risoluzione (i frame
+# reali sono sempre più grandi). Cfr. docs/probe_throughput.md.
+min_pixels: 3136
 # Se true, trimma il video a `[video_start, video_end]` letti da
 # `time_reference` (GT del segmento rilevante). Default false: è la
 # metodologia *ufficiale* di LVBench — il modello deve trovare il
