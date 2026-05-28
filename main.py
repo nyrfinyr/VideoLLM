@@ -88,6 +88,23 @@ def run(cfg: DictConfig) -> None:
     summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.dataset)))
     logger.info("Eval summary: %s", summary)
 
+    # Flush in wandb.summary i numeri chiave dell'eval. Senza questo le
+    # metriche vivono solo nel sub-tab Weave del run → invisibili nella run
+    # table di wandb e nei summary di gruppo. `mcq_accuracy` può essere
+    # None se TUTTI i sample sono falliti (es. OOM su ogni esempio) — in
+    # quel caso loggo solo n_samples per documentare il fallimento.
+    import wandb
+    if wandb.run is not None:
+        mcq = (summary or {}).get("mcq_accuracy") or {}
+        correct = mcq.get("correct") or {}
+        wandb.run.summary["n_samples"] = len(samples)
+        if "true_fraction" in correct:
+            wandb.run.summary["mcq_accuracy"] = correct["true_fraction"]
+            wandb.run.summary["n_correct"] = correct.get("true_count")
+        latency = (summary or {}).get("model_latency") or {}
+        if "mean" in latency:
+            wandb.run.summary["model_latency_mean"] = latency["mean"]
+
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
