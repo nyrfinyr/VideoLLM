@@ -37,5 +37,4 @@ uv run python main.py \
     num_shards=3 \
     wandb.tags=[eval,lvbench,sbatch,rerun] \
     wandb.group=${MODEL}-lvbench \
-    wandb.name=${MODEL}-lvbench-${SLURM_JOB_ID}_2-rerun \
-    wandb.notes="rerun shard 2/3 on $(hostname) — original OOMed on 24G GPU"
+    wandb.name=${MODEL}-lvbench-${SLURM_JOB_ID}_2-rerun
