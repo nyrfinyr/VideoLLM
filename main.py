@@ -9,7 +9,8 @@ import weave
 from omegaconf import DictConfig, OmegaConf
 
 from evals import Dataset, mcq_accuracy
-from utils.obs import init_observability
+from utils.obs import init_observability, log_eval_summary
+from utils.samples import prepare_samples
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,14 @@ def run(cfg: DictConfig) -> None:
     os.environ.setdefault("WEAVE_PARALLELISM", "1")
 
     from transformers import GenerationConfig
-    from models import Qwen25VL3B, Qwen3VL2B, Qwen3VL4B
+    from models import Qwen25VL3B, Qwen3VL2B, Qwen3VL4B, Qwen25VLAttention
     from models.base import BaseVLM
 
     _MODELS: dict[str, type[BaseVLM]] = {
         "qwen25_vl_3b": Qwen25VL3B,
         "qwen3_vl_2b": Qwen3VL2B,
         "qwen3_vl_4b": Qwen3VL4B,
+        "qwen25_vl_3b_attn": Qwen25VLAttention,
     }
 
     init_observability(cfg)
@@ -48,35 +50,7 @@ def run(cfg: DictConfig) -> None:
     gen_cfg: GenerationConfig = GenerationConfig(**cast(dict, OmegaConf.to_container(cfg.generation, resolve=True)))
 
     dataset: Dataset = Dataset.get(cfg.dataset.name)
-    samples: list[dict] = dataset.loader(cfg.dataset)
-    # `shuffle` (RNG seedato) prima di `limit`: un subset `limit=N` casuale è
-    # rappresentativo dell'intero dataset (i loader emettono in ordine, es.
-    # mvbench per task / lvbench per video → i primi N sarebbero biased).
-    if cfg.get("shuffle"):
-        import random
-        random.Random(cfg.seed).shuffle(samples)
-        logger.info("shuffle=true (seed=%d) → ordine sample randomizzato prima di limit", cfg.seed)
-    # `shard`/`num_shards`: sharding deterministico per job array SLURM. Slice
-    # strided → ogni shard mescola le fasce di durata, bilanciando il walltime
-    # fra i job. Applicato dopo shuffle, prima di limit.
-    num_shards = cfg.get("num_shards")
-    if num_shards is not None:
-        shard = cfg.get("shard")
-        if shard is None:
-            raise ValueError("num_shards impostato ma shard mancante")
-        shard, num_shards = int(shard), int(num_shards)
-        if not (0 <= shard < num_shards):
-            raise ValueError(f"shard={shard} fuori range [0, {num_shards})")
-        before = len(samples)
-        samples = samples[shard::num_shards]
-        logger.info("shard %d/%d → %d/%d sample (slice strided)", shard, num_shards, len(samples), before)
-    # `limit` (null = tutti) tronca i sample DOPO loader/shuffle e i filtri
-    # dataset-specifici: serve a smoke test / probe per chiudere in tempi
-    # brevi. Non produce metriche di accuracy significative.
-    limit = cfg.get("limit")
-    if limit is not None:
-        samples = samples[: int(limit)]
-        logger.warning("limit=%s attivo → eval su %d sample (SUBSET, metriche di accuracy non significative)", limit, len(samples))
+    samples: list[dict] = prepare_samples(dataset.loader(cfg.dataset), cfg)
     logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
 
     weave_dataset = weave.Dataset(name=dataset.name, rows=weave.Table(samples))
@@ -87,23 +61,7 @@ def run(cfg: DictConfig) -> None:
     )
     summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.dataset)))
     logger.info("Eval summary: %s", summary)
-
-    # Flush in wandb.summary i numeri chiave dell'eval. Senza questo le
-    # metriche vivono solo nel sub-tab Weave del run → invisibili nella run
-    # table di wandb e nei summary di gruppo. `mcq_accuracy` può essere
-    # None se TUTTI i sample sono falliti (es. OOM su ogni esempio) — in
-    # quel caso loggo solo n_samples per documentare il fallimento.
-    import wandb
-    if wandb.run is not None:
-        mcq = (summary or {}).get("mcq_accuracy") or {}
-        correct = mcq.get("correct") or {}
-        wandb.run.summary["n_samples"] = len(samples)
-        if "true_fraction" in correct:
-            wandb.run.summary["mcq_accuracy"] = correct["true_fraction"]
-            wandb.run.summary["n_correct"] = correct.get("true_count")
-        latency = (summary or {}).get("model_latency") or {}
-        if "mean" in latency:
-            wandb.run.summary["model_latency_mean"] = latency["mean"]
+    log_eval_summary(summary, len(samples))
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")

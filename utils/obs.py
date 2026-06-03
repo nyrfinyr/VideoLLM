@@ -61,3 +61,27 @@ def init_observability(cfg: DictConfig, *, with_weave: bool = True) -> None:
     if with_weave:
         import weave
         weave.init(f"{wcfg.entity}/{wcfg.project}")
+
+
+def log_eval_summary(summary: dict | None, n_samples: int) -> None:
+    """Flush in wandb.summary i numeri chiave dell'eval.
+
+    Senza questo le metriche vivono solo nel sub-tab Weave del run →
+    invisibili nella run table di wandb e nei summary di gruppo.
+    `mcq_accuracy` può essere None se TUTTI i sample sono falliti (es. OOM
+    su ogni esempio) — in quel caso logga solo n_samples per documentare
+    il fallimento. No-op se wandb non è attivo (mode=disabled).
+    """
+    import wandb
+
+    if wandb.run is None:
+        return
+    mcq = (summary or {}).get("mcq_accuracy") or {}
+    correct = mcq.get("correct") or {}
+    wandb.run.summary["n_samples"] = n_samples
+    if "true_fraction" in correct:
+        wandb.run.summary["mcq_accuracy"] = correct["true_fraction"]
+        wandb.run.summary["n_correct"] = correct.get("true_count")
+    latency = (summary or {}).get("model_latency") or {}
+    if "mean" in latency:
+        wandb.run.summary["model_latency_mean"] = latency["mean"]
