@@ -29,6 +29,22 @@ limit: null
 # sample è indipendente). Default false per i run di prod.
 shuffle: false
 
+# DEBUG attenzione entity→token visivi (solo con model=qwen2_5_vl_3b_attn).
+# Se valorizzato con una stringa, main.run DEVIA dal flusso eval: prende il
+# PRIMO sample (samples[0], dopo shuffle/shard/limit) e lancia
+# `entity_visual_attention` su quell'unico video, loggando shape della
+# heatmap e top-k celle visive — niente eval Weave, niente wandb/weave.
+# La stringa deve comparire nel prompt MCQ del sample, altrimenti solleva.
+# Es.: python main.py model=qwen2_5_vl_3b_attn debug_entity='knife' \
+#         debug_video_idx='03657401-d4a4-40d0-9b03-d7e093ef93d1'
+# null = flusso normale di eval.
+debug_entity: null
+
+# Quale video usare nel debug sopra: il `video_idx` esatto da metadata.jsonl.
+# null = primo sample (samples[0] dopo shuffle/shard/limit). Con un video_idx
+# preciso lascia limit=null, altrimenti il sample potrebbe essere tagliato.
+debug_video_idx: null
+
 # Sharding per job array SLURM (run pesanti: lvbench). `num_shards` = numero
 # totale di job; `shard` = indice di QUESTO job (0..num_shards-1). Slice
 # strided `samples[shard::num_shards]` → ogni shard mescola le fasce di durata
