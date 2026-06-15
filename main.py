@@ -41,12 +41,7 @@ def run(cfg: DictConfig) -> None:
         "qwen25_vl_3b_attn": Qwen25VLAttention,
     }
 
-    # Ramo di debug: estrazione attenzione entity→token visivi su UN sample
-    # (niente eval Weave, niente wandb/weave). Vedi utils/debug_attn.py.
-    debug_entity: str | None = cfg.get("debug_entity")
-
-    if not debug_entity:
-        init_observability(cfg)
+    init_observability(cfg)
 
     model_cfg: dict = cast(dict, OmegaConf.to_container(cfg.model, resolve=True))
     vlm_cls = _MODELS[model_cfg.pop("name")]
@@ -57,13 +52,6 @@ def run(cfg: DictConfig) -> None:
     dataset: Dataset = Dataset.get(cfg.dataset.name)
     samples: list[dict] = prepare_samples(dataset.loader(cfg.dataset), cfg)
     logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
-
-    if debug_entity:
-        from utils.debug_attn import run_entity_attention_debug, select_debug_sample
-
-        sample = select_debug_sample(samples, cfg.get("debug_video_idx"))
-        run_entity_attention_debug(vlm, sample, cfg.dataset, debug_entity)
-        return
 
     weave_dataset = weave.Dataset(name=dataset.name, rows=weave.Table(samples))
     evaluation = weave.Evaluation(

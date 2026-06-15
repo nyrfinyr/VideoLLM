@@ -45,6 +45,14 @@ class Video:
 class VideoFrames:
     type: str = field(default="video", init=False)
     video: list[str]
+    # Budget visivo per frame, come su `Video`. Con una lista di frame
+    # qwen-vl-utils NON ricampiona (li usa as-is, padding a conteggio pari):
+    # `fetch_video` inoltra questi `max_pixels`/`min_pixels` a `fetch_image`
+    # per ogni frame e li riusa a livello video. Servono per riprodurre lo
+    # stesso grid_thw di un `Video` equivalente (es. modalità frame-doubling
+    # del debug attenzione). None = default di qwen-vl-utils.
+    max_pixels: int | None = None
+    min_pixels: int | None = None
 
 MediaItem = Image | Video | VideoFrames
 

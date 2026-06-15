@@ -1,0 +1,8 @@
+QUESTION:
+Based on the video, what color is the duck?
+Options:
+(A) Yellow
+(B) White
+(C) Brown
+(D) Black
+Answer with the letter of the correct option only.

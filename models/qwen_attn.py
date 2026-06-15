@@ -150,7 +150,7 @@ class Qwen25VLAttention(Qwen25VL3B):
                 f"token visivi ({visual_scores.numel()}) != t*gh*gw "
                 f"({t}*{grid_h}*{grid_w}) — layout grid_thw inatteso"
             )
-        heatmap = visual_scores.reshape(t, grid_h, grid_w).cpu()
+        heatmap = visual_scores.reshape(t, grid_h, grid_w).cpu() #verificare che la reshape sia corretta
 
         return {
             "heatmap": heatmap,
