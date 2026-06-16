@@ -1,0 +1,73 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "debug_attention: video locale (paperella/duck)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/debug_attention.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${env:HF_HOME}"
+      },
+      "args": [
+        "--video", "videos/paperella.mp4",
+        "--entity", "duck",
+        "--double-frames",
+        "--dtype", "bfloat16",
+        "--device-map", "gpu",
+        "--nframes", "32"
+      ]
+    },
+    {
+      "name": "debug_attention: dataset (egoschema/knife)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/debug_attention.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${env:HF_HOME}"
+      },
+      "args": [
+        "--dataset", "egoschema",
+        "--entity", "knife",
+        "--video-idx", "03657401-d4a4-40d0-9b03-d7e093ef93d1",
+        "--dtype", "bfloat16",
+        "--device-map", "auto"
+      ]
+    },
+    {
+      "name": "make_report: da JSON (debug_duck)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/utils/make_report.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "debug_out/debug_duck.json"
+      ]
+    },
+    {
+      "name": "make_report: da output testuale (fallback)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/utils/make_report.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--output", "debug_out/run.log",
+        "--frames", "debug_out/attended_frames"
+      ]
+    }
+  ]
+}
