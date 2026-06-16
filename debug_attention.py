@@ -113,10 +113,7 @@ def main() -> None:
     if hf_home:
         os.environ["HF_HOME"] = hf_home
 
-    # Import pesanti DOPO aver fissato HF_HOME (huggingface_hub legge le
-    # costanti di cache all'import).
     import torch
-
     from models import Qwen25VLAttention
     from utils.attn_probe import run_entity_attention_debug
 
