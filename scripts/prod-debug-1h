@@ -1,0 +1,1 @@
+srun --account=tesi_avalenza --partition=all_usr_prod --gres=gpu:1 --mem=16G -t 01:00:00 --pty bash

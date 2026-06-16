@@ -52,7 +52,7 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "args": [
-        "debug_out/debug_duck.json"
+        "outputs/duck/debug_duck.json"
       ]
     },
     {
