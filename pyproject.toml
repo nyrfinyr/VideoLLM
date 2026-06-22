@@ -15,11 +15,13 @@ dependencies = [
     "torchvision>=0.22.1",
     "datasets>=3.0.0",
     "yt-dlp>=2024.10.0",
+    "flask>=3.0",
 ]
 
 [project.scripts]
 main = "main:main"
-debug_attention = "debug_attention:main"
+debug_attention = "attn_explorer.capture:main"
+serve_attention = "attn_explorer.serve:main"
 prefetch_egoschema = "fetch.prefetch_egoschema:main"
 prefetch_mvbench = "fetch.prefetch_mvbench:main"
 prefetch_lvbench = "fetch.prefetch_lvbench:main"

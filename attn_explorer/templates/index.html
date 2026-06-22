@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attention store · {{ videos|length }} video</title>
+<style>{{ css }}</style></head>
+<body>
+  <h1>Attention explorer</h1>
+  <div class="meta">store <code>{{ store }}</code> · {{ videos|length }} video catturati</div>
+
+  {% if videos %}
+  <div class="videolist">
+    {% for v in videos %}
+    <a href="{{ url_for('video_page', stem=v.stem) }}">
+      <div class="vname">{{ v.video_name }}</div>
+      <div class="vprompt">{{ v.prompt }}</div>
+      <div class="vmeta">{{ v.cells }} celle · {{ v.n_tokens }} token domanda ·
+        {{ "%.1f"|format(v.fps) }} fps · {{ v.regime }}</div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Nessun video nello store. Lancia prima
+    <code>python -m attn_explorer.capture --video-dir &lt;dir&gt; --outdir {{ store }}</code>.</p>
+  {% endif %}
+</body></html>

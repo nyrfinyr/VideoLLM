@@ -4,18 +4,28 @@ from transformers import AttentionInterface
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv
 
+from utils.attn_core import EntityAttention, QueryToken, VisualAttention
+
 from .media import MediaItem, Text
 from .qwen import Qwen25VL3B
 
 
-ENTITY_SPAN: tuple[int, int] | None = None
+# Span catturati dal prossimo forward (impostati da `full_visual_attention`):
+#   QUERY_SPAN = [q_lo, q_hi)  righe-query da conservare (= testo della domanda)
+#   VIS_SPAN   = [v_lo, v_hi)  colonne-key visive da conservare
+# Restringere le righe al solo testo è ciò che rende la cattura economica:
+# evita di materializzare la matrice [S, S] piena (S~16k coi token visivi).
+QUERY_SPAN: tuple[int, int] | None = None
+VIS_SPAN: tuple[int, int] | None = None
 
 
-def set_entity_span(span: tuple[int, int] | None) -> None:
-    """Imposta lo span [start, end) dei token dell'entity per il prossimo forward.
-    """
-    global ENTITY_SPAN
-    ENTITY_SPAN = span
+def set_capture_spans(
+    query_span: tuple[int, int] | None,
+    vis_span: tuple[int, int] | None = None,
+) -> None:
+    """Imposta gli span (righe-query, colonne-visive) per il prossimo forward."""
+    global QUERY_SPAN, VIS_SPAN
+    QUERY_SPAN, VIS_SPAN = query_span, vis_span
 
 
 def qwen25_attn_capture(
@@ -29,6 +39,13 @@ def qwen25_attn_capture(
     is_causal: bool | None = None,
     **kwargs,
 ):
+    """Attention interface che, oltre all'output SDPA, stasha i pesi softmax.
+
+    Cattura `softmax(q·kᵀ)` per le SOLE righe-query in `QUERY_SPAN`, ne tiene le
+    SOLE colonne visive in `VIS_SPAN`, fa la media sulle teste e stasha
+    `[n_q, n_vis]` (cpu) in `module._last_attn`. Entity-agnostico: conserva una
+    riga per OGNI token della domanda, non per una singola entity.
+    """
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
@@ -43,16 +60,19 @@ def qwen25_attn_capture(
     )
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    start, end = ENTITY_SPAN if ENTITY_SPAN is not None else (None, None)
-    query_entity = query[:, :, start:end, :]
-    attn_weights = torch.matmul(query_entity, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        attn_weights = attn_weights + attention_mask[:, :, start:end, : key_states.shape[-2]]
-    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    if QUERY_SPAN is not None and VIS_SPAN is not None:
+        q_lo, q_hi = QUERY_SPAN
+        v_lo, v_hi = VIS_SPAN
+        query_rows = query[:, :, q_lo:q_hi, :]
+        attn_weights = torch.matmul(query_rows, key_states.transpose(2, 3)) * scaling
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask[:, :, q_lo:q_hi, : key_states.shape[-2]]
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
+        # slice colonne visive + media sulle teste → [n_q, n_vis] (batch=1).
+        vis = attn_weights[:, :, :, v_lo:v_hi].mean(dim=1)
+        module._last_attn = vis[0].detach().cpu()
 
-    module._last_attn = attn_weights.detach()
-
-    return attn_output, attn_weights
+    return attn_output, None
 
 
 AttentionInterface.register("qwen25_attn_capture", qwen25_attn_capture)
@@ -64,10 +84,12 @@ class Qwen25VLAttention(Qwen25VL3B):
 
     L'interface `qwen25_attn_capture` (registrata sopra, attivata via
     `attn_implementation.text_config` nello yaml — scoped al solo decoder
-    testuale) calcola softmax(q·kᵀ) per le sole query dell'entity e stasha i
-    pesi per layer in `self_attn._last_attn`. `entity_visual_attention`
-    orchestra il giro completo: span dell'entity → forward di prefill →
-    raccolta dei pesi → mappa 2D sui token visivi via grid_thw.
+    testuale) calcola `softmax(q·kᵀ)` per le righe-query del testo della domanda
+    e stasha i pesi sui token visivi per layer in `self_attn._last_attn`.
+    `full_visual_attention` orchestra il giro completo: span domanda/visivo →
+    forward di prefill → media sui layer centrali → mappa 2D per ogni token
+    della domanda. `entity_visual_attention` è un wrapper che seleziona le righe
+    di una specifica entity e le media.
     """
 
     def _find_entity_span(self, input_ids: torch.Tensor, entity: str) -> tuple[int, int]:
@@ -87,57 +109,56 @@ class Qwen25VLAttention(Qwen25VL3B):
                     return i, i + n
         raise ValueError(f"entity {entity!r} non trovata nei token del prompt")
 
-    def entity_visual_attention(
+    def full_visual_attention(
         self,
         media: MediaItem,
         text: Text,
-        entity: str,
         layer_range: tuple[int, int] | None = None,
-    ) -> dict:
-        """Attenzione dei token dell'entity verso i token visivi.
+    ) -> VisualAttention:
+        """Attenzione di OGNI token della domanda verso i token visivi.
 
         Esegue un singolo forward di prefill (niente generate: l'attenzione
-        entity→immagine esiste già lì) e aggrega i pesi catturati per layer.
+        testo→immagine esiste già lì), media i pesi catturati sui layer
+        centrali e le teste, e li dispone su griglia per ogni token-query.
 
         Args:
             media: l'immagine/video della domanda.
-            text: il testo della domanda (deve contenere `entity`).
-            entity: la stringa dell'entity di cui analizzare le query.
-            layer_range: [lo, hi) dei layer da aggregare; default la metà
+            text: il testo della domanda.
+            layer_range: [lo, hi) dei layer da mediare; default la metà
                 centrale (la più semantica).
 
         Returns:
-            dict con:
-            - heatmap: [t, grid_h, grid_w] float32 cpu, score per cella visiva;
-            - visual_scores: [n_vis] gli stessi score, flat;
-            - seq_scores: [S] score aggregati su tutta la sequenza;
-            - entity_span / visual_span: gli span [start, end) nei token.
+            `VisualAttention`: `attn` `[n_q, t, grid_h, grid_w]` (una heatmap per
+            token della domanda), la geometria `(t, grid_h, grid_w)`, i
+            `query_tokens` selezionabili a runtime, gli span e gli `input_ids`.
         """
         inputs = self._prepare_inputs(self.build_messages(media, text))
         input_ids = inputs.input_ids[0]
-
-        span = self._find_entity_span(input_ids, entity)
-        set_entity_span(span)
-        try:
-            with torch.no_grad():
-                self.model(**inputs, logits_to_keep=1)
-        finally:
-            set_entity_span(None)
-
-        layers = self.model.model.language_model.layers
-        # [L, H, n_ent, S]: un blocco di pesi per layer (batch=1 rimosso).
-        attn: torch.Tensor = torch.stack([layer.self_attn._last_attn[0] for layer in layers])
-
-        if layer_range is None:
-            layer_range = (attn.shape[0] // 4, 3 * attn.shape[0] // 4)
-        lo, hi = layer_range
-        # media su layer scelti, teste e token dell'entity → [S]
-        seq_scores = attn[lo:hi].float().mean(dim=(0, 1, 2))
+        seq_len = input_ids.shape[0]
 
         cfg = self.model.config
         vis_start = (input_ids == cfg.vision_start_token_id).nonzero(as_tuple=True)[0][0].item()
         vis_end = (input_ids == cfg.vision_end_token_id).nonzero(as_tuple=True)[0][0].item()
-        visual_scores = seq_scores[vis_start + 1 : vis_end]
+
+        # Righe-query = testo DOPO il video (la domanda); colonne = token visivi.
+        query_span = (vis_end + 1, seq_len)
+        visual_span = (vis_start + 1, vis_end)
+
+        set_capture_spans(query_span, visual_span)
+        try:
+            with torch.no_grad():
+                self.model(**inputs, logits_to_keep=1)
+        finally:
+            set_capture_spans(None, None)
+
+        layers = self.model.model.language_model.layers
+        # [L, n_q, n_vis]: pesi (già mediati sulle teste) per layer.
+        attn = torch.stack([layer.self_attn._last_attn for layer in layers])
+
+        if layer_range is None:
+            layer_range = (attn.shape[0] // 4, 3 * attn.shape[0] // 4)
+        lo, hi = layer_range
+        attn = attn[lo:hi].mean(dim=0)  # [n_q, n_vis]
 
         # mappa 1D → griglia 2D: grid_thw è in patch PRE-merger, la griglia
         # dei token è divisa per spatial_merge_size (2) su h e w.
@@ -145,17 +166,66 @@ class Qwen25VLAttention(Qwen25VL3B):
         t, h, w = grid_thw[0].tolist()
         merge = cfg.vision_config.spatial_merge_size
         grid_h, grid_w = h // merge, w // merge
-        if visual_scores.numel() != t * grid_h * grid_w:
+        n_vis = t * grid_h * grid_w
+        if attn.shape[1] != n_vis:
             raise ValueError(
-                f"token visivi ({visual_scores.numel()}) != t*gh*gw "
+                f"token visivi ({attn.shape[1]}) != t*gh*gw "
                 f"({t}*{grid_h}*{grid_w}) — layout grid_thw inatteso"
             )
-        heatmap = visual_scores.reshape(t, grid_h, grid_w).cpu() #verificare che la reshape sia corretta
+        heatmaps = attn.reshape(attn.shape[0], t, grid_h, grid_w).cpu()
 
-        return {
-            "heatmap": heatmap,
-            "visual_scores": visual_scores.cpu(),
-            "seq_scores": seq_scores.cpu(),
-            "entity_span": span,
-            "visual_span": (vis_start + 1, vis_end),
-        }
+        # Token della domanda → metadati selezionabili a runtime.
+        tok = self.processor.tokenizer
+        q_lo, q_hi = query_span
+        q_ids = input_ids[q_lo:q_hi].tolist()
+        raw_tokens = tok.convert_ids_to_tokens(q_ids)
+        query_tokens = tuple(
+            QueryToken(row=row, index=q_lo + row, token=raw, text=tok.decode([tid]))
+            for row, (raw, tid) in enumerate(zip(raw_tokens, q_ids))
+        )
+
+        return VisualAttention(
+            attn=heatmaps,
+            t=t,
+            grid_h=grid_h,
+            grid_w=grid_w,
+            query_tokens=query_tokens,
+            query_span=query_span,
+            visual_span=visual_span,
+            input_ids=input_ids.cpu(),
+        )
+
+    def entity_visual_attention(
+        self,
+        media: MediaItem,
+        text: Text,
+        entity: str,
+        layer_range: tuple[int, int] | None = None,
+    ) -> EntityAttention:
+        """Attenzione delle SOLE query di `entity` verso i token visivi.
+
+        Wrapper sottile su `full_visual_attention`: localizza i token
+        dell'entity nel testo della domanda e media le loro righe.
+
+        Returns:
+            `EntityAttention` con `heatmap` `[t, grid_h, grid_w]`, le `rows`
+            mediate, gli span e i `query_tokens` di passaggio.
+        """
+        out = self.full_visual_attention(media, text, layer_range)
+        q_lo, q_hi = out.query_span
+        span = self._find_entity_span(out.input_ids, entity)
+        rows = tuple(i - q_lo for i in range(*span) if q_lo <= i < q_hi)
+        if not rows:
+            raise ValueError(
+                f"entity {entity!r} non è nel testo della domanda (dopo il video)"
+            )
+        return EntityAttention(
+            heatmap=out.attn[list(rows)].mean(dim=0),
+            rows=rows,
+            entity_span=span,
+            visual_span=out.visual_span,
+            t=out.t,
+            grid_h=out.grid_h,
+            grid_w=out.grid_w,
+            query_tokens=out.query_tokens,
+        )
