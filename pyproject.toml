@@ -16,6 +16,7 @@ dependencies = [
     "datasets>=3.0.0",
     "yt-dlp>=2024.10.0",
     "flask>=3.0",
+    "nvidia-cudnn-cu11==9.1.0.70",
 ]
 
 [project.scripts]

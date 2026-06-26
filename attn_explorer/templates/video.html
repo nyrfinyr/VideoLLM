@@ -11,7 +11,26 @@
     modello <code>Qwen25VLAttention</code>
   </div>
 
-  <div class="promptbox"><b>Prompt:</b> {{ prompt }}</div>
+  <div class="promptbox">
+    <b>Domanda:</b> {{ prompt }}
+    {% if answer %}
+    <div style="margin-top:0.8em;padding:8px 12px;background:#1a3a1a;border-left:4px solid #4caf50;border-radius:4px">
+      ✅ Risposta corretta: <b style="color:#4caf50;font-size:1.1em">{{ answer }}</b>
+      {% if options %}
+      <div style="margin-top:4px;font-size:0.9em;color:#aaa">
+        {% for opt in options %}
+        <span style="margin-right:12px;{{ 'color:#4caf50;font-weight:bold' if opt.startswith(answer + '.') else '' }}">{{ opt }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <details style="margin:1em 0">
+    <summary style="cursor:pointer;font-size:1.1em;font-weight:bold">🎬 Guarda il video completo</summary>
+    <video controls style="width:100%;max-width:720px;display:block;margin:1em auto" src="{{ url_for('serve_video', stem=stem) }}"></video>
+  </details>
 
   <p class="meta">Seleziona uno o più token (entity): i frame vengono riordinati
     per massa di attenzione e gli overlay rigenerati.</p>

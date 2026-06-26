@@ -84,6 +84,9 @@ def create_app(store: Path) -> Flask:
             {"row": q.row, "text": q.text, "token": q.token}
             for q in cap.query_tokens
         ]
+        # Look up answer/options from index
+        videos = {v["stem"]: v for v in load_index()}
+        meta = videos.get(stem, {})
         return render_template(
             "video.html",
             stem=stem,
@@ -93,6 +96,21 @@ def create_app(store: Path) -> Flask:
             cells=cap.grid.t,
             regime=cap.grid.regime,
             tokens=tokens,
+            answer=meta.get("answer"),
+            options=meta.get("options", []),
+        )
+
+    # ── Video originale ──
+    @app.get("/video/<stem>")
+    def serve_video(stem: str):
+        cap = get_capture(stem)
+        video_path = Path(cap.video_path)
+        if not video_path.is_file():
+            abort(404, f"video non trovato: {video_path}")
+        return Response(
+            video_path.read_bytes(),
+            mimetype="video/mp4",
+            headers={"Accept-Ranges": "bytes", "Content-Disposition": f"inline; filename={video_path.name}"},
         )
 
     # ── API ──
