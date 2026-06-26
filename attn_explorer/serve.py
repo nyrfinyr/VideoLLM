@@ -11,6 +11,7 @@ Route:
   GET /                              elenco dei video dello store
   GET /v/<stem>                      pagina interattiva del video (chip token + grid)
   GET /api/<stem>/rank?tokens=0,3    JSON: celle ordinate per massa delle entity scelte
+  GET /api/<stem>/sink                JSON: sink_map + maschera sink (percentile + bordo)
   GET /api/<stem>/frame?cell=ti      PNG del frame rappresentante della cella
   GET /api/<stem>/overlay?cell=ti&tokens=0,3   PNG overlay rigenerato per la selezione
 
@@ -18,6 +19,12 @@ Selezionando token diversi nella pagina, i frame vengono RIORDINATI per massa di
 attenzione (via `AttentionCapture.aggregate` + `rank_cells`) e gli overlay sono
 rigenerati per quella selezione. Senza token selezionati si usa la media di
 tutti i token della domanda (ordinamento di default).
+
+Filtro sink (opzionale, da dump prodotto con `sink_map`): gli endpoint `rank` e
+`overlay` accettano `filter_sink=true&sink_percentile=25&sink_border=2` per
+azzerare i token visivi-sink prima del ranking/overlay (metodo "sink-dims" di
+`lot/retrieval.py`). Default `filter_sink=false` (mostra l'attenzione grezza).
+Senza `sink_map` nel dump (capture legacy) il filtro è no-op.
 """
 import argparse
 import io
@@ -26,10 +33,22 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+import torch
 from flask import Flask, Response, abort, jsonify, render_template, request
 from PIL import Image
 
-from utils.attn_core import AttentionCapture, load_capture, make_overlay, rank_cells
+from utils.attn_core import (
+    AttentionCapture,
+    filter_sinks,
+    load_capture,
+    make_overlay,
+    rank_cells,
+    sink_mask,
+)
+
+# Default del filtro sink (allineati a `lot/retrieval.py`).
+DEFAULT_SINK_PERCENTILE = 25.0
+DEFAULT_SINK_BORDER = 2
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -39,6 +58,28 @@ def parse_tokens(raw: str | None) -> list[int]:
     if not raw:
         return []
     return [int(x) for x in raw.split(",") if x.strip().isdigit()]
+
+
+def _bool_arg(name: str, default: bool) -> bool:
+    """Parse `?flag=true|false` (default se assente)."""
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sink_params() -> tuple[bool, float, int]:
+    """Legga `(filter_sink, percentile, border)` dalla query string.
+
+    `filter_sink` default `false` (attenzione grezza). Senza `sink_map` nel
+    dump il filtro sarà no-op anche se richiesto.
+    """
+    filter_sink = _bool_arg("filter_sink", default=False)
+    percentile = float(request.args.get("sink_percentile", DEFAULT_SINK_PERCENTILE))
+    border = int(request.args.get("sink_border", DEFAULT_SINK_BORDER))
+    percentile = max(0.0, min(100.0, percentile))
+    border = max(0, border)
+    return filter_sink, percentile, border
 
 
 def create_app(store: Path) -> Flask:
@@ -120,13 +161,71 @@ def create_app(store: Path) -> Flask:
         rows = parse_tokens(request.args.get("tokens"))
         heatmap = cap.aggregate(rows)
         metric = request.args.get("metric", "sum")
+
+        # Filtro sink opzionale: se richiesto e il dump ha un sink_map
+        # non-zero, si azzerano i token-sink e si renormalizza prima del
+        # ranking. Ritorniamo anche la mask così la UI può mostrarla.
+        filter_sink, percentile, border = _sink_params()
+        sink_applied = False
+        n_sink = 0
+        if filter_sink and cap.sink_map.abs().sum().item() > 0:
+            heatmap, mask = filter_sinks(
+                heatmap, cap.sink_map,
+                percentile=percentile, border=border,
+            )
+            sink_applied = True
+            n_sink = int(mask.sum().item())
+
         ranked = rank_cells(heatmap, cap.grid, cap.frame_indices, cap.fps,
                             metric=metric, topk=int(request.args.get("topk", 8)))
-        return jsonify({
+        result: dict = {
             "stem": stem,
             "selected": rows,
             "total_mass": float(heatmap.sum()),
             "cells": [c.as_dict() for c in ranked],
+        }
+        if filter_sink:
+            result["sink"] = {
+                "applied": sink_applied,
+                "percentile": percentile,
+                "border": border,
+                "n_sink": n_sink,
+                "has_sink_map": bool(cap.sink_map.abs().sum().item() > 0),
+            }
+        return jsonify(result)
+
+    @app.get("/api/<stem>/sink")
+    def api_sink(stem: str):
+        """JSON: sink_map + maschera sink calcolata a runtime.
+
+        Query params: `sink_percentile` (default 25), `sink_border` (default 2).
+        Utile per ispezionare/distinguere sink vs non-sink indipendentemente
+        dalla selezione di token-query. `has_sink_map=false` se il dump è
+        legacy (senza `sink_map`).
+        """
+        cap = get_capture(stem)
+        percentile = float(request.args.get("sink_percentile", DEFAULT_SINK_PERCENTILE))
+        border = int(request.args.get("sink_border", DEFAULT_SINK_BORDER))
+        percentile = max(0.0, min(100.0, percentile))
+        border = max(0, border)
+
+        has_sink = cap.sink_map.abs().sum().item() > 0 and len(cap.sink_dims) > 0
+        if has_sink:
+            mask = sink_mask(cap.sink_map, percentile=percentile, border=border)
+        else:
+            mask = torch.zeros_like(cap.sink_map, dtype=torch.bool)
+
+        return jsonify({
+            "stem": stem,
+            "has_sink_map": has_sink,
+            "sink_dims": list(cap.sink_dims),
+            "percentile": percentile,
+            "border": border,
+            "grid": {"t": cap.grid.t, "grid_h": cap.grid.grid_h, "grid_w": cap.grid.grid_w},
+            "sink_map": cap.sink_map.tolist(),
+            "is_sink": mask.tolist(),
+            "n_sink": int(mask.sum().item()),
+            "n_total": int(mask.numel()),
         })
 
     @app.get("/api/<stem>/frame")
@@ -143,19 +242,28 @@ def create_app(store: Path) -> Flask:
         ti = int(request.args["cell"])
         rows = parse_tokens(request.args.get("tokens"))
         heatmap = cap.aggregate(rows)
+
+        # Filtro sink: se richiesto e `sink_map` è presente, si azzerano i
+        # token-sink della heatmap aggregata e si renormalizza. L'overlay
+        # usa poi min/max globali della heatmap FILTRATA per celle
+        # confrontabili.
+        filter_sink, percentile, border = _sink_params()
+        if filter_sink and cap.sink_map.abs().sum().item() > 0:
+            heatmap, _mask = filter_sinks(
+                heatmap, cap.sink_map,
+                percentile=percentile, border=border,
+            )
+
         frame_path = store / stem / "frames" / f"cell_{ti:04d}.png"
         if not frame_path.is_file():
             abort(404)
         frame = np.asarray(Image.open(frame_path).convert("RGB"))
-        # Scala globale (min/max su tutta la heatmap aggregata) → overlay
-        # confrontabili fra celle.
         img = make_overlay(frame, heatmap[ti], vmin=float(heatmap.min()), vmax=float(heatmap.max()))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), mimetype="image/png")
 
     return app
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

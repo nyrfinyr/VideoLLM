@@ -10,6 +10,22 @@ from .media import MediaItem, Text
 from .qwen import Qwen25VL3B
 
 
+# Indici di canale "outlier" per modello: i token visivi-sink hanno hidden
+# state con valori estremi in queste poche dimensioni. Ricalcati da
+# `lot/retrieval.py` (metodo "sink-dims" di Xiao et al.). Solo Qwen2.5-VL-3B
+# è rilevante qui (oddio `Qwen25VLAttention` subclassa `Qwen25VL3B`).
+SINK_DIMS: dict[str, tuple[int, ...]] = {
+    "Qwen/Qwen2.5-VL-3B-Instruct": (318, 1874, 1819),
+    "Qwen/Qwen2.5-VL-7B-Instruct": (458, 2570),
+    "Qwen/Qwen2.5-VL-32B-Instruct": (4675, 3094),
+    "Qwen/Qwen2-VL-2B-Instruct": (1073, 534, 940),
+    "Qwen/Qwen2-VL-7B-Instruct": (2570, 458),
+}
+# Default se il model_id non è tabulato (riesce comunque: i sink score
+# saranno solo approssimati).
+SINK_DIMS_DEFAULT = SINK_DIMS["Qwen/Qwen2.5-VL-3B-Instruct"]
+
+
 # Span catturati dal prossimo forward (impostati da `full_visual_attention`):
 #   QUERY_SPAN = [q_lo, q_hi)  righe-query da conservare (= testo della domanda)
 #   VIS_SPAN   = [v_lo, v_hi)  colonne-key visive da conservare
@@ -115,11 +131,18 @@ class Qwen25VLAttention(Qwen25VL3B):
         text: Text,
         layer_range: tuple[int, int] | None = None,
     ) -> VisualAttention:
-        """Attenzione di OGNI token della domanda verso i token visivi.
+        """Attenzione di OGNI token della domanda verso i token visivi + sink map.
 
         Esegue un singolo forward di prefill (niente generate: l'attenzione
         testo→immagine esiste già lì), media i pesi catturati sui layer
         centrali e le teste, e li dispone su griglia per ogni token-query.
+        Inoltre cattura gli hidden states dei token visivi via forward hook
+        sui layer e ne deriva `sink_map`: per ogni token visivo, `max` dei
+        sink dims normalizzato RMS, mediato sui layer centrali. I token con
+        sink score alto sono "sink" (assorbono attenzione spuria) — a runtime
+        si filtrano azzerandoli. Solo per `Qwen25VLAttention` (text_config
+        custom), ma non richiede modifiche al vision encoder. Inspired by
+        `lot/retrieval.py` ("sink-dims" di Xiao et al.).
 
         Args:
             media: l'immagine/video della domanda.
@@ -128,9 +151,10 @@ class Qwen25VLAttention(Qwen25VL3B):
                 centrale (la più semantica).
 
         Returns:
-            `VisualAttention`: `attn` `[n_q, t, grid_h, grid_w]` (una heatmap per
-            token della domanda), la geometria `(t, grid_h, grid_w)`, i
-            `query_tokens` selezionabili a runtime, gli span e gli `input_ids`.
+            `VisualAttention`: `attn` `[n_q, t, grid_h, grid_w]` (heatmap per
+            token), `sink_map` `[t, grid_h, grid_w]` (sink score per token
+            visivo), `sink_dims` (canali usati), `query_tokens` selezionabili
+            a runtime, gli span e gli `input_ids`.
         """
         inputs = self._prepare_inputs(self.build_messages(media, text))
         input_ids = inputs.input_ids[0]
@@ -144,14 +168,45 @@ class Qwen25VLAttention(Qwen25VL3B):
         query_span = (vis_end + 1, seq_len)
         visual_span = (vis_start + 1, vis_end)
 
+        # Sink dims per questo model_id (o default se non tabulati).
+        sink_dims = SINK_DIMS.get(self.model_id, SINK_DIMS_DEFAULT)
+        sink_dims_t = torch.tensor(sink_dims, dtype=torch.long)
+
+        layers = self.model.model.language_model.layers
+        n_layers = len(layers)
+
+        # Forward hook su ogni layer (output hidden states) per calcolare il
+        # sink score dei token visivi. Stasha [n_vis] su CPU in `layer._sink`.
+        # Simmetrico a `_last_attn` dell'attention interface, separato per
+        # tenere pulito il path di capture.
+        sink_per_layer: dict[int, torch.Tensor] = {}
+
+        def make_sink_hook(layer_idx: int, v_lo: int, v_hi: int, dims: torch.Tensor):
+            def _hook(_module, _inputs, output):
+                # output è un tuple; il primo è l'hidden state.
+                hs = output[0] if isinstance(output, tuple) else output
+                vis_hidden = hs[0, v_lo:v_hi, :]  # [n_vis, D]
+                sink_vals = vis_hidden[:, dims]    # [n_vis, n_sink_dims]
+                max_sink_val = sink_vals.abs().max(dim=1).values
+                rms = torch.sqrt(vis_hidden.pow(2).mean(dim=1))
+                score = max_sink_val / (rms + 1e-6)  # [n_vis]
+                sink_per_layer[layer_idx] = score.detach().cpu().float()
+            return _hook
+
+        hooks = [
+            layers[i].register_forward_hook(make_sink_hook(i, *visual_span, sink_dims_t))
+            for i in range(n_layers)
+        ]
+
         set_capture_spans(query_span, visual_span)
         try:
             with torch.no_grad():
                 self.model(**inputs, logits_to_keep=1)
         finally:
+            for h in hooks:
+                h.remove()
             set_capture_spans(None, None)
 
-        layers = self.model.model.language_model.layers
         # [L, n_q, n_vis]: pesi (già mediati sulle teste) per layer.
         attn = torch.stack([layer.self_attn._last_attn for layer in layers])
 
@@ -159,6 +214,12 @@ class Qwen25VLAttention(Qwen25VL3B):
             layer_range = (attn.shape[0] // 4, 3 * attn.shape[0] // 4)
         lo, hi = layer_range
         attn = attn[lo:hi].mean(dim=0)  # [n_q, n_vis]
+
+        # Sink score: media sui layer centrali (stesso range di attn).
+        sorted_sink = sorted(sink_per_layer.keys())
+        sink_scores = torch.stack([
+            sink_per_layer[i] for i in sorted_sink if lo <= i < hi
+        ]).mean(dim=0)  # [n_vis]
 
         # mappa 1D → griglia 2D: grid_thw è in patch PRE-merger, la griglia
         # dei token è divisa per spatial_merge_size (2) su h e w.
@@ -172,7 +233,13 @@ class Qwen25VLAttention(Qwen25VL3B):
                 f"token visivi ({attn.shape[1]}) != t*gh*gw "
                 f"({t}*{grid_h}*{grid_w}) — layout grid_thw inatteso"
             )
+        if sink_scores.shape[0] != n_vis:
+            raise ValueError(
+                f"sink scores ({sink_scores.shape[0]}) != n_vis ({n_vis}) "
+                "— span visivo hook vs att catturati diversamente?"
+            )
         heatmaps = attn.reshape(attn.shape[0], t, grid_h, grid_w).cpu()
+        sink_map = sink_scores.reshape(t, grid_h, grid_w).cpu()
 
         # Token della domanda → metadati selezionabili a runtime.
         tok = self.processor.tokenizer
@@ -186,6 +253,8 @@ class Qwen25VLAttention(Qwen25VL3B):
 
         return VisualAttention(
             attn=heatmaps,
+            sink_map=sink_map,
+            sink_dims=sink_dims,
             t=t,
             grid_h=grid_h,
             grid_w=grid_w,

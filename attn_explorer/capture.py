@@ -284,12 +284,15 @@ def capture_one(vlm, video_path: str, prompt_text: str, args, store: Path) -> di
         grid=grid,
         query_tokens=out.query_tokens,
         attn=out.attn,
+        sink_map=out.sink_map,
+        sink_dims=out.sink_dims,
     )
     save_capture(cap, out_dir / "capture.pt")
     extract_cell_frames(video_path, grid, frame_indices, frames_dir)
     logger.info(
-        "Salvato %s | attn=%s | %d token domanda | regime=%s",
-        out_dir / "capture.pt", tuple(out.attn.shape), len(out.query_tokens), grid.regime,
+        "Salvato %s | attn=%s | sink_map=%s sink_dims=%s | %d token domanda | regime=%s",
+        out_dir / "capture.pt", tuple(out.attn.shape), tuple(out.sink_map.shape),
+        out.sink_dims, len(out.query_tokens), grid.regime,
     )
 
     # Quick-check testuale opzionale per una specifica entity.
