@@ -33,6 +33,12 @@ Tre sorgenti:
         uv run python -m attn_explorer.capture --dataset egoschema \
             --video-idx 03657401-d4a4-40d0-9b03-d7e093ef93d1
 
+     Con `--n K` invece di `--video-idx`, cattura in BATCH le prime K
+     video DISTINTE del dataset (dedup per `video_path` — utile per
+     dataset con più domande/video come Video-MME o Causal2Needles):
+
+        uv run python -m attn_explorer.capture --dataset video_mme --n 20
+
 Output: uno STORE su disco (`--outdir`, default `debug_out/`):
 
     <store>/<video_stem>/capture.pt   dump AttentionCapture (tensore + token + meta)
@@ -91,7 +97,8 @@ def parse_args() -> argparse.Namespace:
     src.add_argument("--dataset",   help="nome del dataset da cui pescare il sample (es. egoschema)")
     ap.add_argument("--entity",     default=None, help="[quick-check, solo modalità singola] stringa di cui stampare il ranking; DEVE comparire nel testo della domanda")
     ap.add_argument("--prompt-from-json", action="store_true", help="con --video/--video-dir: leggi il prompt (chiave 'question') dal <stem>.json invece che dal .txt")
-    ap.add_argument("--video-idx",  default=None, help="con --dataset: il video_idx del sample (default: primo sample)")
+    ap.add_argument("--video-idx",  default=None, help="con --dataset: il video_idx del sample (default: primo sample; ignorato se --n è dato)")
+    ap.add_argument("--n",          type=int, default=None, help="con --dataset: cattura in batch le prime N video DISTINTE (dedup per video_path) invece di un singolo sample da --video-idx")
     ap.add_argument("--nframes",    type=int, default=DEFAULT_NFRAMES, help=f"frame campionati uniformemente (default {DEFAULT_NFRAMES})")
     ap.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS, help=f"budget di pixel per frame post-resize (default {DEFAULT_MAX_PIXELS})")
     ap.add_argument("--min-pixels", type=int, default=None, help="floor opzionale di pixel per frame (default: qwen-vl-utils)")
@@ -148,23 +155,70 @@ def select_debug_sample(samples: list[dict], video_idx: str | None) -> dict:
     )
 
 
-def load_dataset_sample(args) -> tuple[str, str]:
-    """Ramo `--dataset`: ritorna `(video_path, prompt_mcq)` dal benchmark."""
+def _sample_prompt(sample: dict) -> str:
+    """Prompt per un sample del loader di un `Dataset`.
+
+    Dataset MCQ (EgoSchema, MVBench, Video-MME, LVBench) espongono
+    `options` → il prompt è renderizzato con `format_mcq_prompt`. Dataset
+    open-ended (Causal2Needles) non hanno `options` → si usa `question`
+    grezza, così com'è consumata da `CausalNeedles.predict_factory`.
+    """
+    from evals.base import format_mcq_prompt
+
+    if "options" in sample:
+        return format_mcq_prompt(sample["question"], sample["options"])
+    return sample["question"]
+
+
+def _load_dataset(args) -> tuple[object, list[dict]]:
+    """Risolve `Dataset.get(args.dataset)` + i sample caricati dal suo loader."""
     from omegaconf import OmegaConf
 
     from evals import Dataset
-    from evals.base import format_mcq_prompt
 
-    cfg_path = Path(__file__).parent / "conf" / "dataset" / f"{args.dataset}.yaml"
+    # `conf/dataset/` vive alla root del repo, non sotto `attn_explorer/`.
+    cfg_path = Path(__file__).parent.parent / "conf" / "dataset" / f"{args.dataset}.yaml"
     if not cfg_path.is_file():
         raise FileNotFoundError(f"config dataset non trovata: {cfg_path}")
     dataset_cfg = OmegaConf.load(cfg_path)
     dataset = Dataset.get(args.dataset)
     samples = dataset.loader(dataset_cfg)
     logger.info("Caricati %d sample da %s (%s)", len(samples), dataset.name, dataset_cfg.root)
+    return dataset, samples
+
+
+def load_dataset_sample(args) -> tuple[str, str]:
+    """Ramo `--dataset` (senza `--n`): ritorna UN `(video_path, prompt)`."""
+    _, samples = _load_dataset(args)
     sample = select_debug_sample(samples, args.video_idx)
-    prompt = format_mcq_prompt(sample["question"], sample["options"])
-    return sample["video_path"], prompt
+    return sample["video_path"], _sample_prompt(sample)
+
+
+def load_dataset_samples_batch(args) -> list[tuple[str, str]]:
+    """Ramo `--dataset --n K`: le prime `K` righe con `video_path` DISTINTO.
+
+    Alcuni dataset (Video-MME, Causal2Needles) hanno più domande per
+    video: senza dedup, catturare "i primi K sample" rischierebbe di
+    processare lo stesso video più volte e mancarne altri. Usa la prima
+    domanda incontrata per ciascun video.
+    """
+    _, samples = _load_dataset(args)
+    jobs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for sample in samples:
+        vp = sample["video_path"]
+        if vp in seen:
+            continue
+        seen.add(vp)
+        jobs.append((vp, _sample_prompt(sample)))
+        if len(jobs) >= args.n:
+            break
+    if len(jobs) < args.n:
+        logger.warning(
+            "richiesti %d video distinti ma il dataset ne ha solo %d disponibili",
+            args.n, len(jobs),
+        )
+    return jobs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -287,8 +341,10 @@ def capture_one(vlm, video_path: str, prompt_text: str, args, store: Path) -> di
         sink_map=out.sink_map,
         sink_dims=out.sink_dims,
     )
+
     save_capture(cap, out_dir / "capture.pt")
     extract_cell_frames(video_path, grid, frame_indices, frames_dir)
+
     logger.info(
         "Salvato %s | attn=%s | sink_map=%s sink_dims=%s | %d token domanda | regime=%s",
         out_dir / "capture.pt", tuple(out.attn.shape), tuple(out.sink_map.shape),
@@ -375,6 +431,8 @@ def resolve_jobs(args) -> list[tuple[str, str]]:
     if args.video:
         return [(args.video, read_local_prompt(args.video, args.prompt_from_json))]
 
+    if args.n is not None:
+        return load_dataset_samples_batch(args)
     return [load_dataset_sample(args)]
 
 
@@ -385,6 +443,8 @@ def main() -> None:
         raise SystemExit("--prompt-from-json richiede --video o --video-dir")
     if args.entity and args.video_dir:
         raise SystemExit("--entity (quick-check) ha senso solo in modalità singola, non con --video-dir")
+    if args.n is not None and not args.dataset:
+        raise SystemExit("--n (batch su più video) ha senso solo con --dataset")
 
     # HF_HOME va impostato PRIMA di importare transformers (sotto, via models).
     hf_home = args.hf_home or os.environ.get("HF_HOME")

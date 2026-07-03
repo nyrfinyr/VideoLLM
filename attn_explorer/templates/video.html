@@ -45,6 +45,15 @@
     <label><input type="checkbox" id="tgl"> mostra frame originali (senza heatmap)</label>
   </div>
 
+  {% if has_sink_map %}
+  <div class="controls sinkview" id="sinkview">
+    <span>token visivi:</span>
+    <label><input type="radio" name="sink_view" value="all" checked> tutti (sink evidenziati col contorno)</label>
+    <label><input type="radio" name="sink_view" value="nonsink"> solo non-sink</label>
+    <label><input type="radio" name="sink_view" value="sink"> solo sink</label>
+  </div>
+  {% endif %}
+
   <div class="grid" id="grid"></div>
 
   <div id="lightbox" class="lightbox"><img alt="frame a tutto schermo"></div>

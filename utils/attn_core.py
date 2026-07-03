@@ -249,6 +249,8 @@ def make_overlay(
     vmax: float | None = None,
     zero_border: int = 0,
     alpha: float = 0.6,
+    sink_cell_mask: torch.Tensor | None = None,
+    sink_outline_color: tuple[int, int, int] = (0, 229, 255),
 ) -> Image.Image:
     """Overlay della heatmap di UNA cella temporale sul frame RGB.
 
@@ -256,6 +258,11 @@ def make_overlay(
     globali se forniti, così frame poco attenzionati restano scuri), upscalata
     BICUBIC alla risoluzione del frame e alpha-blendata col 'hot'. L'alpha è
     proporzionale all'attenzione → le zone fredde restano originali.
+
+    `sink_cell_mask` (opzionale) è `[grid_h, grid_w]` bool: se dato, disegna
+    un contorno (`sink_outline_color`) attorno a ogni cella marcata sink, così
+    l'attenzione grezza resta intatta ma sink/non-sink restano distinguibili
+    a vista (usato dalla view "tutto insieme" del server).
     """
     m = cell_map.float().cpu().numpy().copy()
     if zero_border > 0:
@@ -273,6 +280,25 @@ def make_overlay(
     color = hot_colormap(up).astype(np.float32)
     a = (up * alpha)[..., None]
     blended = (1 - a) * frame.astype(np.float32) + a * color
+
+    if sink_cell_mask is not None:
+        gh, gw = cell_map.shape
+        mask = torch.as_tensor(sink_cell_mask).bool().cpu().numpy()
+        y_edges = np.linspace(0, H, gh + 1).round().astype(int)
+        x_edges = np.linspace(0, W, gw + 1).round().astype(int)
+        t = max(1, round(min(H, W) / 200))  # spessore contorno proporzionale alla risoluzione
+        outline = np.array(sink_outline_color, dtype=np.float32)
+        for i in range(gh):
+            for j in range(gw):
+                if not mask[i, j]:
+                    continue
+                y0, y1 = y_edges[i], y_edges[i + 1]
+                x0, x1 = x_edges[j], x_edges[j + 1]
+                blended[y0:y0 + t, x0:x1] = outline
+                blended[max(y0, y1 - t):y1, x0:x1] = outline
+                blended[y0:y1, x0:x0 + t] = outline
+                blended[y0:y1, max(x0, x1 - t):x1] = outline
+
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
@@ -318,24 +344,38 @@ def sink_mask(
     return is_sink
 
 
-def filter_sinks(
+def sink_view(
     heatmap: torch.Tensor,
     sink_map: torch.Tensor,
     *,
+    view: str = "all",
     percentile: float = 25.0,
     border: int = 2,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Azzera le celle-sink di `heatmap` e renormalizza; ritorna (filtrata, mask).
+    """Isola sink/non-sink in `heatmap` SENZA perdere l'informazione grezza.
 
     `heatmap` è `[t, grid_h, grid_w]` già aggregato per una selezione di
-    token-query. La maschera è calcolata da `sink_map` via `sink_mask`,
-    applicata alla `heatmap` (dove is_sink → 0), e la versione filtrata è
-    renormalizzata su [0, max] così gli overlay restano confrontabili.
+    token-query. La maschera (`is_sink`) è calcolata da `sink_map` via
+    `sink_mask`. `view` seleziona cosa restituire:
+      - "all":     `heatmap` invariata (nessun azzeramento) — serve solo a
+                   ritornare la mask per poterla disegnare sopra l'overlay,
+                   cosicché sink e non-sink restino DISTINGUIBILI a vista pur
+                   mostrando l'attenzione grezza per intero.
+      - "sink":    solo le celle sink (le altre azzerate), renormalizzato.
+      - "nonsink": solo le celle non-sink (le altre azzerate), renormalizzato.
+
+    Ritorna sempre `(heatmap_vista, mask)`: la mask è utile al chiamante
+    anche in view="all" per evidenziare i contorni delle celle sink.
     """
     m = torch.as_tensor(heatmap).float().cpu()
     mask = sink_mask(sink_map, percentile=percentile, border=border)
+    if view == "all":
+        return m, mask
+    if view not in ("sink", "nonsink"):
+        raise ValueError(f"view deve essere 'all', 'sink' o 'nonsink', got {view!r}")
+    keep = mask if view == "sink" else ~mask
     out = m.clone()
-    out[mask] = 0.0
+    out[~keep] = 0.0
     mx = out.max()
     if mx > 0:
         out = out / mx

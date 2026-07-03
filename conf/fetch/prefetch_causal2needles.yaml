@@ -1,0 +1,29 @@
+# @package _global_
+defaults:
+  - /wandb: default
+  - _self_
+
+# Override wandb defaults for this script (separate project so prefetch
+# runs don't clutter the inference project's run list).
+wandb:
+  project: causal2needles-prefetch
+  tags: [prefetch, causal2needles]
+
+# Single HF repo carrying both the QA parquet (test_questions.parquet,
+# config="default", split="test") and the raw .mp4 files at
+# `videos/{yms,symon}/<id>.mp4` — no separate videos_repo (unlike EgoSchema).
+repo: causal2needles/Causal2Needles
+config: default
+# Number of QA rows to materialize (NOT unique videos — many rows share a
+# `video_id`, so a small n still exercises the dedup-download path).
+# `null` = consume the full stream (~4100 rows / 192 videos / ~14 GB).
+n: null
+# Self-contained dump path; sbatch jobs read the .mp4 + metadata.jsonl
+# from here. Default derives from `$HOME` so PyCharm run configs work
+# without overrides; on the cluster pass `out_dir=/work/...` on the CLI.
+out_dir: ${oc.env:HOME}/datasets/causal2needles
+# HF cache root. Resolves to `$HF_HOME` if exported (e.g. on HPC where
+# `.bashrc` sets `/work/tesi_avalenza/hf`), otherwise `null` → script
+# leaves `os.environ` alone and `datasets` falls back to
+# `~/.cache/huggingface`.
+hf_home: ${oc.env:HF_HOME,null}

@@ -27,7 +27,16 @@ duration: all
 # Per smoke test usa `n=K` combinato con `chunks=[...]` (vedi sotto),
 # altrimenti rischi che le prime K righe del parquet abbiano videoID
 # distribuiti su molti chunk diversi → download lunghissimo.
+# Ignorato se `videos_per_duration` è impostato.
 n: null
+
+# Se impostato (es. 7), ignora `duration`/`n` e seleziona fino a questo
+# numero di videoID DISTINTI per ciascuna fascia short/medium/long (il
+# parquet li tiene in 3 blocchi contigui — un `n` piatto pesca solo dalla
+# prima fascia che incontra). Utile per un campione bilanciato per
+# lunghezza, es. per studiare se il comportamento dei sink token cambia
+# con la durata del video.
+videos_per_duration: null
 
 # Restrizione a un sottoinsieme di chunk (`videos_chunked_<idx>.zip`):
 #   null  (default, full run): scarica chunks 1..20 in ordine e si ferma

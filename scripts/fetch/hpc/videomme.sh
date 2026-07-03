@@ -23,6 +23,12 @@
 #
 #   # con sottotitoli:
 #   ./scripts/fetch/hpc/videomme.sh subtitles=true
+#
+#   # ~20 video bilanciati per durata (7 short + 7 medium + 6 long),
+#   # ristretti ai chunk 7 e 14 (a cavallo dei confini short|medium e
+#   # medium|long nel parquet — i più probabili a contenere tutte e 3 le
+#   # fasce in ~10GB anziché scandire i 20 chunk / ~101GB):
+#   ./scripts/fetch/hpc/videomme.sh chunks=[7,14] videos_per_duration=7
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 exec uv run python fetch/prefetch_videomme.py \

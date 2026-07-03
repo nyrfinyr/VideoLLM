@@ -13,6 +13,8 @@ h1 .ent { color:var(--acc); }
 .kpi span { color:var(--mut); font-size:12px; }
 .controls { margin:0 0 16px; color:var(--mut); font-size:13px; }
 .controls label { cursor:pointer; user-select:none; }
+.controls.sinkview { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; align-items:center; }
+.controls.sinkview span { color:var(--mut); }
 /* ── Grid dei frame ── */
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
         gap:16px; margin-bottom:36px; }

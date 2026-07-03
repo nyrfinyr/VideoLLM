@@ -14,9 +14,20 @@ function tokensParam(rows) {
   return rows.length ? `&tokens=${rows.join(',')}` : '';
 }
 
+// View sink corrente ('all' | 'sink' | 'nonsink'); assente se il capture
+// non ha una sink_map (il blocco radio non viene renderizzato).
+const sinkRadios = Array.from(document.querySelectorAll('input[name="sink_view"]'));
+function sinkView() {
+  const checked = sinkRadios.find(r => r.checked);
+  return checked ? checked.value : 'all';
+}
+function sinkParam() {
+  return sinkRadios.length ? `&sink_view=${sinkView()}` : '';
+}
+
 // Costruisce una card frame (overlay sopra, originale sotto: toggle via CSS).
 function card(cell, rows) {
-  const tp = tokensParam(rows);
+  const tp = tokensParam(rows) + sinkParam();
   const fig = document.createElement('figure');
   fig.className = 'card' + (cell.is_top ? ' top' : '');
   fig.innerHTML = `
@@ -59,7 +70,7 @@ async function refresh() {
   selinfo.innerHTML = 'selezione: ' + txt;
 
   const my = ++reqToken;
-  const res = await fetch(`/api/${stem}/rank?tokens=${rows.join(',')}`);
+  const res = await fetch(`/api/${stem}/rank?tokens=${rows.join(',')}${sinkParam()}`);
   if (my !== reqToken) return;             // risposta obsoleta: scartala
   const data = await res.json();
   grid.replaceChildren(...data.cells.map(c => card(c, rows)));
@@ -69,5 +80,7 @@ chips.forEach(c => c.addEventListener('click', () => {
   c.classList.toggle('sel');
   refresh();
 }));
+
+sinkRadios.forEach(r => r.addEventListener('change', refresh));
 
 refresh();   // ordinamento iniziale = media di tutti i token
