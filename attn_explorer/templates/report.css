@@ -55,12 +55,15 @@ h2 { font-size:16px; color:var(--mut); margin:0 0 12px; font-weight:600; }
 a.back { color:var(--mut); font-size:13px; text-decoration:none; }
 a.back:hover { color:var(--acc); }
 
-/* ── Risposta corretta (ground truth, per valutare i frame in top rank) ── */
+/* ── Risposta corretta (ground truth) + risposta del modello sui frame campionati ── */
 .answerbox { margin-top:0.8em; padding:8px 12px; background:#1a3a1a; border-left:4px solid #4caf50;
              border-radius:4px; color:var(--ink); }
 .answerbox b { color:#4caf50; font-size:1.1em; }
 .answeropts { margin-top:4px; font-size:0.9em; color:var(--mut); display:flex; flex-wrap:wrap; gap:12px; }
 .answeropts .correct { color:#4caf50; font-weight:bold; }
+.answerbox.mismatch { background:#3a1a1a; border-left-color:#f44336; }
+.answerbox.mismatch b { color:#f44336; }
+.answerhint { margin-top:4px; font-size:0.85em; color:var(--mut); }
 
 /* ── Token selezionabili (entity a runtime) ── */
 .promptbox { max-width:820px; margin:0 auto 18px; background:var(--card); border:1px solid #232838;

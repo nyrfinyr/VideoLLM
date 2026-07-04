@@ -63,6 +63,20 @@ def format_mcq_prompt(question: str, options: list[str]) -> str:
     )
 
 
+# Righe "(A) ...", "(B) ..." prodotte da `format_mcq_prompt` (e dai sidecar
+# `--prompt-from-json` di `attn_explorer.capture`, stesso formato). Inversa di
+# `format_mcq_prompt`: da un prompt già renderizzato risale alle lettere
+# disponibili, senza dover ri-passare `options` separatamente. Usata da
+# `attn_explorer.capture` per sapere quali lettere cercare nei logit
+# dell'ultimo token del prefill (entropia della risposta).
+MCQ_OPTION_LINE_RE = re.compile(r"^\(([A-Z])\)\s", re.MULTILINE)
+
+
+def extract_mcq_letters(prompt: str) -> list[str]:
+    """Lettere delle opzioni MCQ elencate in `prompt` (`[]` se non è un MCQ)."""
+    return MCQ_OPTION_LINE_RE.findall(prompt)
+
+
 @weave.op
 def mcq_accuracy(answer: int, output: dict) -> dict:
     """Scorer Weave condiviso: confronta `output['pred']` con `answer`.

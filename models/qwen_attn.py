@@ -4,7 +4,7 @@ from transformers import AttentionInterface
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv
 
-from utils.attn_core import EntityAttention, QueryToken, VisualAttention
+from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats
 
 from .media import MediaItem, Text
 from .qwen import Qwen25VL3B
@@ -130,6 +130,7 @@ class Qwen25VLAttention(Qwen25VL3B):
         media: MediaItem,
         text: Text,
         layer_range: tuple[int, int] | None = None,
+        answer_letters: list[str] | None = None,
     ) -> VisualAttention:
         """Attenzione di OGNI token della domanda verso i token visivi + sink map.
 
@@ -149,6 +150,12 @@ class Qwen25VLAttention(Qwen25VL3B):
             text: il testo della domanda.
             layer_range: [lo, hi) dei layer da mediare; default la metà
                 centrale (la più semantica).
+            answer_letters: lettere MCQ candidate (es. `["A","B","C","D"]`,
+                da `evals.base.extract_mcq_letters` sul prompt) per cui
+                calcolare l'entropia della risposta. Il forward di prefill
+                già gira con `logits_to_keep=1` (logit dell'ultimo token,
+                cioè il primo che genererebbe) — riusarli qui è a costo
+                zero. `None`/`[]` (prompt non-MCQ) salta il calcolo.
 
         Returns:
             `VisualAttention`: `attn` `[n_q, t, grid_h, grid_w]` (heatmap per
@@ -201,7 +208,7 @@ class Qwen25VLAttention(Qwen25VL3B):
         set_capture_spans(query_span, visual_span)
         try:
             with torch.no_grad():
-                self.model(**inputs, logits_to_keep=1)
+                outputs = self.model(**inputs, logits_to_keep=1)
         finally:
             for h in hooks:
                 h.remove()
@@ -251,6 +258,14 @@ class Qwen25VLAttention(Qwen25VL3B):
             for row, (raw, tid) in enumerate(zip(raw_tokens, q_ids))
         )
 
+        # Entropia della risposta: riusa i logit dell'ultimo token del prefill
+        # già calcolati sopra (`logits_to_keep=1`), nessun forward aggiuntivo.
+        answer_stats: dict = {}
+        if answer_letters:
+            letter_ids = {l: tok.encode(l, add_special_tokens=False)[0] for l in answer_letters}
+            last_logits = outputs.logits[0, -1, :].cpu()
+            answer_stats = mcq_answer_stats(last_logits, letter_ids)
+
         return VisualAttention(
             attn=heatmaps,
             sink_map=sink_map,
@@ -260,6 +275,7 @@ class Qwen25VLAttention(Qwen25VL3B):
             grid_w=grid_w,
             query_tokens=query_tokens,
             query_span=query_span,
+            **answer_stats,
             visual_span=visual_span,
             input_ids=input_ids.cpu(),
         )

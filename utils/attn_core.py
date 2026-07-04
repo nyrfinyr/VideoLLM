@@ -127,6 +127,35 @@ def parse_answer_meta(obj: dict) -> dict:
     return {}
 
 
+def mcq_answer_stats(logits: torch.Tensor, letter_ids: dict[str, int]) -> dict:
+    """Entropia + probabilità della risposta MCQ dai logit dell'ULTIMO token del prefill.
+
+    `logits` è `[vocab_size]` (l'output del modello a `logits_to_keep=1`, cioè
+    la distribuzione sul primo token che genererebbe in risposta al prompt).
+    `letter_ids` mappa lettera candidata → id del suo primo token (calcolato
+    dal chiamante via tokenizer, dipende dal modello). La softmax è
+    RISTRETTA alle sole lettere candidate (rinormalizzata fra loro), non
+    sull'intero vocabolario: è il segnale interpretabile ("quanto è sicuro
+    che sia B piuttosto che C"), non quanto è probabile il token "B" in
+    assoluto (che dipende anche da spazi/tokenizzazione, non dal contenuto).
+
+    Returns:
+        `{"answer_entropy": bit, "answer_probs": {lettera: prob}, "pred_letter": lettera}`.
+        Entropia in BIT (log2): 0 = certezza assoluta, `log2(n_lettere)` =
+        massima incertezza (distribuzione uniforme fra le candidate).
+    """
+    letters = list(letter_ids.keys())
+    ids = torch.tensor([letter_ids[l] for l in letters], device=logits.device)
+    probs = torch.softmax(logits[ids].float(), dim=0)
+    entropy_bits = (-(probs * torch.log2(probs.clamp_min(1e-12))).sum()).item()
+    pred_letter = letters[int(probs.argmax())]
+    return {
+        "answer_entropy": entropy_bits,
+        "answer_probs": {l: float(p) for l, p in zip(letters, probs.tolist())},
+        "pred_letter": pred_letter,
+    }
+
+
 @dataclass(frozen=True)
 class VisualAttention:
     """Output del forward di `Qwen25VLAttention.full_visual_attention`.
@@ -140,6 +169,14 @@ class VisualAttention:
     `Qwen25VLAttention`: max sui sink dims normalizzato RMS, media sui layer
     centrali), già disposto sulla stessa griglia di `attn`. `sink_dims` sono
     i canali usati per calcolarlo (utile al server per ispezionarli).
+
+    `answer_entropy`/`answer_probs`/`pred_letter` (opzionali, `None` se il
+    chiamante non passa lettere candidate a `full_visual_attention`): stessi
+    logit dell'ULTIMA posizione del prefill (già calcolati per il forward,
+    `logits_to_keep=1` — nessun costo aggiuntivo), softmax ristretta alle
+    lettere MCQ candidate. Bassa entropia + `pred_letter` sbagliata, o alta
+    entropia in generale, sono un segnale che l'evidenza per rispondere non è
+    (chiaramente) nei frame campionati — vedi `utils.attn_core.mcq_answer_stats`.
     """
     attn: torch.Tensor  # [n_q, t, grid_h, grid_w]
     sink_map: torch.Tensor  # [t, grid_h, grid_w]
@@ -151,6 +188,9 @@ class VisualAttention:
     query_span: tuple[int, int]
     visual_span: tuple[int, int]
     input_ids: torch.Tensor
+    answer_entropy: float | None = None
+    answer_probs: dict[str, float] | None = None
+    pred_letter: str | None = None
 
     def __post_init__(self):
         if self.sink_map.shape != (self.t, self.grid_h, self.grid_w):
@@ -191,6 +231,9 @@ class AttentionCapture:
     griglia di `attn`: identifica i token visivi che assorbono attenzione
     spuria. La soglia percentile (es. 25°) e l'azzeramento si applicano a
     RUNTIME nel server, così si può variare senza rifare il forward.
+
+    `answer_entropy`/`answer_probs`/`pred_letter`: vedi `VisualAttention` —
+    `None` sui dump legacy o su prompt non-MCQ (nessuna lettera candidata).
     """
     video_path: str
     prompt: str
@@ -201,6 +244,9 @@ class AttentionCapture:
     attn: torch.Tensor  # [n_q, t, grid_h, grid_w]
     sink_map: torch.Tensor  # [t, grid_h, grid_w]
     sink_dims: tuple[int, ...]
+    answer_entropy: float | None = None
+    answer_probs: dict[str, float] | None = None
+    pred_letter: str | None = None
 
     def __post_init__(self):
         if self.sink_map.shape != (self.grid.t, self.grid.grid_h, self.grid.grid_w):
@@ -451,14 +497,18 @@ def save_capture(cap: AttentionCapture, path: Path) -> None:
         "attn": cap.attn,
         "sink_map": cap.sink_map,
         "sink_dims": list(cap.sink_dims),
+        "answer_entropy": cap.answer_entropy,
+        "answer_probs": cap.answer_probs,
+        "pred_letter": cap.pred_letter,
     }, path)
 
 
 def load_capture(path: Path) -> AttentionCapture:
     """Ricarica un `AttentionCapture` da `capture.pt`.
 
-    Tieni `sink_map`/`sink_dims` opzionali per leggere dump legacy senza
-    queli field (li si ricostruisce come zeri / lista vuota).
+    Tieni `sink_map`/`sink_dims`/`answer_entropy`/`answer_probs`/`pred_letter`
+    opzionali per leggere dump legacy senza quei field (rispettivamente:
+    ricostruiti come zeri/lista vuota, o `None`).
     """
     d = torch.load(Path(path), map_location="cpu", weights_only=False)
     g = d["grid"]
@@ -475,4 +525,7 @@ def load_capture(path: Path) -> AttentionCapture:
         attn=d["attn"],
         sink_map=sink_map,
         sink_dims=tuple(d.get("sink_dims", [])),
+        answer_entropy=d.get("answer_entropy"),
+        answer_probs=d.get("answer_probs"),
+        pred_letter=d.get("pred_letter"),
     )

@@ -323,19 +323,21 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
     la UI del server può mostrare la risposta corretta). Se `args.entity` è
     impostato, stampa un quick-check del ranking per quell'entity (single mode).
     """
+    from evals.base import extract_mcq_letters
     from models import Text
 
     stem = Path(video_path).stem
     out_dir = store / stem
     frames_dir = out_dir / "frames"
     text = Text(prompt_text)
+    answer_letters = extract_mcq_letters(prompt_text)
 
     media, frame_indices, tmpdir = build_media(video_path, args)
     logger.info("Cattura | video=%s | nframes=%d", video_path, args.nframes)
     logger.info("Prompt:\n%s", prompt_text)
 
     try:
-        out = vlm.full_visual_attention(media, text)
+        out = vlm.full_visual_attention(media, text, answer_letters=answer_letters)
     finally:
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -356,15 +358,19 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
         attn=out.attn,
         sink_map=out.sink_map,
         sink_dims=out.sink_dims,
+        answer_entropy=out.answer_entropy,
+        answer_probs=out.answer_probs,
+        pred_letter=out.pred_letter,
     )
 
     save_capture(cap, out_dir / "capture.pt")
     extract_cell_frames(video_path, grid, frame_indices, frames_dir)
 
     logger.info(
-        "Salvato %s | attn=%s | sink_map=%s sink_dims=%s | %d token domanda | regime=%s",
+        "Salvato %s | attn=%s | sink_map=%s sink_dims=%s | %d token domanda | regime=%s%s",
         out_dir / "capture.pt", tuple(out.attn.shape), tuple(out.sink_map.shape),
         out.sink_dims, len(out.query_tokens), grid.regime,
+        f" | pred={out.pred_letter} entropy={out.answer_entropy:.3f}bit" if out.pred_letter else "",
     )
 
     # Quick-check testuale opzionale per una specifica entity.
@@ -380,6 +386,8 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
         "cells": grid.t,
         "n_tokens": len(out.query_tokens),
         "regime": grid.regime,
+        "pred_letter": out.pred_letter,
+        "answer_entropy": out.answer_entropy,
         **meta,
     }
 

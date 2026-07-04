@@ -25,6 +25,16 @@
       {% endif %}
     </div>
     {% endif %}
+    {% if pred_letter %}
+    <div class="answerbox {{ 'match' if pred_letter == answer_letter else 'mismatch' }}">
+      🤖 Risposta del modello (su questi frame): <b>{{ pred_letter }}</b>
+      · confidenza {{ "%.0f"|format(answer_probs[pred_letter] * 100) }}%
+      · entropia {{ "%.2f"|format(answer_entropy) }} bit
+      {% if answer_letter and pred_letter != answer_letter %}
+      <div class="answerhint">≠ risposta corretta ({{ answer_letter }}) — probabile evidenza mancante/ambigua nei frame campionati</div>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 
   <details style="margin:1em 0">

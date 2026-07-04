@@ -219,6 +219,9 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
             answer_letter=meta.get("answer_letter"),
             answer_text=meta.get("answer_text"),
             option_items=option_items,
+            pred_letter=cap.pred_letter,
+            answer_entropy=cap.answer_entropy,
+            answer_probs=cap.answer_probs,
             has_sink_map=bool(cap.sink_map.abs().sum().item() > 0),
         )
 
