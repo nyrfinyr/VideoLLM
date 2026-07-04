@@ -15,14 +15,13 @@ function tokensParam(rows) {
 }
 
 // View sink corrente ('all' | 'sink' | 'nonsink'); assente se il capture
-// non ha una sink_map (il blocco radio non viene renderizzato).
-const sinkRadios = Array.from(document.querySelectorAll('input[name="sink_view"]'));
+// non ha una sink_map (la combobox non viene renderizzata).
+const sinkSelect = document.getElementById('sinkview-select');
 function sinkView() {
-  const checked = sinkRadios.find(r => r.checked);
-  return checked ? checked.value : 'all';
+  return sinkSelect ? sinkSelect.value : 'all';
 }
 function sinkParam() {
-  return sinkRadios.length ? `&sink_view=${sinkView()}` : '';
+  return sinkSelect ? `&sink_view=${sinkView()}` : '';
 }
 
 // Costruisce una card frame (overlay sopra, originale sotto: toggle via CSS).
@@ -81,6 +80,6 @@ chips.forEach(c => c.addEventListener('click', () => {
   refresh();
 }));
 
-sinkRadios.forEach(r => r.addEventListener('change', refresh));
+if (sinkSelect) sinkSelect.addEventListener('change', refresh);
 
 refresh();   // ordinamento iniziale = media di tutti i token

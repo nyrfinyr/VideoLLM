@@ -2,10 +2,18 @@
 
 Sostituisce il vecchio report HTML statico (`utils/make_report.py`): invece di
 fissare un'entity al momento della cattura, qui le entity si scelgono a RUNTIME.
-Si punta a uno STORE prodotto da `attn_explorer.capture` (cartella con
+Si punta a uno o più STORE prodotti da `attn_explorer.capture` (cartelle con
 `<stem>/capture.pt`, `<stem>/frames/` e `index.json`):
 
     uv run python -m attn_explorer.serve --store debug_out/
+
+Multi-store: `--store` accetta più cartelle, i video di tutte vengono
+elencati insieme in `/`:
+
+    uv run python -m attn_explorer.serve --store data/vnbench/output/ret data/vnbench/output/count
+
+Gli stem devono essere UNICI fra gli store dati (nessun dedup/merge): se due
+store hanno lo stesso stem vince il primo nell'ordine passato a `--store`.
 
 Route:
   GET /                              elenco dei video dello store
@@ -21,14 +29,22 @@ rigenerati per quella selezione. Senza token selezionati si usa la media di
 tutti i token della domanda (ordinamento di default).
 
 View sink (opzionale, da dump prodotto con `sink_map`): gli endpoint `rank` e
-`overlay` accettano `sink_view=all|sink|nonsink&sink_percentile=25&sink_border=2`
+`overlay` accettano `sink_view=all|sink|nonsink&sink_percentile=25&sink_border=0`
 per scegliere cosa mostrare rispetto alla classificazione sink (metodo
 "sink-dims" di `lot/retrieval.py`):
-  - `all` (default): attenzione grezza intatta; in overlay le celle sink sono
-    solo evidenziate con un contorno, mai azzerate.
+  - `all` (default): attenzione grezza intatta, nessun azzeramento.
   - `sink`: solo la massa di attenzione sulle celle sink (le altre azzerate).
   - `nonsink`: solo la massa sulle celle non-sink (le sink azzerate).
 Senza `sink_map` nel dump (capture legacy) la view è no-op.
+
+`sink_border` è OFF di default (0): forzerebbe a sink gli anelli di bordo
+della griglia a prescindere dal loro `sink_score` reale, un'euristica non
+verificata (vedi `utils.attn_core.sink_mask`). Opt-in via query string per
+chi vuole testarla empiricamente.
+
+`--videos <cartella>`: se il path assoluto del video salvato nel capture non
+esiste più (es. dataset spostato dopo la cattura), `/video/<stem>` cerca il
+file per nome ricorsivamente sotto questa cartella.
 """
 import argparse
 import io
@@ -45,6 +61,8 @@ from utils.attn_core import (
     AttentionCapture,
     load_capture,
     make_overlay,
+    parse_answer_meta,
+    question_rows,
     rank_cells,
     sink_mask,
     sink_view,
@@ -52,7 +70,7 @@ from utils.attn_core import (
 
 # Default della classificazione sink (allineati a `lot/retrieval.py`).
 DEFAULT_SINK_PERCENTILE = 25.0
-DEFAULT_SINK_BORDER = 2
+DEFAULT_SINK_BORDER = 0  # opt-in via ?sink_border=N — vedi utils.attn_core.sink_mask
 SINK_VIEWS = ("all", "sink", "nonsink")
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -82,10 +100,49 @@ def _sink_params() -> tuple[str, float, int]:
     return view, percentile, border
 
 
-def create_app(store: Path) -> Flask:
-    """Costruisce l'app Flask legata a una cartella-store."""
-    store = Path(store).resolve()
+def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Flask:
+    """Costruisce l'app Flask legata a una o più cartelle-store.
+
+    `stores`: un path singolo o una lista di path di STORE (ciascuno con la
+    sua `index.json`). Con più store i video vengono elencati insieme in
+    `/`; lo stem deve essere unico fra gli store dati (vince il primo store
+    dell'elenco in caso di collisione — vedi `_store_for_stem`).
+
+    `video_root` (opzionale): cartella radice in cui cercare i video
+    originali per nome file (ricerca ricorsiva), usata da `/video/<stem>`
+    quando il path assoluto salvato nel capture (`AttentionCapture.video_path`,
+    fissato al momento di `attn_explorer.capture`) non esiste più — es. dopo
+    che i video sono stati spostati altrove sul filesystem.
+    """
+    if isinstance(stores, (str, Path)):
+        stores = [stores]
+    stores = [Path(s).resolve() for s in stores]
+    video_root = Path(video_root).resolve() if video_root else None
     app = Flask(__name__, template_folder=str(TEMPLATE_DIR))
+
+    @lru_cache(maxsize=256)
+    def resolve_video(name: str) -> Path | None:
+        """Cerca `name` ricorsivamente sotto `video_root` (None se non trovato/non impostato)."""
+        if video_root is None:
+            return None
+        return next(video_root.rglob(name), None)
+
+    def sidecar_answer_meta(video_path_str: str) -> dict:
+        """Fallback per capture fatti PRIMA che `index.json` portasse `answer_letter`
+        /`answer_text` (vedi `attn_explorer.capture.capture_one`): rilegge il
+        sidecar `<stem>.json` accanto al video (risolvendolo via `--videos` se il
+        path salvato nel capture non esiste più) e ne estrae la risposta corretta."""
+        video_path = Path(video_path_str)
+        if not video_path.is_file():
+            video_path = resolve_video(video_path.name) or video_path
+        sidecar = video_path.with_suffix(".json")
+        if not sidecar.is_file():
+            return {}
+        try:
+            obj = json.loads(sidecar.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return parse_answer_meta(obj)
 
     @app.context_processor
     def inject_assets():
@@ -96,17 +153,28 @@ def create_app(store: Path) -> Flask:
         }
 
     def load_index() -> list[dict]:
-        index_path = store / "index.json"
-        if not index_path.is_file():
-            return []
-        return json.loads(index_path.read_text(encoding="utf-8")).get("videos", [])
+        """Concatena `index.json` di TUTTI gli store, taggando ogni video con
+        `_store` (nome della cartella di provenienza) per distinguerli in UI."""
+        videos = []
+        for s in stores:
+            index_path = s / "index.json"
+            if not index_path.is_file():
+                continue
+            for v in json.loads(index_path.read_text(encoding="utf-8")).get("videos", []):
+                videos.append({**v, "_store": s.name})
+        return videos
+
+    def store_for_stem(stem: str) -> Path:
+        """Primo store (nell'ordine passato a `--store`) che contiene `stem`."""
+        for s in stores:
+            if (s / stem / "capture.pt").is_file():
+                return s
+        abort(404, f"capture non trovato per {stem!r} in nessuno degli store: {[str(s) for s in stores]}")
 
     @lru_cache(maxsize=32)
     def get_capture(stem: str) -> AttentionCapture:
         """Carica (e memoizza) l'AttentionCapture di un video dello store."""
-        path = store / stem / "capture.pt"
-        if not path.is_file():
-            abort(404, f"capture non trovato per {stem!r}")
+        path = store_for_stem(stem) / stem / "capture.pt"
         return load_capture(path)
 
     def heatmap_for(stem: str, rows: list[int]):
@@ -116,7 +184,7 @@ def create_app(store: Path) -> Flask:
     # ── Pagine HTML ──
     @app.get("/")
     def index():
-        return render_template("index.html", videos=load_index(), store=str(store))
+        return render_template("index.html", videos=load_index(), store=", ".join(str(s) for s in stores))
 
     @app.get("/v/<stem>")
     def video_page(stem: str):
@@ -125,9 +193,19 @@ def create_app(store: Path) -> Flask:
             {"row": q.row, "text": q.text, "token": q.token}
             for q in cap.query_tokens
         ]
-        # Look up answer/options from index
+        # Risposta corretta: da index.json se presente, altrimenti fallback sul
+        # sidecar (capture fatti prima che `capture_one` la scrivesse in indice).
         videos = {v["stem"]: v for v in load_index()}
         meta = videos.get(stem, {})
+        if not meta.get("answer_letter"):
+            meta = {**meta, **sidecar_answer_meta(cap.video_path)}
+
+        options = meta.get("options") or []
+        option_items = [
+            {"letter": chr(ord("A") + i), "text": opt, "correct": chr(ord("A") + i) == meta.get("answer_letter")}
+            for i, opt in enumerate(options)
+        ]
+
         return render_template(
             "video.html",
             stem=stem,
@@ -137,8 +215,10 @@ def create_app(store: Path) -> Flask:
             cells=cap.grid.t,
             regime=cap.grid.regime,
             tokens=tokens,
-            answer=meta.get("answer"),
-            options=meta.get("options", []),
+            default_rows=question_rows(cap.query_tokens),
+            answer_letter=meta.get("answer_letter"),
+            answer_text=meta.get("answer_text"),
+            option_items=option_items,
             has_sink_map=bool(cap.sink_map.abs().sum().item() > 0),
         )
 
@@ -148,7 +228,9 @@ def create_app(store: Path) -> Flask:
         cap = get_capture(stem)
         video_path = Path(cap.video_path)
         if not video_path.is_file():
-            abort(404, f"video non trovato: {video_path}")
+            video_path = resolve_video(video_path.name) or video_path
+        if not video_path.is_file():
+            abort(404, f"video non trovato: {video_path} (prova --videos <cartella> se è stato spostato)")
         return Response(
             video_path.read_bytes(),
             mimetype="video/mp4",
@@ -199,7 +281,7 @@ def create_app(store: Path) -> Flask:
     def api_sink(stem: str):
         """JSON: sink_map + maschera sink calcolata a runtime.
 
-        Query params: `sink_percentile` (default 25), `sink_border` (default 2).
+        Query params: `sink_percentile` (default 25), `sink_border` (default 0, opt-in).
         Utile per ispezionare/distinguere sink vs non-sink indipendentemente
         dalla selezione di token-query. `has_sink_map=false` se il dump è
         legacy (senza `sink_map`).
@@ -232,7 +314,7 @@ def create_app(store: Path) -> Flask:
     @app.get("/api/<stem>/frame")
     def api_frame(stem: str):
         ti = int(request.args["cell"])
-        path = store / stem / "frames" / f"cell_{ti:04d}.png"
+        path = store_for_stem(stem) / stem / "frames" / f"cell_{ti:04d}.png"
         if not path.is_file():
             abort(404)
         return Response(path.read_bytes(), mimetype="image/png")
@@ -244,30 +326,23 @@ def create_app(store: Path) -> Flask:
         rows = parse_tokens(request.args.get("tokens"))
         heatmap = cap.aggregate(rows)
 
-        # View sink: 'all' non tocca la heatmap (attenzione grezza) ma disegna
-        # il contorno delle celle sink così restano distinguibili a vista;
-        # 'sink'/'nonsink' azzerano l'altra classe e renormalizzano — in
-        # quei due casi il contorno è ridondante (le celle escluse sono già
-        # a zero) e viene omesso. min/max globali sulla heatmap VISTA
-        # mantengono le celle tra loro confrontabili.
+        # View sink: 'all' = attenzione grezza intatta; 'sink'/'nonsink'
+        # azzerano l'altra classe e renormalizzano. min/max globali sulla
+        # heatmap VISTA mantengono le celle tra loro confrontabili.
         view, percentile, border = _sink_params()
-        mask = None
         if cap.sink_map.abs().sum().item() > 0:
-            heatmap, cell_mask = sink_view(
+            heatmap, _ = sink_view(
                 heatmap, cap.sink_map,
                 view=view, percentile=percentile, border=border,
             )
-            if view == "all":
-                mask = cell_mask
 
-        frame_path = store / stem / "frames" / f"cell_{ti:04d}.png"
+        frame_path = store_for_stem(stem) / stem / "frames" / f"cell_{ti:04d}.png"
         if not frame_path.is_file():
             abort(404)
         frame = np.asarray(Image.open(frame_path).convert("RGB"))
         img = make_overlay(
             frame, heatmap[ti],
             vmin=float(heatmap.min()), vmax=float(heatmap.max()),
-            sink_cell_mask=mask[ti] if mask is not None else None,
         )
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -277,17 +352,21 @@ def create_app(store: Path) -> Flask:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--store", default="debug_out", help="cartella STORE con i capture (default debug_out/)")
+    ap.add_argument("--store", nargs="+", default=["debug_out"], help="una o più cartelle STORE con i capture (default debug_out/); con più valori i video sono elencati insieme (stem univoci fra store)")
+    ap.add_argument("--videos", default=None, help="cartella radice dove cercare i video originali per nome (ricorsivo), se il path salvato nel capture non è più valido")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--debug", action="store_true", help="modalità debug di Flask (reload + traceback)")
     args = ap.parse_args()
 
-    store = Path(args.store)
-    if not store.is_dir():
-        raise SystemExit(f"store non trovato: {store}")
-    app = create_app(store)
-    print(f"Store: {store.resolve()}  →  http://{args.host}:{args.port}")
+    stores = [Path(s) for s in args.store]
+    missing = [s for s in stores if not s.is_dir()]
+    if missing:
+        raise SystemExit(f"store non trovati: {', '.join(str(m) for m in missing)}")
+    if args.videos and not Path(args.videos).is_dir():
+        raise SystemExit(f"cartella --videos non trovata: {args.videos}")
+    app = create_app(stores, video_root=args.videos)
+    print(f"Store: {', '.join(str(s.resolve()) for s in stores)}  →  http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=args.debug)
 
 

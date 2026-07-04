@@ -55,7 +55,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from utils.attn_core import AttentionCapture, GridSpec, rank_cells, save_capture
+from utils.attn_core import AttentionCapture, GridSpec, parse_answer_meta, rank_cells, save_capture
 
 # Logging su stderr con timestamp (diagnostica del forward); lo stdout resta
 # per le tabelle del quick-check.
@@ -138,6 +138,21 @@ def read_local_prompt(video_path: str, from_json: bool) -> str:
     return txt_file.read_text(encoding="utf-8").strip()
 
 
+def read_local_meta(video_path: str, from_json: bool) -> dict:
+    """Risposta corretta (per la UI del server) dal sidecar `.json`, se presente.
+
+    No-op (`{}`) in modalità `.txt` (nessuna struttura per gt/opzioni) o se il
+    sidecar non espone `gt_option` / `answer`+`options` (vedi `parse_answer_meta`).
+    """
+    if not from_json:
+        return {}
+    json_file = Path(video_path).with_suffix(".json")
+    if not json_file.is_file():
+        return {}
+    obj = json.loads(json_file.read_text(encoding="utf-8"))
+    return parse_answer_meta(obj)
+
+
 def select_debug_sample(samples: list[dict], video_idx: str | None) -> dict:
     """Sceglie un sample dalla lista caricata da un loader di benchmark.
 
@@ -187,14 +202,14 @@ def _load_dataset(args) -> tuple[object, list[dict]]:
     return dataset, samples
 
 
-def load_dataset_sample(args) -> tuple[str, str]:
-    """Ramo `--dataset` (senza `--n`): ritorna UN `(video_path, prompt)`."""
+def load_dataset_sample(args) -> tuple[str, str, dict]:
+    """Ramo `--dataset` (senza `--n`): ritorna UN `(video_path, prompt, meta)`."""
     _, samples = _load_dataset(args)
     sample = select_debug_sample(samples, args.video_idx)
-    return sample["video_path"], _sample_prompt(sample)
+    return sample["video_path"], _sample_prompt(sample), parse_answer_meta(sample)
 
 
-def load_dataset_samples_batch(args) -> list[tuple[str, str]]:
+def load_dataset_samples_batch(args) -> list[tuple[str, str, dict]]:
     """Ramo `--dataset --n K`: le prime `K` righe con `video_path` DISTINTO.
 
     Alcuni dataset (Video-MME, Causal2Needles) hanno più domande per
@@ -203,14 +218,14 @@ def load_dataset_samples_batch(args) -> list[tuple[str, str]]:
     domanda incontrata per ciascun video.
     """
     _, samples = _load_dataset(args)
-    jobs: list[tuple[str, str]] = []
+    jobs: list[tuple[str, str, dict]] = []
     seen: set[str] = set()
     for sample in samples:
         vp = sample["video_path"]
         if vp in seen:
             continue
         seen.add(vp)
-        jobs.append((vp, _sample_prompt(sample)))
+        jobs.append((vp, _sample_prompt(sample), parse_answer_meta(sample)))
         if len(jobs) >= args.n:
             break
     if len(jobs) < args.n:
@@ -300,12 +315,13 @@ def extract_cell_frames(video_path: str, grid: GridSpec, frame_indices, frames_d
 # ─────────────────────────────────────────────────────────────────────────────
 # Cattura di UN video → AttentionCapture su disco
 # ─────────────────────────────────────────────────────────────────────────────
-def capture_one(vlm, video_path: str, prompt_text: str, args, store: Path) -> dict:
+def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store: Path) -> dict:
     """Forward di prefill su un video, salva `AttentionCapture` + frame.
 
     Scrive in `<store>/<stem>/{capture.pt,frames/}` e ritorna l'entry di indice
-    per `index.json`. Se `args.entity` è impostato, stampa un quick-check del
-    ranking per quell'entity (single mode).
+    per `index.json` (`meta`, da `parse_answer_meta`, ci finisce dentro così
+    la UI del server può mostrare la risposta corretta). Se `args.entity` è
+    impostato, stampa un quick-check del ranking per quell'entity (single mode).
     """
     from models import Text
 
@@ -364,6 +380,7 @@ def capture_one(vlm, video_path: str, prompt_text: str, args, store: Path) -> di
         "cells": grid.t,
         "n_tokens": len(out.query_tokens),
         "regime": grid.regime,
+        **meta,
     }
 
 
@@ -409,8 +426,8 @@ def write_index(store: Path, entries: list[dict]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
-def resolve_jobs(args) -> list[tuple[str, str]]:
-    """Risolve la sorgente CLI in una lista di `(video_path, prompt_text)`."""
+def resolve_jobs(args) -> list[tuple[str, str, dict]]:
+    """Risolve la sorgente CLI in una lista di `(video_path, prompt_text, meta)`."""
     if args.video_dir:
         root = Path(args.video_dir)
         if not root.is_dir():
@@ -418,10 +435,12 @@ def resolve_jobs(args) -> list[tuple[str, str]]:
         videos = sorted(p for p in root.glob("*.mp4"))
         if not videos:
             raise SystemExit(f"nessun .mp4 in {root}")
-        jobs: list[tuple[str, str]] = []
+        jobs: list[tuple[str, str, dict]] = []
         for v in videos:
             try:
-                jobs.append((str(v), read_local_prompt(str(v), args.prompt_from_json)))
+                prompt = read_local_prompt(str(v), args.prompt_from_json)
+                meta = read_local_meta(str(v), args.prompt_from_json)
+                jobs.append((str(v), prompt, meta))
             except (FileNotFoundError, KeyError) as e:
                 logger.warning("salto %s: %s", v.name, e)
         if not jobs:
@@ -429,7 +448,9 @@ def resolve_jobs(args) -> list[tuple[str, str]]:
         return jobs
 
     if args.video:
-        return [(args.video, read_local_prompt(args.video, args.prompt_from_json))]
+        prompt = read_local_prompt(args.video, args.prompt_from_json)
+        meta = read_local_meta(args.video, args.prompt_from_json)
+        return [(args.video, prompt, meta)]
 
     if args.n is not None:
         return load_dataset_samples_batch(args)
@@ -469,10 +490,10 @@ def main() -> None:
     store = Path(args.outdir)
     store.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = []
-    for i, (video_path, prompt_text) in enumerate(jobs, 1):
+    for i, (video_path, prompt_text, meta) in enumerate(jobs, 1):
         logger.info("[%d/%d] %s", i, len(jobs), video_path)
         try:
-            entries.append(capture_one(vlm, video_path, prompt_text, args, store))
+            entries.append(capture_one(vlm, video_path, prompt_text, meta, args, store))
         except Exception:
             logger.exception("cattura fallita per %s", video_path)
     if entries:

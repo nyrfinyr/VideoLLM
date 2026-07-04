@@ -13,13 +13,13 @@
 
   <div class="promptbox">
     <b>Domanda:</b> {{ prompt }}
-    {% if answer %}
-    <div style="margin-top:0.8em;padding:8px 12px;background:#1a3a1a;border-left:4px solid #4caf50;border-radius:4px">
-      ✅ Risposta corretta: <b style="color:#4caf50;font-size:1.1em">{{ answer }}</b>
-      {% if options %}
-      <div style="margin-top:4px;font-size:0.9em;color:#aaa">
-        {% for opt in options %}
-        <span style="margin-right:12px;{{ 'color:#4caf50;font-weight:bold' if opt.startswith(answer + '.') else '' }}">{{ opt }}</span>
+    {% if answer_letter %}
+    <div class="answerbox">
+      ✅ Risposta corretta: <b>{{ answer_letter }}{% if answer_text %}. {{ answer_text }}{% endif %}</b>
+      {% if option_items %}
+      <div class="answeropts">
+        {% for opt in option_items %}
+        <span class="{{ 'correct' if opt.correct else '' }}">{{ opt.letter }}. {{ opt.text }}</span>
         {% endfor %}
       </div>
       {% endif %}
@@ -36,7 +36,7 @@
     per massa di attenzione e gli overlay rigenerati.</p>
   <div class="tokens" id="tokens">
     {% for tk in tokens %}
-    <span class="chip" data-row="{{ tk.row }}" title="{{ tk.token }}">{{ tk.text }}</span>
+    <span class="chip{{ ' sel' if tk.row in default_rows else '' }}" data-row="{{ tk.row }}" title="{{ tk.token }}">{{ tk.text }}</span>
     {% endfor %}
   </div>
   <div class="selinfo" id="selinfo">selezione: <b>nessuna</b> (media di tutti i token)</div>
@@ -47,10 +47,12 @@
 
   {% if has_sink_map %}
   <div class="controls sinkview" id="sinkview">
-    <span>token visivi:</span>
-    <label><input type="radio" name="sink_view" value="all" checked> tutti (sink evidenziati col contorno)</label>
-    <label><input type="radio" name="sink_view" value="nonsink"> solo non-sink</label>
-    <label><input type="radio" name="sink_view" value="sink"> solo sink</label>
+    <label for="sinkview-select">token visivi:</label>
+    <select id="sinkview-select" name="sink_view">
+      <option value="all" selected>tutti i token</option>
+      <option value="sink">solo sink</option>
+      <option value="nonsink">solo non sink</option>
+    </select>
   </div>
   {% endif %}
 

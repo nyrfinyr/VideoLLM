@@ -18,6 +18,5 @@
 /logs/
 /lot/
 /debug_out/
-/mvbench_obj_exist/
-/videomme_capture/
+/data/
 __pycache__/

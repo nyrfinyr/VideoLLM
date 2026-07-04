@@ -65,6 +65,68 @@ class QueryToken:
     text: str
 
 
+def question_rows(query_tokens: tuple[QueryToken, ...]) -> list[int]:
+    """Righe dei token che compongono SOLO la domanda, non l'MCQ scaffolding.
+
+    I prompt del progetto (sia `format_mcq_prompt` sia i sidecar `--prompt-
+    from-json`) hanno sempre la forma `<domanda>\\nOptions:\\n(A) ...`: si
+    ricostruisce il testo concatenando `QueryToken.text` in ordine e si
+    ferma PRIMA del token che introduce il marcatore "Options:" (case-
+    insensitive). Se il marcatore non compare (prompt non-MCQ) ritorna tutte
+    le righe, equivalente al comportamento di default di `aggregate`.
+
+    Usata per pre-selezionare la entity di default nella pagina video: senza
+    questo, "nessuna selezione" media anche i token delle opzioni di
+    risposta e del boilerplate ("Answer with the letter..."), diluendo
+    l'attenzione sulla domanda vera e propria.
+    """
+    texts = [qt.text for qt in query_tokens]
+    marker = "".join(texts).lower().find("options:")
+    if marker == -1:
+        return [qt.row for qt in query_tokens]
+    rows: list[int] = []
+    pos = 0
+    for qt, text in zip(query_tokens, texts):
+        if pos >= marker:
+            break
+        rows.append(qt.row)
+        pos += len(text)
+    return rows
+
+
+def parse_answer_meta(obj: dict) -> dict:
+    """Estrae la risposta corretta MCQ da un dict, per mostrarla in UI.
+
+    Supporta due convenzioni (usate rispettivamente dai sidecar
+    `--prompt-from-json` di `attn_explorer.capture` e dai sample dei
+    `Dataset` di `evals/`):
+      - `gt`/`gt_option`: testo e lettera della risposta corretta già
+        risolti (es. sidecar VNBench).
+      - `answer`/`options`: indice 0-based nella lista `options` (es. sample
+        di `EgoSchema`/`MVBench`/...).
+
+    Ritorna `{"answer_letter", "answer_text", "options"}` (`options` può
+    essere `None` se il dict non lo espone), o `{}` se non riconosce nessuna
+    delle due convenzioni.
+    """
+    if "gt_option" in obj:
+        return {
+            "answer_letter": obj["gt_option"],
+            "answer_text": obj.get("gt"),
+            "options": obj.get("options"),
+        }
+    if "answer" in obj and "options" in obj and obj["answer"] is not None:
+        options = obj["options"]
+        idx = int(obj["answer"])
+        if 0 <= idx < len(options):
+            return {
+                "answer_letter": chr(ord("A") + idx),
+                "answer_text": options[idx],
+                "options": options,
+            }
+    return {}
+
+
 @dataclass(frozen=True)
 class VisualAttention:
     """Output del forward di `Qwen25VLAttention.full_visual_attention`.
@@ -249,8 +311,6 @@ def make_overlay(
     vmax: float | None = None,
     zero_border: int = 0,
     alpha: float = 0.6,
-    sink_cell_mask: torch.Tensor | None = None,
-    sink_outline_color: tuple[int, int, int] = (0, 229, 255),
 ) -> Image.Image:
     """Overlay della heatmap di UNA cella temporale sul frame RGB.
 
@@ -258,11 +318,6 @@ def make_overlay(
     globali se forniti, così frame poco attenzionati restano scuri), upscalata
     BICUBIC alla risoluzione del frame e alpha-blendata col 'hot'. L'alpha è
     proporzionale all'attenzione → le zone fredde restano originali.
-
-    `sink_cell_mask` (opzionale) è `[grid_h, grid_w]` bool: se dato, disegna
-    un contorno (`sink_outline_color`) attorno a ogni cella marcata sink, così
-    l'attenzione grezza resta intatta ma sink/non-sink restano distinguibili
-    a vista (usato dalla view "tutto insieme" del server).
     """
     m = cell_map.float().cpu().numpy().copy()
     if zero_border > 0:
@@ -281,24 +336,6 @@ def make_overlay(
     a = (up * alpha)[..., None]
     blended = (1 - a) * frame.astype(np.float32) + a * color
 
-    if sink_cell_mask is not None:
-        gh, gw = cell_map.shape
-        mask = torch.as_tensor(sink_cell_mask).bool().cpu().numpy()
-        y_edges = np.linspace(0, H, gh + 1).round().astype(int)
-        x_edges = np.linspace(0, W, gw + 1).round().astype(int)
-        t = max(1, round(min(H, W) / 200))  # spessore contorno proporzionale alla risoluzione
-        outline = np.array(sink_outline_color, dtype=np.float32)
-        for i in range(gh):
-            for j in range(gw):
-                if not mask[i, j]:
-                    continue
-                y0, y1 = y_edges[i], y_edges[i + 1]
-                x0, x1 = x_edges[j], x_edges[j + 1]
-                blended[y0:y0 + t, x0:x1] = outline
-                blended[max(y0, y1 - t):y1, x0:x1] = outline
-                blended[y0:y1, x0:x0 + t] = outline
-                blended[y0:y1, max(x0, x1 - t):x1] = outline
-
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
@@ -309,21 +346,30 @@ def sink_mask(
     sink_map: torch.Tensor,
     *,
     percentile: float = 25.0,
-    border: int = 2,
+    border: int = 0,
 ) -> torch.Tensor:
     """Identifica i token visivi-sink dalla `sink_map` `[t, grid_h, grid_w]`.
 
-    Un token è sink se il suo `sink_score` è >= percentile-esimo della
-    distribuzione (su tutto `sink_map`). Inoltre i primi/ultimi `border`
-    anelli di righe e colonne sono forzati a sink (i token di bordo sono
-    tipicamente sink anche se il percentile non li cattura). Ricalca il
-    filtro di `lot/retrieval.py` (Xiao et al., "sink dims").
+    Un token è sink se il suo `sink_score` è nel top-`percentile`% della
+    distribuzione (su tutto `sink_map`) — l'UNICO segnale usato di default:
+    `sink_map` viene dalle statistiche interne del modello (canali "sink
+    dims", Xiao et al.), non dalla posizione del token.
+
+    `border` (default 0, OFF): se >0, forza anche i primi/ultimi `border`
+    anelli di righe/colonne a sink a prescindere dal loro `sink_score`.
+    Euristica NON verificata su questo progetto — "sink" in letteratura è
+    una proprietà di canali ad alta norma nello stato nascosto, non una
+    proprietà geometrica di bordo dell'immagine: un frame potrebbe avere
+    evidenza reale vicino al bordo, che questa opzione azzererebbe a priori.
+    Lasciato disponibile come opt-in (`?sink_border=N` nel server) per chi
+    vuole testarlo empiricamente sui propri capture, ma va verificato prima
+    di fidarsene.
 
     Args:
         sink_map: `[t, grid_h, grid_w]` torch/numpy tensor.
-        percentile: soglia percentile (default 25 — i top-25% per sink score
-            sono sink). Range 0-100.
-        border: anelli di bordo forzati a sink (solo se
+        percentile: quota superiore della distribuzione considerata sink
+            (default 25 — i top-25% per sink score sono sink). Range 0-100.
+        border: anelli di bordo forzati a sink, OFF di default (solo se
             `grid_h > 2*border` e `grid_w > 2*border`, altrimenti saltato).
 
     Returns:
@@ -334,7 +380,10 @@ def sink_mask(
     if m.ndim != 3:
         raise ValueError(f"sink_map deve essere [t,g h,gw], got {tuple(m.shape)}")
     t, gh, gw = m.shape
-    thr = torch.quantile(m.flatten(), percentile / 100.0)
+    # "top-percentile%" per sink score → soglia al quantile (1 - percentile/100).
+    # Con percentile=25 vogliamo il 25% PIÙ ALTO, non tutto sopra il 25° percentile
+    # (che sarebbe il 75% dei token, l'opposto di quanto intende "sink" come minoranza).
+    thr = torch.quantile(m.flatten(), 1.0 - percentile / 100.0)
     is_sink = m >= thr
     if border > 0 and gh > 2 * border and gw > 2 * border:
         is_sink[:, :border, :] = True
@@ -350,7 +399,7 @@ def sink_view(
     *,
     view: str = "all",
     percentile: float = 25.0,
-    border: int = 2,
+    border: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Isola sink/non-sink in `heatmap` SENZA perdere l'informazione grezza.
 

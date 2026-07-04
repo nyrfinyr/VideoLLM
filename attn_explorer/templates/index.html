@@ -8,13 +8,19 @@
   <div class="meta">store <code>{{ store }}</code> · {{ videos|length }} video catturati</div>
 
   {% if videos %}
-  <div class="videolist">
+  <div class="videogrid">
     {% for v in videos %}
-    <a href="{{ url_for('video_page', stem=v.stem) }}">
-      <div class="vname">{{ v.video_name }}</div>
-      <div class="vprompt">{{ v.prompt }}</div>
-      <div class="vmeta">{{ v.cells }} celle · {{ v.n_tokens }} token domanda ·
-        {{ "%.1f"|format(v.fps) }} fps · {{ v.regime }}</div>
+    <a class="vcard" href="{{ url_for('video_page', stem=v.stem) }}">
+      <div class="vthumb">
+        <span class="vbadge">{{ v._store }}</span>
+        <img src="{{ url_for('api_frame', stem=v.stem, cell=0) }}" loading="lazy" alt="">
+      </div>
+      <div class="vbody">
+        <div class="vname">{{ v.video_name }}</div>
+        <div class="vprompt">{{ v.prompt }}</div>
+        <div class="vmeta">{{ v.cells }} celle · {{ v.n_tokens }} token domanda ·
+          {{ "%.1f"|format(v.fps) }} fps · {{ v.regime }}</div>
+      </div>
     </a>
     {% endfor %}
   </div>
