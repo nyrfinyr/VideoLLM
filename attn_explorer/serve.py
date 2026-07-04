@@ -20,11 +20,15 @@ attenzione (via `AttentionCapture.aggregate` + `rank_cells`) e gli overlay sono
 rigenerati per quella selezione. Senza token selezionati si usa la media di
 tutti i token della domanda (ordinamento di default).
 
-Filtro sink (opzionale, da dump prodotto con `sink_map`): gli endpoint `rank` e
-`overlay` accettano `filter_sink=true&sink_percentile=25&sink_border=2` per
-azzerare i token visivi-sink prima del ranking/overlay (metodo "sink-dims" di
-`lot/retrieval.py`). Default `filter_sink=false` (mostra l'attenzione grezza).
-Senza `sink_map` nel dump (capture legacy) il filtro è no-op.
+View sink (opzionale, da dump prodotto con `sink_map`): gli endpoint `rank` e
+`overlay` accettano `sink_view=all|sink|nonsink&sink_percentile=25&sink_border=2`
+per scegliere cosa mostrare rispetto alla classificazione sink (metodo
+"sink-dims" di `lot/retrieval.py`):
+  - `all` (default): attenzione grezza intatta; in overlay le celle sink sono
+    solo evidenziate con un contorno, mai azzerate.
+  - `sink`: solo la massa di attenzione sulle celle sink (le altre azzerate).
+  - `nonsink`: solo la massa sulle celle non-sink (le sink azzerate).
+Senza `sink_map` nel dump (capture legacy) la view è no-op.
 """
 import argparse
 import io
@@ -39,16 +43,17 @@ from PIL import Image
 
 from utils.attn_core import (
     AttentionCapture,
-    filter_sinks,
     load_capture,
     make_overlay,
     rank_cells,
     sink_mask,
+    sink_view,
 )
 
-# Default del filtro sink (allineati a `lot/retrieval.py`).
+# Default della classificazione sink (allineati a `lot/retrieval.py`).
 DEFAULT_SINK_PERCENTILE = 25.0
 DEFAULT_SINK_BORDER = 2
+SINK_VIEWS = ("all", "sink", "nonsink")
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -60,26 +65,21 @@ def parse_tokens(raw: str | None) -> list[int]:
     return [int(x) for x in raw.split(",") if x.strip().isdigit()]
 
 
-def _bool_arg(name: str, default: bool) -> bool:
-    """Parse `?flag=true|false` (default se assente)."""
-    raw = request.args.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+def _sink_params() -> tuple[str, float, int]:
+    """Legga `(view, percentile, border)` dalla query string.
 
-
-def _sink_params() -> tuple[bool, float, int]:
-    """Legga `(filter_sink, percentile, border)` dalla query string.
-
-    `filter_sink` default `false` (attenzione grezza). Senza `sink_map` nel
-    dump il filtro sarà no-op anche se richiesto.
+    `view` (`?sink_view=all|sink|nonsink`, default `all`) NON azzera mai
+    l'attenzione grezza da sola: seleziona solo cosa mostrare (tutto, solo
+    celle sink, solo celle non-sink). Senza `sink_map` nel dump è no-op.
     """
-    filter_sink = _bool_arg("filter_sink", default=False)
+    view = request.args.get("sink_view", "all").strip().lower()
+    if view not in SINK_VIEWS:
+        abort(400, f"sink_view deve essere uno tra {SINK_VIEWS}, got {view!r}")
     percentile = float(request.args.get("sink_percentile", DEFAULT_SINK_PERCENTILE))
     border = int(request.args.get("sink_border", DEFAULT_SINK_BORDER))
     percentile = max(0.0, min(100.0, percentile))
     border = max(0, border)
-    return filter_sink, percentile, border
+    return view, percentile, border
 
 
 def create_app(store: Path) -> Flask:
@@ -139,6 +139,7 @@ def create_app(store: Path) -> Flask:
             tokens=tokens,
             answer=meta.get("answer"),
             options=meta.get("options", []),
+            has_sink_map=bool(cap.sink_map.abs().sum().item() > 0),
         )
 
     # ── Video originale ──
@@ -162,18 +163,19 @@ def create_app(store: Path) -> Flask:
         heatmap = cap.aggregate(rows)
         metric = request.args.get("metric", "sum")
 
-        # Filtro sink opzionale: se richiesto e il dump ha un sink_map
-        # non-zero, si azzerano i token-sink e si renormalizza prima del
-        # ranking. Ritorniamo anche la mask così la UI può mostrarla.
-        filter_sink, percentile, border = _sink_params()
-        sink_applied = False
+        # View sink opzionale: 'all' mostra la massa grezza (nessuna
+        # esclusione), 'sink'/'nonsink' classificano prima del ranking così
+        # si può ordinare le celle guardando solo i token-sink o solo quelli
+        # non-sink. Nessuna view azzera l'attenzione "per sempre": è solo una
+        # selezione applicata a questa risposta.
+        view, percentile, border = _sink_params()
         n_sink = 0
-        if filter_sink and cap.sink_map.abs().sum().item() > 0:
-            heatmap, mask = filter_sinks(
+        has_sink_map = bool(cap.sink_map.abs().sum().item() > 0)
+        if has_sink_map:
+            heatmap, mask = sink_view(
                 heatmap, cap.sink_map,
-                percentile=percentile, border=border,
+                view=view, percentile=percentile, border=border,
             )
-            sink_applied = True
             n_sink = int(mask.sum().item())
 
         ranked = rank_cells(heatmap, cap.grid, cap.frame_indices, cap.fps,
@@ -183,15 +185,14 @@ def create_app(store: Path) -> Flask:
             "selected": rows,
             "total_mass": float(heatmap.sum()),
             "cells": [c.as_dict() for c in ranked],
-        }
-        if filter_sink:
-            result["sink"] = {
-                "applied": sink_applied,
+            "sink": {
+                "view": view,
                 "percentile": percentile,
                 "border": border,
                 "n_sink": n_sink,
-                "has_sink_map": bool(cap.sink_map.abs().sum().item() > 0),
-            }
+                "has_sink_map": has_sink_map,
+            },
+        }
         return jsonify(result)
 
     @app.get("/api/<stem>/sink")
@@ -243,22 +244,31 @@ def create_app(store: Path) -> Flask:
         rows = parse_tokens(request.args.get("tokens"))
         heatmap = cap.aggregate(rows)
 
-        # Filtro sink: se richiesto e `sink_map` è presente, si azzerano i
-        # token-sink della heatmap aggregata e si renormalizza. L'overlay
-        # usa poi min/max globali della heatmap FILTRATA per celle
-        # confrontabili.
-        filter_sink, percentile, border = _sink_params()
-        if filter_sink and cap.sink_map.abs().sum().item() > 0:
-            heatmap, _mask = filter_sinks(
+        # View sink: 'all' non tocca la heatmap (attenzione grezza) ma disegna
+        # il contorno delle celle sink così restano distinguibili a vista;
+        # 'sink'/'nonsink' azzerano l'altra classe e renormalizzano — in
+        # quei due casi il contorno è ridondante (le celle escluse sono già
+        # a zero) e viene omesso. min/max globali sulla heatmap VISTA
+        # mantengono le celle tra loro confrontabili.
+        view, percentile, border = _sink_params()
+        mask = None
+        if cap.sink_map.abs().sum().item() > 0:
+            heatmap, cell_mask = sink_view(
                 heatmap, cap.sink_map,
-                percentile=percentile, border=border,
+                view=view, percentile=percentile, border=border,
             )
+            if view == "all":
+                mask = cell_mask
 
         frame_path = store / stem / "frames" / f"cell_{ti:04d}.png"
         if not frame_path.is_file():
             abort(404)
         frame = np.asarray(Image.open(frame_path).convert("RGB"))
-        img = make_overlay(frame, heatmap[ti], vmin=float(heatmap.min()), vmax=float(heatmap.max()))
+        img = make_overlay(
+            frame, heatmap[ti],
+            vmin=float(heatmap.min()), vmax=float(heatmap.max()),
+            sink_cell_mask=mask[ti] if mask is not None else None,
+        )
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), mimetype="image/png")

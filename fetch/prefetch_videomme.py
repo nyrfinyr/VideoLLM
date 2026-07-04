@@ -43,6 +43,14 @@ Hydra overrides:
     uv run python fetch/prefetch_videomme.py subtitles=true
     uv run python fetch/prefetch_videomme.py keep_zips=true
     uv run python fetch/prefetch_videomme.py --cfg job
+
+    # ~20 video diversi per lunghezza (fino a 7 short + 7 medium + 6 long,
+    # via override CLI di `videos_per_duration`), ristretti ai chunk 7 e
+    # 14 — quelli a cavallo dei confini short|medium e medium|long nel
+    # parquet (video #300/#301 e #600/#601), quindi i più probabili a
+    # contenere tutte e 3 le fasce in ~10GB invece di scandire i 20 chunk
+    # (~101GB) alla ricerca di video sparsi ovunque. Ignora `duration`/`n`.
+    uv run python fetch/prefetch_videomme.py chunks=[7,14] videos_per_duration=7
 """
 import json
 import logging
@@ -132,6 +140,31 @@ def _extract_targets_from_zip(
             zf.extract(info, videos_dir)
             extracted[vid] = info.filename
     return extracted
+
+
+def _select_videos_per_duration(rows: list[dict], k: int) -> list[dict]:
+    """Tiene tutte le righe dei primi `k` videoID distinti per ciascuna
+    fascia `duration` (short/medium/long), nell'ordine in cui compaiono
+    in `rows`. A differenza di un plain `rows[:n]`, garantisce diversità
+    tra le 3 fasce invece di dipendere da come sono ordinate nel parquet
+    (VideoMME le tiene in 3 blocchi contigui: prima tutte le short, poi
+    le medium, poi le long — un `n` piatto pesca solo dalla prima fascia
+    che incontra)."""
+    quota = {"short": k, "medium": k, "long": k}
+    accepted: dict[str, set[str]] = {"short": set(), "medium": set(), "long": set()}
+    out = []
+    for r in rows:
+        d = r.get("duration")
+        if d not in quota:
+            continue
+        vid = r["videoID"]
+        if vid in accepted[d] or len(accepted[d]) < quota[d]:
+            accepted[d].add(vid)
+            out.append(r)
+    short_of = {d: quota[d] - len(accepted[d]) for d in quota if len(accepted[d]) < quota[d]}
+    if short_of:
+        logger.warning("videos_per_duration=%d: fasce sotto quota (pool esaurito): %s", k, short_of)
+    return out
 
 
 def _fetch_video_chunks(
@@ -274,6 +307,7 @@ def prefetch(
     subtitles: bool,
     keep_zips: bool,
     chunks: list[int] | None,
+    videos_per_duration: int | None = None,
 ) -> dict:
     from datasets import load_dataset
     from huggingface_hub import hf_hub_download
@@ -287,7 +321,13 @@ def prefetch(
     rows: list[dict] = [dict(r) for r in ds]
     logger.info("metadata: %d righe, columns=%s", len(rows), list(rows[0].keys()))
 
-    if duration and duration != "all":
+    if videos_per_duration is not None and duration and duration != "all":
+        logger.warning(
+            "videos_per_duration=%d è impostato: ignoro duration=%r "
+            "(la selezione bilanciata pesca comunque da tutte e 3 le fasce)",
+            videos_per_duration, duration,
+        )
+    elif duration and duration != "all":
         rows = [r for r in rows if r.get("duration") == duration]
         logger.info("filtro duration=%r → %d righe", duration, len(rows))
 
@@ -320,7 +360,13 @@ def prefetch(
             chunks, before, len(rows),
         )
 
-    if n is not None:
+    if videos_per_duration is not None:
+        rows = _select_videos_per_duration(rows, videos_per_duration)
+        logger.info(
+            "selezione bilanciata: fino a %d video per fascia (short/medium/long) → %d righe",
+            videos_per_duration, len(rows),
+        )
+    elif n is not None:
         rows = rows[:n]
         logger.info("trunca a n=%d righe", n)
 
@@ -411,6 +457,7 @@ def run(cfg: DictConfig) -> None:
         bool(cfg.subtitles),
         bool(cfg.keep_zips),
         chunks,
+        cfg.videos_per_duration,
     )
 
 
