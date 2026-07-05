@@ -17,7 +17,7 @@ store hanno lo stesso stem vince il primo nell'ordine passato a `--store`.
 
 Route:
   GET /                              elenco dei video dello store
-  GET /analisi                       correlazione entropia risposta ↔ correttezza (su tutti i video)
+  GET /analisi                       entropia risposta e concentrazione attenzione ↔ correttezza (su tutti i video)
   GET /v/<stem>                      pagina interattiva del video (chip token + grid)
   GET /api/<stem>/rank?tokens=0,3    JSON: celle ordinate per massa delle entity scelte
   GET /api/<stem>/sink                JSON: sink_map + maschera sink (percentile + bordo)
@@ -51,6 +51,7 @@ import argparse
 import io
 import json
 import math
+import statistics
 from functools import lru_cache
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from PIL import Image
 
 from utils.attn_core import (
     AttentionCapture,
+    attention_concentration,
     load_capture,
     make_overlay,
     parse_answer_meta,
@@ -220,23 +222,36 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
 
     @app.get("/analisi")
     def analisi():
-        """Correlazione fra entropia della risposta e correttezza, su TUTTI i
-        video degli store che hanno sia `answer_entropy` (dal `.pt`) sia una
-        risposta corretta nota (`answer_letter`, da index.json o sidecar)."""
+        """Correlazione fra entropia della risposta, concentrazione
+        dell'attenzione (sink-filtrata, `attention_concentration`) e
+        correttezza, su TUTTI i video degli store che hanno sia
+        `answer_entropy` (dal `.pt`) sia una risposta corretta nota
+        (`answer_letter`, da index.json o sidecar).
+
+        La concentrazione richiede di ricaricare il `.pt` di ogni video (via
+        `get_capture`, memoizzata): costo trascurabile per store di decine di
+        video, cresce con lo store — non è un problema alla scala attuale."""
         rows = []
         for v in (with_outcome(v) for v in load_index()):
             entropy = v.get("answer_entropy")
             outcome = v.get("outcome")
             if entropy is None or outcome is None:
                 continue
+            stem = v["stem"]
+            try:
+                conc = attention_concentration(get_capture(stem))
+                top1_pct = conc["top1_pct"]
+            except Exception:
+                top1_pct = None
             rows.append({
-                "stem": v["stem"],
-                "video_name": v.get("video_name", v["stem"]),
+                "stem": stem,
+                "video_name": v.get("video_name", stem),
                 "entropy": float(entropy),
                 "correct": outcome == "correct",
                 "pred_letter": v.get("pred_letter"),
                 "answer_letter": v.get("answer_letter"),
                 "store": v.get("_store"),
+                "top1_pct": top1_pct,
             })
         rows.sort(key=lambda r: r["entropy"], reverse=True)
 
@@ -248,6 +263,43 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
         ratio = (mean_wrong / mean_correct) if (mean_correct and mean_wrong and mean_correct > 0) else None
         r = _pearson_r([row["entropy"] for row in rows], [1.0 if row["correct"] else 0.0 for row in rows])
 
+        # Concentrazione: solo sui video per cui il calcolo non è fallito (sink_map presente).
+        conc_rows = [row for row in rows if row["top1_pct"] is not None]
+        r_conc = None
+        if len(conc_rows) >= 2:
+            r_conc = _pearson_r(
+                [row["top1_pct"] for row in conc_rows],
+                [1.0 if row["correct"] else 0.0 for row in conc_rows],
+            )
+
+        # Quadranti (entropia x concentrazione, soglie = mediana del campione
+        # corrente): isola il bucket "incerto e disperso" dove si concentrano
+        # gli errori — vedi docs/entropia_confidenza_mcq.md.
+        quadrants = None
+        ent_median = conc_median = None
+        if len(conc_rows) >= 4:
+            ent_median = statistics.median(row["entropy"] for row in conc_rows)
+            conc_median = statistics.median(row["top1_pct"] for row in conc_rows)
+            labels = {
+                (True, True): "A · sicuro e concentrato",
+                (True, False): "B · sicuro ma disperso",
+                (False, True): "C · incerto ma concentrato",
+                (False, False): "D · incerto e disperso",
+            }
+            buckets = {k: [] for k in labels}
+            for row in conc_rows:
+                key = (row["entropy"] <= ent_median, row["top1_pct"] >= conc_median)
+                row["quadrant"] = labels[key]
+                buckets[key].append(row)
+            quadrants = [
+                {
+                    "label": labels[k],
+                    "n": len(lst),
+                    "acc": (sum(1 for row in lst if row["correct"]) / len(lst)) if lst else None,
+                }
+                for k, lst in buckets.items()
+            ]
+
         return render_template(
             "analisi.html",
             store=", ".join(str(s) for s in stores),
@@ -255,6 +307,8 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
             rows_json=json.dumps(rows, ensure_ascii=False),
             n=n, n_correct=len(correct_rows), n_wrong=len(wrong_rows),
             mean_correct=mean_correct, mean_wrong=mean_wrong, ratio=ratio, r=r,
+            n_conc=len(conc_rows), r_conc=r_conc,
+            quadrants=quadrants, ent_median=ent_median, conc_median=conc_median,
         )
 
     @app.get("/v/<stem>")

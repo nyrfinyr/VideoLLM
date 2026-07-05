@@ -148,12 +148,12 @@ a.back:hover { color:var(--acc); }
 .legend .swatch { width:10px; height:10px; border-radius:50%; display:inline-block; }
 .legend .swatch.good { background:#4caf50; }
 .legend .swatch.critical { background:#f44336; }
-#chart text { fill:var(--mut); font-size:11px; font-family:inherit; }
-#chart .axis-line { stroke:#3a4054; stroke-width:1; }
-#chart .grid-line { stroke:#232838; stroke-width:1; }
-#chart .mean-line { stroke-width:2; stroke-dasharray:4 3; }
-#chart .dot { cursor:pointer; }
-#chart .dot-hit { fill:transparent; }
+#chart text, #chart2 text { fill:var(--mut); font-size:11px; font-family:inherit; }
+#chart .axis-line, #chart2 .axis-line { stroke:#3a4054; stroke-width:1; }
+#chart .grid-line, #chart2 .grid-line { stroke:#232838; stroke-width:1; }
+#chart .mean-line, #chart2 .mean-line { stroke-width:2; stroke-dasharray:4 3; }
+#chart .dot, #chart2 .dot { cursor:pointer; }
+#chart .dot-hit, #chart2 .dot-hit { fill:transparent; }
 #tooltip { position:fixed; pointer-events:none; z-index:50; display:none;
            background:var(--card); border:1px solid #232838; border-radius:8px;
            padding:8px 11px; font-size:12.5px; color:var(--ink);

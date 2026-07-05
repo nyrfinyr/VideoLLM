@@ -523,6 +523,45 @@ def sink_view(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Concentrazione dell'attenzione sui frame (segnale di "grounding")
+# ─────────────────────────────────────────────────────────────────────────────
+def attention_concentration(
+    cap: "AttentionCapture",
+    rows: tuple[int, ...] = (),
+    *,
+    percentile: float = 25.0,
+    border: int = 0,
+    topk: int = 3,
+) -> dict:
+    """Quanto l'attenzione (sink-filtrata) si concentra su poche celle temporali.
+
+    Aggrega l'attenzione sulla selezione di token `rows` (default: tutta la
+    domanda, via `AttentionCapture.aggregate`), azzera le celle sink
+    (`sink_mask`/`sink_view`) e classifica le celle residue per massa
+    (`rank_cells`, `metric='sum'`). `top1_pct` alto ⇒ il modello "trova" un
+    frame su cui fissarsi (grounding); basso e uniforme fra le celle ⇒
+    attenzione dispersa, nessun frame spicca.
+
+    Senza filtro sink questo segnale è quasi piatto (dominato dai token sink,
+    che assorbono la maggior parte della massa indipendentemente dal
+    contenuto) — il filtro è ciò che lo rende informativo. Validato
+    empiricamente su un campione VNBench "retrieval" (r=0.58 con la
+    correttezza, r=0.37 con la presenza content-grounded del needle nei frame
+    campionati) — vedi `docs/entropia_confidenza_mcq.md`.
+    """
+    heat = cap.aggregate(rows)
+    heat_nonsink, _ = sink_view(heat, cap.sink_map, view="nonsink", percentile=percentile, border=border)
+    ranked = rank_cells(heat_nonsink, cap.grid, cap.frame_indices, cap.fps, metric="sum", topk=topk)
+    top1 = ranked[0]
+    return {
+        "top1_pct": top1.pct,
+        "topk_pct": sum(r.pct for r in ranked[:topk]),
+        "top_cell": top1.cell,
+        "top_t_sec": top1.t_sec,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Persistenza dell'AttentionCapture (torch.save/load)
 # ─────────────────────────────────────────────────────────────────────────────
 def save_capture(cap: AttentionCapture, path: Path) -> None:

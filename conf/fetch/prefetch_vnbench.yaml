@@ -1,0 +1,43 @@
+# @package _global_
+defaults:
+  - /wandb: default
+  - _self_
+
+wandb:
+  project: vnbench-prefetch
+  tags: [prefetch, vnbench]
+
+# Repo HF che ospita SOLO le annotazioni di VNBench (2MB, un JSON con le
+# 4 varianti "try" per video). I video grezzi NON sono su HF: sono su
+# Google Drive (link nel README di CASIA-IVA-Lab/VideoNIAH), quindi non
+# scriptabili come gli altri prefetch — vedi docstring dello script.
+hf_repo: Joez1717/VNBench
+annotation_file: VNBench-main-4try.json
+
+# Sottotipi retrieval da includere. Pool disponibile nell'annotazione:
+# 150 video distinti per sottotipo (try=0, l'unico usato qui e nei 30
+# capture già fatti).
+subtypes: [ret_insert1, ret_insert2, ret_edit1]
+
+# Video per sottotipo da selezionare (default 100 x 3 = 300 totali).
+n_per_subtype: 100
+
+# Cartella con gli mp4 grezzi di VNBench, scaricati ed estratti A MANO
+# dal link Google Drive del README VideoNIAH (nessun modo scriptabile di
+# tirarli giù da qui) — lo script li cerca ricorsivamente per stem sotto
+# questa cartella. OBBLIGATORIO, nessun default sensato.
+videos_root: ???
+
+# true = symlink invece di copiare (risparmia spazio se `videos_root` e
+# `out_dir` sono sullo stesso filesystem HPC; false = copia fisica, come
+# i 30 video già presenti in `out_dir`).
+symlink: false
+
+# Stesso layout piatto di data/vnbench/retrieval/ già esistente
+# (<stem>.mp4 + <stem>.json sidecar), consumato da
+# `attn_explorer.capture --video-dir --prompt-from-json` — NON il layout
+# out_dir/videos/+metadata.jsonl degli altri prefetch (VNBench non è
+# nel registro Dataset di evals/).
+out_dir: data/vnbench/retrieval
+
+hf_home: ${oc.env:HF_HOME,null}

@@ -36,11 +36,51 @@
     <svg id="chart" viewBox="0 0 900 380" width="100%" style="overflow:visible"></svg>
   </div>
 
+  {% if n_conc >= 2 %}
+  <div class="anpanel">
+    <h2 style="margin-top:0">Concentrazione dell'attenzione (sink-filtrata) vs correttezza</h2>
+    <div class="meta">
+      {{ n_conc }} video con concentrazione calcolabile (richiede `sink_map` nel `.pt`)
+      · correlazione di Pearson r(concentrazione top1%, corretta) =
+      <b>{{ "%.2f"|format(r_conc) if r_conc is not none else "n/d" }}</b>
+    </div>
+    <p class="meta">
+      <code>top1_pct</code> = percentuale di attenzione (esclusi i token sink) concentrata sulla
+      cella temporale più attenzionata: alto ⇒ il modello si "fissa" su un frame; basso ⇒ attenzione
+      dispersa su tutti i frame, nessuno spicca.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if quadrants %}
+  <div class="anpanel">
+    <h2 style="margin-top:0">Quadranti: entropia × concentrazione (soglie = mediana del campione)</h2>
+    <div class="meta">
+      entropia mediana = {{ "%.3f"|format(ent_median) }} bit · concentrazione mediana = {{ "%.1f"|format(conc_median) }}%
+    </div>
+    <table class="logittable">
+      <thead><tr><th>quadrante</th><th>n</th><th>accuratezza</th></tr></thead>
+      <tbody>
+        {% for q in quadrants %}
+        <tr>
+          <td>{{ q.label }}</td>
+          <td>{{ q.n }}</td>
+          <td class="{{ 'correct' if (q.acc is not none and q.acc >= 0.7) else ('pred' if (q.acc is not none and q.acc < 0.5) else '') }}">
+            {{ "%.0f%%"|format(q.acc * 100) if q.acc is not none else "n/d" }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <svg id="chart2" viewBox="0 0 900 420" width="100%" style="overflow:visible"></svg>
+  </div>
+  {% endif %}
+
   <div class="anpanel">
     <h2 style="margin-top:0">Dettaglio</h2>
     <table class="logittable">
       <thead>
-        <tr><th>video</th><th>esito</th><th>entropia (bit)</th><th>pred</th><th>gt</th><th>store</th></tr>
+        <tr><th>video</th><th>esito</th><th>entropia (bit)</th><th>concentrazione top1%</th><th>quadrante</th><th>pred</th><th>gt</th><th>store</th></tr>
       </thead>
       <tbody>
         {% for row in rows %}
@@ -48,6 +88,8 @@
           <td><a class="back" href="{{ url_for('video_page', stem=row.stem) }}">{{ row.video_name }}</a></td>
           <td>{{ 'corretta' if row.correct else 'sbagliata' }}</td>
           <td>{{ "%.4f"|format(row.entropy) }}</td>
+          <td>{{ "%.1f"|format(row.top1_pct) if row.top1_pct is not none else "n/d" }}</td>
+          <td>{{ row.quadrant or "n/d" }}</td>
           <td>{{ row.pred_letter }}</td>
           <td>{{ row.answer_letter }}</td>
           <td>{{ row.store }}</td>
@@ -148,6 +190,76 @@
         tooltip.style.top = (e.clientY + 14) + 'px';
       }
       function hideTooltip() { tooltip.style.display = 'none'; }
+    })();
+
+    (function () {
+      const svg = document.getElementById('chart2');
+      if (!svg) return;
+      const conc = DATA.filter(d => d.top1_pct !== null && d.top1_pct !== undefined);
+      if (!conc.length) return;
+
+      const W = 900, H = 420;
+      const padL = 60, padR = 30, padT = 16, padB = 46;
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+      const maxEntropy = Math.max(...conc.map(d => d.entropy)) * 1.08 || 1;
+      const maxConc = Math.max(...conc.map(d => d.top1_pct)) * 1.08 || 1;
+      const colGood = '#4caf50', colCritical = '#f44336';
+
+      function median(xs) {
+        const s = [...xs].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+      }
+      const entMed = median(conc.map(d => d.entropy));
+      const concMed = median(conc.map(d => d.top1_pct));
+
+      const xScale = v => padL + (v / maxEntropy) * plotW;
+      const yScale = v => padT + plotH - (v / maxConc) * plotH;
+
+      function svgEl(tag, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const k in attrs) el.setAttribute(k, attrs[k]);
+        return el;
+      }
+
+      svg.appendChild(svgEl('line', { x1: padL, x2: padL, y1: padT, y2: H - padB, class: 'axis-line' }));
+      svg.appendChild(svgEl('line', { x1: padL, x2: W - padR, y1: H - padB, y2: H - padB, class: 'axis-line' }));
+
+      // linee della mediana: dividono il piano nei quattro quadranti A/B/C/D.
+      const medX = xScale(entMed), medY = yScale(concMed);
+      svg.appendChild(svgEl('line', { x1: medX, x2: medX, y1: padT, y2: H - padB, class: 'grid-line', 'stroke-dasharray': '4 4' }));
+      svg.appendChild(svgEl('line', { x1: padL, x2: W - padR, y1: medY, y2: medY, class: 'grid-line', 'stroke-dasharray': '4 4' }));
+
+      const xlab = svgEl('text', { x: padL + plotW / 2, y: H - 8, 'text-anchor': 'middle' });
+      xlab.textContent = 'entropia della risposta (bit)';
+      svg.appendChild(xlab);
+      const ylab = svgEl('text', { x: 16, y: padT + plotH / 2, 'text-anchor': 'middle', transform: `rotate(-90 16 ${padT + plotH / 2})` });
+      ylab.textContent = 'concentrazione attenzione top1 (%)';
+      svg.appendChild(ylab);
+
+      const tooltip = document.getElementById('tooltip');
+      conc.forEach(d => {
+        const cx = xScale(d.entropy), cy = yScale(d.top1_pct);
+        const color = d.correct ? colGood : colCritical;
+        const hit = svgEl('circle', { cx, cy, r: 12, class: 'dot-hit' });
+        const dot = svgEl('circle', { cx, cy, r: 5.5, class: 'dot', fill: color, opacity: 0.88 });
+        const group = svgEl('g', {});
+        group.appendChild(hit);
+        group.appendChild(dot);
+        group.addEventListener('pointerenter', (e) => {
+          tooltip.innerHTML =
+            '<div class="tt-val" style="color:' + color + '">' + d.entropy.toFixed(3) + ' bit · ' + d.top1_pct.toFixed(1) + '%</div>' +
+            '<div>' + d.video_name + '</div>' +
+            '<div class="tt-sub">pred ' + (d.pred_letter || '?') + ' · gt ' + (d.answer_letter || '?') + ' · ' + (d.quadrant || '') + '</div>';
+          tooltip.style.display = 'block';
+        });
+        group.addEventListener('pointermove', (e) => {
+          tooltip.style.left = (e.clientX + 14) + 'px';
+          tooltip.style.top = (e.clientY + 14) + 'px';
+        });
+        group.addEventListener('pointerleave', () => { tooltip.style.display = 'none'; });
+        svg.appendChild(group);
+      });
     })();
   </script>
 
