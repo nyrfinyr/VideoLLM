@@ -16,11 +16,17 @@ annotation_file: VNBench-main-4try.json
 
 # Sottotipi retrieval da includere. Pool disponibile nell'annotazione:
 # 150 video distinti per sottotipo (try=0, l'unico usato qui e nei 30
-# capture già fatti).
-subtypes: [ret_insert1, ret_insert2, ret_edit1]
+# capture già fatti). `ret_edit1` ESCLUSO di default: il needle è una
+# modifica sottile (non un taglio netto come negli insert), e il
+# rilevatore content-grounded di finestra-needle (usato per calcolare
+# `needle_sampled`, la ground truth della catena entropia→concentrazione
+# attenzione→correttezza) è inaffidabile su questo sottotipo — vedi
+# docs/entropia_confidenza_mcq.md e la nota "solo insert è solido".
+subtypes: [ret_insert1, ret_insert2]
 
-# Video per sottotipo da selezionare (default 100 x 3 = 300 totali).
-n_per_subtype: 100
+# Video per sottotipo (default 150 x 2 = 300 totali = l'INTERO pool
+# insert disponibile nell'annotazione, try=0).
+n_per_subtype: 150
 
 # Cartella con gli mp4 grezzi di VNBench, scaricati ed estratti A MANO
 # dal link Google Drive del README VideoNIAH (nessun modo scriptabile di
