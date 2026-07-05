@@ -1,6 +1,6 @@
 :root { --bg:#0f1117; --card:#171a23; --ink:#e6e9ef; --mut:#9aa3b2; --acc:#ffb454; }
 * { box-sizing:border-box; }
-body { margin:0 auto; padding:32px; max-width:1100px; background:var(--bg); color:var(--ink);
+body { margin:0 auto; padding:32px; max-width:1600px; background:var(--bg); color:var(--ink);
        text-align:center; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
 h1 { font-size:24px; margin:0 0 4px; }
 h1 .ent { color:var(--acc); }
@@ -15,9 +15,27 @@ h1 .ent { color:var(--acc); }
 .controls label { cursor:pointer; user-select:none; }
 .controls.sinkview { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; align-items:center; }
 .controls.sinkview span { color:var(--mut); }
-/* ── Grid dei frame ── */
-.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+
+/* ── Pannello superiore: domanda/risposte a sinistra, controlli selezione a destra ── */
+.toppanel { display:flex; gap:8px; align-items:stretch; margin-bottom:8px; text-align:left; }
+.toppanel-left { flex:1 1 50%; min-width:0; display:flex; }
+.toppanel-left .promptbox { flex:1; max-width:none; margin:0; }
+.toppanel-right { flex:1 1 50%; min-width:0;
+                   background:var(--card); border:1px solid #232838; border-radius:10px; padding:6px 8px; }
+.toppanel-right .meta { margin:0 0 10px; text-align:left; }
+.toppanel-right .tokens { justify-content:flex-start; max-width:none; margin:0 0 8px; }
+.toppanel-right .selinfo { margin:0 0 16px; }
+.toppanel-right .controls { text-align:left; }
+.toppanel-right .controls.sinkview { justify-content:flex-start; }
+@media (max-width:900px) {
+  .toppanel { flex-direction:column; }
+  .toppanel-right { width:100%; }
+}
+/* ── Grid dei frame (4 colonne fisse) ── */
+.grid { display:grid; grid-template-columns:repeat(4,1fr);
         gap:16px; margin-bottom:36px; }
+@media (max-width:900px) { .grid { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:560px) { .grid { grid-template-columns:1fr; } }
 .card { background:var(--card); border:1px solid #232838; border-radius:12px; overflow:hidden; }
 .card.top { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
 .imgwrap { position:relative; aspect-ratio:16/9; background:#000; cursor:zoom-in; }
@@ -46,6 +64,8 @@ h2 { font-size:16px; color:var(--mut); margin:0 0 12px; font-weight:600; }
 .vbadge { position:absolute; top:6px; left:6px; z-index:1; background:rgba(0,0,0,.7);
           color:var(--acc); font-size:10px; font-weight:600; letter-spacing:.02em;
           padding:2px 7px; border-radius:5px; text-transform:uppercase; }
+.vbadge.correct { background:#0ca30c; color:#fff; }
+.vbadge.wrong { background:#d03b3b; color:#fff; }
 .vbody { padding:12px 14px; }
 .vbody .vname { font-weight:600; font-size:13px; }
 .vbody .vprompt { color:var(--mut); font-size:12px; margin-top:4px;
@@ -56,6 +76,8 @@ a.back { color:var(--mut); font-size:13px; text-decoration:none; }
 a.back:hover { color:var(--acc); }
 
 /* ── Risposta corretta (ground truth) + risposta del modello sui frame campionati ── */
+.answerrow { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-top:0.8em; }
+.answerrow .answerbox { flex:1 1 420px; margin-top:0; }
 .answerbox { margin-top:0.8em; padding:8px 12px; background:#1a3a1a; border-left:4px solid #4caf50;
              border-radius:4px; color:var(--ink); }
 .answerbox b { color:#4caf50; font-size:1.1em; }
@@ -63,7 +85,24 @@ a.back:hover { color:var(--acc); }
 .answeropts .correct { color:#4caf50; font-weight:bold; }
 .answerbox.mismatch { background:#3a1a1a; border-left-color:#f44336; }
 .answerbox.mismatch b { color:#f44336; }
-.answerhint { margin-top:4px; font-size:0.85em; color:var(--mut); }
+.logittable { width:100%; margin-top:10px; border-collapse:collapse; font-size:0.85em; text-align:left; }
+.logittable th, .logittable td { padding:5px 10px; border-bottom:1px solid #232838; text-align:left; }
+.logittable th { color:var(--mut); font-weight:600; }
+.logittable tbody tr.correct { color:#4caf50; }
+.logittable tbody tr.pred:not(.correct) { color:#f44336; }
+.logittable tfoot td { border-top:1px solid #232838; border-bottom:none; font-weight:600; color:var(--ink); }
+.metatable { width:100%; margin:8px 0 0; border-collapse:collapse; font-size:0.8em; text-align:left; color:var(--mut); }
+
+/* ── Sezioni di dettaglio richiudibili (metadati, top-k non ristretto) ── */
+.infodetails { margin-top:14px; text-align:left; background:var(--card); border:1px solid #232838;
+               border-radius:8px; padding:2px 14px; }
+.infodetails summary { cursor:pointer; color:var(--mut); font-size:0.85em; padding:8px 0; user-select:none; }
+.infodetails summary:hover { color:var(--acc); }
+.infodetails[open] summary { color:var(--ink); border-bottom:1px solid #232838; }
+.infodetails .infobody { padding:10px 0 14px; }
+.metatable td { padding:3px 10px; border-bottom:1px solid #1c2029; }
+.metatable td:nth-child(odd) { color:var(--mut); white-space:nowrap; }
+.metatable td:nth-child(even) { color:var(--ink); }
 
 /* ── Token selezionabili (entity a runtime) ── */
 .promptbox { max-width:820px; margin:0 auto 18px; background:var(--card); border:1px solid #232838;
@@ -81,3 +120,45 @@ a.back:hover { color:var(--acc); }
             padding:24px; background:rgba(0,0,0,.93); cursor:zoom-out; }
 .lightbox.open { display:flex; }
 .lightbox img { max-width:100%; max-height:100%; object-fit:contain; box-shadow:0 0 40px rgba(0,0,0,.6); }
+
+/* ── Bottone + modale dati raw (.pt) ── */
+.rawbtn { background:#222633; border:1px solid #2c3242; border-radius:6px; color:var(--ink);
+          font-size:12px; padding:2px 10px; cursor:pointer; }
+.rawbtn:hover { border-color:var(--acc); color:var(--acc); }
+.rawmodal { cursor:default; z-index:200; }
+.rawpanel { background:var(--card); border:1px solid #232838; border-radius:10px;
+            width:min(900px,90vw); max-height:85vh; display:flex; flex-direction:column;
+            box-shadow:0 0 40px rgba(0,0,0,.6); text-align:left; }
+.rawhead { display:flex; align-items:center; gap:10px; padding:10px 16px;
+           border-bottom:1px solid #232838; color:var(--ink); }
+.rawhead b { flex:1; font-size:13px; }
+.rawhead button { background:#222633; border:1px solid #2c3242; border-radius:6px; color:var(--ink);
+                   font-size:12px; padding:3px 10px; cursor:pointer; }
+.rawhead button:hover { border-color:var(--acc); color:var(--acc); }
+#raw-pre { margin:0; padding:14px 16px; overflow:auto; font-size:12px; line-height:1.5;
+           color:var(--ink); white-space:pre-wrap; word-break:break-word; }
+
+/* ── Pagina /analisi: correlazione entropia ↔ correttezza ── */
+.kpi b.good { color:#4caf50; }
+.kpi b.critical { color:#f44336; }
+.anpanel { background:var(--card); border:1px solid #232838; border-radius:12px;
+           padding:16px 20px 10px; margin:0 auto 24px; max-width:1200px; text-align:left; }
+.legend { display:flex; gap:18px; margin:0 0 10px; font-size:12.5px; color:var(--mut); }
+.legend .item { display:flex; align-items:center; gap:6px; }
+.legend .swatch { width:10px; height:10px; border-radius:50%; display:inline-block; }
+.legend .swatch.good { background:#4caf50; }
+.legend .swatch.critical { background:#f44336; }
+#chart text { fill:var(--mut); font-size:11px; font-family:inherit; }
+#chart .axis-line { stroke:#3a4054; stroke-width:1; }
+#chart .grid-line { stroke:#232838; stroke-width:1; }
+#chart .mean-line { stroke-width:2; stroke-dasharray:4 3; }
+#chart .dot { cursor:pointer; }
+#chart .dot-hit { fill:transparent; }
+#tooltip { position:fixed; pointer-events:none; z-index:50; display:none;
+           background:var(--card); border:1px solid #232838; border-radius:8px;
+           padding:8px 11px; font-size:12.5px; color:var(--ink);
+           box-shadow:0 4px 18px rgba(0,0,0,.5); max-width:260px; text-align:left; }
+#tooltip .tt-val { font-weight:700; }
+#tooltip .tt-sub { color:var(--mut); margin-top:2px; }
+.anpanel .logittable { max-width:none; }
+.anpanel .logittable td a.back { color:inherit; text-decoration:underline; }

@@ -140,20 +140,50 @@ def mcq_answer_stats(logits: torch.Tensor, letter_ids: dict[str, int]) -> dict:
     assoluto (che dipende anche da spazi/tokenizzazione, non dal contenuto).
 
     Returns:
-        `{"answer_entropy": bit, "answer_probs": {lettera: prob}, "pred_letter": lettera}`.
+        `{"answer_entropy": bit, "answer_probs": {lettera: prob},
+        "answer_logits": {lettera: logit grezzo pre-softmax}, "pred_letter": lettera}`.
         Entropia in BIT (log2): 0 = certezza assoluta, `log2(n_lettere)` =
         massima incertezza (distribuzione uniforme fra le candidate).
     """
     letters = list(letter_ids.keys())
     ids = torch.tensor([letter_ids[l] for l in letters], device=logits.device)
-    probs = torch.softmax(logits[ids].float(), dim=0)
+    raw_logits = logits[ids].float()
+    probs = torch.softmax(raw_logits, dim=0)
     entropy_bits = (-(probs * torch.log2(probs.clamp_min(1e-12))).sum()).item()
     pred_letter = letters[int(probs.argmax())]
     return {
         "answer_entropy": entropy_bits,
         "answer_probs": {l: float(p) for l, p in zip(letters, probs.tolist())},
+        "answer_logits": {l: float(v) for l, v in zip(letters, raw_logits.tolist())},
         "pred_letter": pred_letter,
     }
+
+
+def top_k_logits(logits: torch.Tensor, tokenizer, k: int = 10) -> list[dict]:
+    """Top-`k` token del vocabolario INTERO (non ristretto alle lettere MCQ).
+
+    `logits` è `[vocab_size]` (stesso output di `logits_to_keep=1` riusato da
+    `mcq_answer_stats`, nessun forward aggiuntivo). A differenza della softmax
+    ristretta alle lettere candidate, qui la probabilità è quella "vera" sul
+    vocabolario completo: utile per vedere cosa il modello genererebbe senza
+    vincoli (es. se prova a scrivere il testo dell'opzione invece della
+    lettera, o è distratto da token non pertinenti).
+
+    Returns: lista di `{"token": str, "token_id": int, "logit": float, "prob": float}`
+    ordinata per probabilità decrescente.
+    """
+    probs_full = torch.softmax(logits.float(), dim=-1)
+    top_probs, top_ids = probs_full.topk(k)
+    top_logits = logits[top_ids].float()
+    return [
+        {
+            "token": tokenizer.decode([tid]),
+            "token_id": int(tid),
+            "logit": float(lg),
+            "prob": float(p),
+        }
+        for tid, lg, p in zip(top_ids.tolist(), top_logits.tolist(), top_probs.tolist())
+    ]
 
 
 @dataclass(frozen=True)
@@ -177,6 +207,9 @@ class VisualAttention:
     lettere MCQ candidate. Bassa entropia + `pred_letter` sbagliata, o alta
     entropia in generale, sono un segnale che l'evidenza per rispondere non è
     (chiaramente) nei frame campionati — vedi `utils.attn_core.mcq_answer_stats`.
+
+    `top_tokens`: top-k token sul vocabolario INTERO (non ristretto alle
+    lettere), stessi logit riusati — vedi `utils.attn_core.top_k_logits`.
     """
     attn: torch.Tensor  # [n_q, t, grid_h, grid_w]
     sink_map: torch.Tensor  # [t, grid_h, grid_w]
@@ -190,7 +223,9 @@ class VisualAttention:
     input_ids: torch.Tensor
     answer_entropy: float | None = None
     answer_probs: dict[str, float] | None = None
+    answer_logits: dict[str, float] | None = None
     pred_letter: str | None = None
+    top_tokens: list[dict] | None = None
 
     def __post_init__(self):
         if self.sink_map.shape != (self.t, self.grid_h, self.grid_w):
@@ -232,8 +267,15 @@ class AttentionCapture:
     spuria. La soglia percentile (es. 25°) e l'azzeramento si applicano a
     RUNTIME nel server, così si può variare senza rifare il forward.
 
-    `answer_entropy`/`answer_probs`/`pred_letter`: vedi `VisualAttention` —
-    `None` sui dump legacy o su prompt non-MCQ (nessuna lettera candidata).
+    `answer_entropy`/`answer_probs`/`answer_logits`/`pred_letter`/`top_tokens`:
+    vedi `VisualAttention` — `None` sui dump legacy o su prompt non-MCQ
+    (nessuna lettera candidata) per i primi quattro; `top_tokens` invece è
+    calcolato sempre (non richiede un MCQ), `None` solo sui dump legacy.
+
+    `capture_meta`: metadati di riproducibilità dell'invocazione di
+    `attn_explorer.capture` che ha prodotto questo dump (model id, dtype,
+    parametri di campionamento frame, timestamp, commit git) — vedi
+    `attn_explorer.capture.build_capture_meta`. `None` sui dump legacy.
     """
     video_path: str
     prompt: str
@@ -246,7 +288,10 @@ class AttentionCapture:
     sink_dims: tuple[int, ...]
     answer_entropy: float | None = None
     answer_probs: dict[str, float] | None = None
+    answer_logits: dict[str, float] | None = None
     pred_letter: str | None = None
+    top_tokens: list[dict] | None = None
+    capture_meta: dict | None = None
 
     def __post_init__(self):
         if self.sink_map.shape != (self.grid.t, self.grid.grid_h, self.grid.grid_w):
@@ -499,16 +544,20 @@ def save_capture(cap: AttentionCapture, path: Path) -> None:
         "sink_dims": list(cap.sink_dims),
         "answer_entropy": cap.answer_entropy,
         "answer_probs": cap.answer_probs,
+        "answer_logits": cap.answer_logits,
         "pred_letter": cap.pred_letter,
+        "top_tokens": cap.top_tokens,
+        "capture_meta": cap.capture_meta,
     }, path)
 
 
 def load_capture(path: Path) -> AttentionCapture:
     """Ricarica un `AttentionCapture` da `capture.pt`.
 
-    Tieni `sink_map`/`sink_dims`/`answer_entropy`/`answer_probs`/`pred_letter`
-    opzionali per leggere dump legacy senza quei field (rispettivamente:
-    ricostruiti come zeri/lista vuota, o `None`).
+    Tieni `sink_map`/`sink_dims`/`answer_entropy`/`answer_probs`/
+    `answer_logits`/`pred_letter`/`top_tokens`/`capture_meta` opzionali per
+    leggere dump legacy senza quei field (rispettivamente: ricostruiti come
+    zeri/lista vuota, o `None`).
     """
     d = torch.load(Path(path), map_location="cpu", weights_only=False)
     g = d["grid"]
@@ -527,5 +576,8 @@ def load_capture(path: Path) -> AttentionCapture:
         sink_dims=tuple(d.get("sink_dims", [])),
         answer_entropy=d.get("answer_entropy"),
         answer_probs=d.get("answer_probs"),
+        answer_logits=d.get("answer_logits"),
         pred_letter=d.get("pred_letter"),
+        top_tokens=d.get("top_tokens"),
+        capture_meta=d.get("capture_meta"),
     )

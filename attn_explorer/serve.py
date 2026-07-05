@@ -17,6 +17,7 @@ store hanno lo stesso stem vince il primo nell'ordine passato a `--store`.
 
 Route:
   GET /                              elenco dei video dello store
+  GET /analisi                       correlazione entropia risposta ↔ correttezza (su tutti i video)
   GET /v/<stem>                      pagina interattiva del video (chip token + grid)
   GET /api/<stem>/rank?tokens=0,3    JSON: celle ordinate per massa delle entity scelte
   GET /api/<stem>/sink                JSON: sink_map + maschera sink (percentile + bordo)
@@ -49,6 +50,7 @@ file per nome ricorsivamente sotto questa cartella.
 import argparse
 import io
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -81,6 +83,22 @@ def parse_tokens(raw: str | None) -> list[int]:
     if not raw:
         return []
     return [int(x) for x in raw.split(",") if x.strip().isdigit()]
+
+
+def _pearson_r(xs: list[float], ys: list[float]) -> float | None:
+    """Correlazione di Pearson fra due serie (equivalente al punto-biseriale
+    quando `ys` è binaria 0/1, es. entropia vs corretta/sbagliata). `None`
+    se n<2 o una delle due serie ha varianza nulla (correlazione indefinita)."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sx = math.sqrt(sum((x - mx) ** 2 for x in xs))
+    sy = math.sqrt(sum((y - my) ** 2 for y in ys))
+    if sx == 0 or sy == 0:
+        return None
+    return cov / (sx * sy)
 
 
 def _sink_params() -> tuple[str, float, int]:
@@ -181,10 +199,63 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
         """Heatmap aggregata `[t, gh, gw]` per la selezione di token `rows`."""
         return get_capture(stem).aggregate(rows)
 
+    def with_outcome(v: dict) -> dict:
+        """Aggiunge `outcome` ('correct'/'wrong'/None) confrontando `pred_letter`
+        con la risposta corretta (da `index.json`, con fallback sul sidecar per
+        gli entry legacy senza `answer_letter` — vedi `sidecar_answer_meta`).
+        Il fallback viene anche scritto in `answer_letter` sul dict ritornato,
+        così i consumer (es. `/analisi`) non devono rifare la stessa risoluzione."""
+        answer_letter = v.get("answer_letter") or sidecar_answer_meta(v.get("video", "")).get("answer_letter")
+        pred_letter = v.get("pred_letter")
+        outcome = None
+        if answer_letter and pred_letter:
+            outcome = "correct" if pred_letter == answer_letter else "wrong"
+        return {**v, "answer_letter": answer_letter, "outcome": outcome}
+
     # ── Pagine HTML ──
     @app.get("/")
     def index():
-        return render_template("index.html", videos=load_index(), store=", ".join(str(s) for s in stores))
+        videos = [with_outcome(v) for v in load_index()]
+        return render_template("index.html", videos=videos, store=", ".join(str(s) for s in stores))
+
+    @app.get("/analisi")
+    def analisi():
+        """Correlazione fra entropia della risposta e correttezza, su TUTTI i
+        video degli store che hanno sia `answer_entropy` (dal `.pt`) sia una
+        risposta corretta nota (`answer_letter`, da index.json o sidecar)."""
+        rows = []
+        for v in (with_outcome(v) for v in load_index()):
+            entropy = v.get("answer_entropy")
+            outcome = v.get("outcome")
+            if entropy is None or outcome is None:
+                continue
+            rows.append({
+                "stem": v["stem"],
+                "video_name": v.get("video_name", v["stem"]),
+                "entropy": float(entropy),
+                "correct": outcome == "correct",
+                "pred_letter": v.get("pred_letter"),
+                "answer_letter": v.get("answer_letter"),
+                "store": v.get("_store"),
+            })
+        rows.sort(key=lambda r: r["entropy"], reverse=True)
+
+        n = len(rows)
+        correct_rows = [r for r in rows if r["correct"]]
+        wrong_rows = [r for r in rows if not r["correct"]]
+        mean_correct = sum(r["entropy"] for r in correct_rows) / len(correct_rows) if correct_rows else None
+        mean_wrong = sum(r["entropy"] for r in wrong_rows) / len(wrong_rows) if wrong_rows else None
+        ratio = (mean_wrong / mean_correct) if (mean_correct and mean_wrong and mean_correct > 0) else None
+        r = _pearson_r([row["entropy"] for row in rows], [1.0 if row["correct"] else 0.0 for row in rows])
+
+        return render_template(
+            "analisi.html",
+            store=", ".join(str(s) for s in stores),
+            rows=rows,
+            rows_json=json.dumps(rows, ensure_ascii=False),
+            n=n, n_correct=len(correct_rows), n_wrong=len(wrong_rows),
+            mean_correct=mean_correct, mean_wrong=mean_wrong, ratio=ratio, r=r,
+        )
 
     @app.get("/v/<stem>")
     def video_page(stem: str):
@@ -205,6 +276,45 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
             {"letter": chr(ord("A") + i), "text": opt, "correct": chr(ord("A") + i) == meta.get("answer_letter")}
             for i, opt in enumerate(options)
         ]
+        option_text_by_letter = {o["letter"]: o["text"] for o in option_items}
+
+        raw_dump = {
+            "video_path": cap.video_path,
+            "prompt": cap.prompt,
+            "fps": cap.fps,
+            "frame_indices": list(cap.frame_indices),
+            "grid": {
+                "t": cap.grid.t, "grid_h": cap.grid.grid_h, "grid_w": cap.grid.grid_w,
+                "double": cap.grid.double, "regime": cap.grid.regime,
+            },
+            "query_tokens": [
+                {"row": q.row, "index": q.index, "token": q.token, "text": q.text}
+                for q in cap.query_tokens
+            ],
+            "attn": {"shape": list(cap.attn.shape), "dtype": str(cap.attn.dtype)},
+            "sink_map": {"shape": list(cap.sink_map.shape), "dtype": str(cap.sink_map.dtype)},
+            "sink_dims": list(cap.sink_dims),
+            "answer_entropy": cap.answer_entropy,
+            "answer_probs": cap.answer_probs,
+            "answer_logits": cap.answer_logits,
+            "pred_letter": cap.pred_letter,
+            "top_tokens": cap.top_tokens,
+            "capture_meta": cap.capture_meta,
+        }
+
+        answer_table = []
+        if cap.answer_logits:
+            for letter, logit in sorted(cap.answer_logits.items()):
+                p = cap.answer_probs[letter]
+                answer_table.append({
+                    "letter": letter,
+                    "option_text": option_text_by_letter.get(letter, ""),
+                    "logit": logit,
+                    "prob": p,
+                    "entropy_term": -p * math.log2(p) if p > 0 else 0.0,
+                    "is_correct": letter == meta.get("answer_letter"),
+                    "is_pred": letter == cap.pred_letter,
+                })
 
         return render_template(
             "video.html",
@@ -221,7 +331,10 @@ def create_app(stores: Path | list[Path], video_root: Path | None = None) -> Fla
             option_items=option_items,
             pred_letter=cap.pred_letter,
             answer_entropy=cap.answer_entropy,
-            answer_probs=cap.answer_probs,
+            answer_table=answer_table,
+            top_tokens=cap.top_tokens,
+            capture_meta=cap.capture_meta,
+            raw_json=json.dumps(raw_dump, indent=2, ensure_ascii=False),
             has_sink_map=bool(cap.sink_map.abs().sum().item() > 0),
         )
 

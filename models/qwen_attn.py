@@ -4,7 +4,7 @@ from transformers import AttentionInterface
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv
 
-from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats
+from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats, top_k_logits
 
 from .media import MediaItem, Text
 from .qwen import Qwen25VL3B
@@ -258,13 +258,15 @@ class Qwen25VLAttention(Qwen25VL3B):
             for row, (raw, tid) in enumerate(zip(raw_tokens, q_ids))
         )
 
-        # Entropia della risposta: riusa i logit dell'ultimo token del prefill
-        # già calcolati sopra (`logits_to_keep=1`), nessun forward aggiuntivo.
+        # Entropia della risposta + top-k non ristretto: riusano i logit
+        # dell'ultimo token del prefill già calcolati sopra
+        # (`logits_to_keep=1`), nessun forward aggiuntivo.
+        last_logits = outputs.logits[0, -1, :].cpu()
         answer_stats: dict = {}
         if answer_letters:
             letter_ids = {l: tok.encode(l, add_special_tokens=False)[0] for l in answer_letters}
-            last_logits = outputs.logits[0, -1, :].cpu()
             answer_stats = mcq_answer_stats(last_logits, letter_ids)
+        top_tokens = top_k_logits(last_logits, tok, k=10)
 
         return VisualAttention(
             attn=heatmaps,
@@ -276,6 +278,7 @@ class Qwen25VLAttention(Qwen25VL3B):
             query_tokens=query_tokens,
             query_span=query_span,
             **answer_stats,
+            top_tokens=top_tokens,
             visual_span=visual_span,
             input_ids=input_ids.cpu(),
         )

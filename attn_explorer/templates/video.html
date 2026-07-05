@@ -4,71 +4,176 @@
 <title>Attention · {{ video_name }}</title>
 <style>{{ css }}</style></head>
 <body data-stem="{{ stem }}">
-  <p style="text-align:center"><a class="back" href="{{ url_for('index') }}">← tutti i video</a></p>
+  <p style="text-align:center">
+    <a class="back" href="{{ url_for('index') }}">← tutti i video</a>
+  </p>
   <h1>Attenzione testo→visivo · <span class="ent">{{ video_name }}</span></h1>
   <div class="meta">
     {{ "%.2f"|format(fps) }} fps · {{ cells }} celle temporali · regime: {{ regime }} ·
     modello <code>Qwen25VLAttention</code>
   </div>
 
+  <div class="toppanel">
+  <div class="toppanel-left">
   <div class="promptbox">
     <b>Domanda:</b> {{ prompt }}
-    {% if answer_letter %}
-    <div class="answerbox">
-      ✅ Risposta corretta: <b>{{ answer_letter }}{% if answer_text %}. {{ answer_text }}{% endif %}</b>
-      {% if option_items %}
-      <div class="answeropts">
-        {% for opt in option_items %}
-        <span class="{{ 'correct' if opt.correct else '' }}">{{ opt.letter }}. {{ opt.text }}</span>
-        {% endfor %}
+    <div class="answerrow">
+      {% if answer_letter %}
+      <div class="answerbox">
+        Risposta corretta: <b>{{ answer_letter }}{% if answer_text %}. {{ answer_text }}{% endif %}</b>
+        {% if option_items %}
+        <div class="answeropts">
+          {% for opt in option_items %}
+          <span class="{{ 'correct' if opt.correct else '' }}">{{ opt.letter }}. {{ opt.text }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if pred_letter %}
+      <div class="answerbox {{ 'match' if pred_letter == answer_letter else 'mismatch' }}">
+        Risposta del modello (argmax sui frame campionati): <b>{{ pred_letter }}</b>
+        <table class="logittable">
+          <thead>
+            <tr>
+              <th>Lettera</th>
+              <th>Opzione</th>
+              <th>Logit (pre-softmax)</th>
+              <th>P (post-softmax)</th>
+              <th>-p·log2(p) (bit)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in answer_table %}
+            <tr class="{{ 'correct' if row.is_correct else '' }} {{ 'pred' if row.is_pred else '' }}">
+              <td>{{ row.letter }}{% if row.is_correct %} (gt){% endif %}{% if row.is_pred %} (pred){% endif %}</td>
+              <td>{{ row.option_text }}</td>
+              <td>{{ "%.4f"|format(row.logit) }}</td>
+              <td>{{ "%.6f"|format(row.prob) }} ({{ "%.2f"|format(row.prob * 100) }}%)</td>
+              <td>{{ "%.4f"|format(row.entropy_term) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4">Entropia totale H = -Σ p·log2(p)</td>
+              <td>{{ "%.4f"|format(answer_entropy) }} bit</td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
       {% endif %}
     </div>
+
+    {% if top_tokens %}
+    <details class="infodetails">
+      <summary>Top-10 token sul vocabolario intero (non ristretto alle lettere MCQ)</summary>
+      <div class="infobody">
+        <table class="logittable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Token</th>
+              <th>Logit (pre-softmax)</th>
+              <th>P (post-softmax, vocab intero)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tk in top_tokens %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td><code>{{ tk.token }}</code></td>
+              <td>{{ "%.4f"|format(tk.logit) }}</td>
+              <td>{{ "%.6f"|format(tk.prob) }} ({{ "%.2f"|format(tk.prob * 100) }}%)</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
     {% endif %}
-    {% if pred_letter %}
-    <div class="answerbox {{ 'match' if pred_letter == answer_letter else 'mismatch' }}">
-      🤖 Risposta del modello (su questi frame): <b>{{ pred_letter }}</b>
-      · confidenza {{ "%.0f"|format(answer_probs[pred_letter] * 100) }}%
-      · entropia {{ "%.2f"|format(answer_entropy) }} bit
-      {% if answer_letter and pred_letter != answer_letter %}
-      <div class="answerhint">≠ risposta corretta ({{ answer_letter }}) — probabile evidenza mancante/ambigua nei frame campionati</div>
-      {% endif %}
+
+  </div>
+  </div>
+
+  <div class="toppanel-right">
+    <p class="meta">Seleziona uno o più token (entity): i frame vengono riordinati
+      per massa di attenzione e gli overlay rigenerati.</p>
+    <div class="tokens" id="tokens">
+      {% for tk in tokens %}
+      <span class="chip{{ ' sel' if tk.row in default_rows else '' }}" data-row="{{ tk.row }}" title="{{ tk.token }}">{{ tk.text }}</span>
+      {% endfor %}
+    </div>
+    <div class="selinfo" id="selinfo">selezione: <b>nessuna</b> (media di tutti i token)</div>
+
+    <div class="controls">
+      <label><input type="checkbox" id="tgl"> mostra frame originali (senza heatmap)</label>
+    </div>
+
+    {% if has_sink_map %}
+    <div class="controls sinkview" id="sinkview">
+      <label for="sinkview-select">token visivi:</label>
+      <select id="sinkview-select" name="sink_view">
+        <option value="all" selected>tutti i token</option>
+        <option value="sink">solo sink</option>
+        <option value="nonsink">solo non sink</option>
+      </select>
     </div>
     {% endif %}
-  </div>
 
-  <details style="margin:1em 0">
-    <summary style="cursor:pointer;font-size:1.1em;font-weight:bold">🎬 Guarda il video completo</summary>
-    <video controls style="width:100%;max-width:720px;display:block;margin:1em auto" src="{{ url_for('serve_video', stem=stem) }}"></video>
-  </details>
+    {% if capture_meta %}
+    <details class="infodetails">
+      <summary>Metadati di cattura (riproducibilità)</summary>
+      <div class="infobody">
+        <table class="metatable">
+          <tbody>
+            <tr><td>model_id</td><td>{{ capture_meta.model_id }}</td>
+                <td>dtype</td><td>{{ capture_meta.dtype }}</td></tr>
+            <tr><td>attn_implementation</td><td>{{ capture_meta.attn_implementation }}</td>
+                <td>device_map</td><td>{{ capture_meta.device_map }}</td></tr>
+            <tr><td>nframes</td><td>{{ capture_meta.nframes }}</td>
+                <td>double_frames</td><td>{{ capture_meta.double_frames }}</td></tr>
+            <tr><td>max_pixels</td><td>{{ capture_meta.max_pixels }}</td>
+                <td>min_pixels</td><td>{{ capture_meta.min_pixels }}</td></tr>
+            <tr><td>timestamp (UTC)</td><td>{{ capture_meta.timestamp }}</td>
+                <td>git_commit</td><td>{{ capture_meta.git_commit }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
 
-  <p class="meta">Seleziona uno o più token (entity): i frame vengono riordinati
-    per massa di attenzione e gli overlay rigenerati.</p>
-  <div class="tokens" id="tokens">
-    {% for tk in tokens %}
-    <span class="chip{{ ' sel' if tk.row in default_rows else '' }}" data-row="{{ tk.row }}" title="{{ tk.token }}">{{ tk.text }}</span>
-    {% endfor %}
+    <p style="margin:1em 0">
+      <button type="button" id="raw-btn" class="rawbtn">dati raw (.pt)</button>
+      <button type="button" id="video-btn" class="rawbtn">Guarda il video completo</button>
+    </p>
   </div>
-  <div class="selinfo" id="selinfo">selezione: <b>nessuna</b> (media di tutti i token)</div>
-
-  <div class="controls">
-    <label><input type="checkbox" id="tgl"> mostra frame originali (senza heatmap)</label>
   </div>
-
-  {% if has_sink_map %}
-  <div class="controls sinkview" id="sinkview">
-    <label for="sinkview-select">token visivi:</label>
-    <select id="sinkview-select" name="sink_view">
-      <option value="all" selected>tutti i token</option>
-      <option value="sink">solo sink</option>
-      <option value="nonsink">solo non sink</option>
-    </select>
-  </div>
-  {% endif %}
 
   <div class="grid" id="grid"></div>
 
   <div id="lightbox" class="lightbox"><img alt="frame a tutto schermo"></div>
+
+  <div id="raw-modal" class="lightbox rawmodal">
+    <div class="rawpanel" onclick="event.stopPropagation()">
+      <div class="rawhead">
+        <b>Dati raw · capture.pt</b>
+        <button type="button" id="raw-copy">copia</button>
+        <button type="button" id="raw-close">chiudi</button>
+      </div>
+      <pre id="raw-pre">{{ raw_json }}</pre>
+    </div>
+  </div>
+
+  <div id="video-modal" class="lightbox rawmodal">
+    <div class="rawpanel" onclick="event.stopPropagation()">
+      <div class="rawhead">
+        <b>{{ video_name }}</b>
+        <button type="button" id="video-close">chiudi</button>
+      </div>
+      <video id="video-player" controls style="width:100%;display:block" src="{{ url_for('serve_video', stem=stem) }}"></video>
+    </div>
+  </div>
 
   <script>{{ js|safe }}</script>
 </body></html>

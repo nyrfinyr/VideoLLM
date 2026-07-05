@@ -55,6 +55,34 @@ function openLightbox(fig) {
 lb.addEventListener('click', () => lb.classList.remove('open'));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') lb.classList.remove('open'); });
 
+// Modale dati raw del capture.pt (debug/presentazione): il JSON è già
+// renderizzato server-side nel <pre>, qui solo apertura/chiusura + copia.
+const rawModal = document.getElementById('raw-modal');
+const rawBtn = document.getElementById('raw-btn');
+if (rawBtn) {
+  rawBtn.addEventListener('click', () => rawModal.classList.add('open'));
+  document.getElementById('raw-close').addEventListener('click', () => rawModal.classList.remove('open'));
+  rawModal.addEventListener('click', () => rawModal.classList.remove('open'));
+  document.getElementById('raw-copy').addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(document.getElementById('raw-pre').textContent);
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') rawModal.classList.remove('open'); });
+}
+
+// Modale di riproduzione del video completo: aperta dal bottone, il player
+// viene messo in pausa alla chiusura (backdrop, bottone o Escape).
+const videoModal = document.getElementById('video-modal');
+const videoBtn = document.getElementById('video-btn');
+if (videoBtn) {
+  const videoPlayer = document.getElementById('video-player');
+  const closeVideoModal = () => { videoModal.classList.remove('open'); videoPlayer.pause(); };
+  videoBtn.addEventListener('click', () => videoModal.classList.add('open'));
+  document.getElementById('video-close').addEventListener('click', closeVideoModal);
+  videoModal.addEventListener('click', closeVideoModal);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeVideoModal(); });
+}
+
 // Toggle overlay/originale su tutte le card.
 document.getElementById('tgl').addEventListener('change', e =>
   document.body.classList.toggle('show-orig', e.target.checked));

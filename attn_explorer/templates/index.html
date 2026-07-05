@@ -6,19 +6,24 @@
 <body>
   <h1>Attention explorer</h1>
   <div class="meta">store <code>{{ store }}</code> · {{ videos|length }} video catturati</div>
+  <p style="text-align:center"><a class="back" href="{{ url_for('analisi') }}">→ analisi: entropia della risposta vs correttezza</a></p>
 
   {% if videos %}
   <div class="videogrid">
     {% for v in videos %}
     <a class="vcard" href="{{ url_for('video_page', stem=v.stem) }}">
       <div class="vthumb">
+        {% if v.outcome %}
+        <span class="vbadge {{ v.outcome }}">{{ 'corretta' if v.outcome == 'correct' else 'sbagliata' }}</span>
+        {% else %}
         <span class="vbadge">{{ v._store }}</span>
+        {% endif %}
         <img src="{{ url_for('api_frame', stem=v.stem, cell=0) }}" loading="lazy" alt="">
       </div>
       <div class="vbody">
         <div class="vname">{{ v.video_name }}</div>
         <div class="vprompt">{{ v.prompt }}</div>
-        <div class="vmeta">{{ v.cells }} celle · {{ v.n_tokens }} token domanda ·
+        <div class="vmeta">{{ v._store }} · {{ v.cells }} celle · {{ v.n_tokens }} token domanda ·
           {{ "%.1f"|format(v.fps) }} fps · {{ v.regime }}</div>
       </div>
     </a>

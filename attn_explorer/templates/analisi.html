@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analisi · entropia vs correttezza</title>
+<style>{{ css }}</style></head>
+<body>
+  <p style="text-align:center">
+    <a class="back" href="{{ url_for('index') }}">← tutti i video</a>
+  </p>
+  <h1>Entropia della risposta <span class="ent">vs</span> correttezza</h1>
+  <div class="meta">store <code>{{ store }}</code> · {{ n }} video con entropia e risposta corretta note
+    ({{ n_correct }} corrette, {{ n_wrong }} sbagliate)</div>
+
+  {% if n < 2 %}
+  <p class="empty">Servono almeno 2 video con <code>answer_entropy</code> e risposta corretta nota per calcolare
+    una correlazione (mancano nei capture legacy senza MCQ, o senza sidecar con la risposta corretta).</p>
+  {% else %}
+
+  <div class="kpis">
+    <div class="kpi"><b>{{ "%.2f"|format(r) if r is not none else "n/d" }}</b>
+      <span>correlazione di Pearson r(entropia, corretta)</span></div>
+    <div class="kpi"><b class="good">{{ "%.2f"|format(mean_correct) if mean_correct is not none else "n/d" }} bit</b>
+      <span>entropia media · risposte corrette (n={{ n_correct }})</span></div>
+    <div class="kpi"><b class="critical">{{ "%.2f"|format(mean_wrong) if mean_wrong is not none else "n/d" }} bit</b>
+      <span>entropia media · risposte sbagliate (n={{ n_wrong }})</span></div>
+    <div class="kpi"><b>{{ "%.1f×"|format(ratio) if ratio is not none else "n/d" }}</b>
+      <span>rapporto entropia media sbagliate / corrette</span></div>
+  </div>
+
+  <div class="anpanel">
+    <h2 style="margin-top:0">Entropia per esito (ogni punto = un video)</h2>
+    <div class="legend">
+      <span class="item"><span class="swatch good"></span>risposta corretta</span>
+      <span class="item"><span class="swatch critical"></span>risposta sbagliata</span>
+    </div>
+    <svg id="chart" viewBox="0 0 900 380" width="100%" style="overflow:visible"></svg>
+  </div>
+
+  <div class="anpanel">
+    <h2 style="margin-top:0">Dettaglio</h2>
+    <table class="logittable">
+      <thead>
+        <tr><th>video</th><th>esito</th><th>entropia (bit)</th><th>pred</th><th>gt</th><th>store</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="{{ 'correct' if row.correct else 'pred' }}">
+          <td><a class="back" href="{{ url_for('video_page', stem=row.stem) }}">{{ row.video_name }}</a></td>
+          <td>{{ 'corretta' if row.correct else 'sbagliata' }}</td>
+          <td>{{ "%.4f"|format(row.entropy) }}</td>
+          <td>{{ row.pred_letter }}</td>
+          <td>{{ row.answer_letter }}</td>
+          <td>{{ row.store }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script>
+    const DATA = {{ rows_json|safe }};
+    (function () {
+      const svg = document.getElementById('chart');
+      const W = 900, H = 380;
+      const padL = 50, padR = 30, padT = 16, padB = 40;
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+      const maxEntropy = Math.max(...DATA.map(d => d.entropy)) * 1.08 || 1;
+      const colGood = '#4caf50', colCritical = '#f44336';
+
+      const yScale = v => padT + plotH - (v / maxEntropy) * plotH;
+      const groups = [
+        { key: true, label: 'Corretta (n=' + DATA.filter(d => d.correct).length + ')', cx: padL + plotW * 0.28, color: colGood },
+        { key: false, label: 'Sbagliata (n=' + DATA.filter(d => !d.correct).length + ')', cx: padL + plotW * 0.72, color: colCritical },
+      ];
+
+      function svgEl(tag, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const k in attrs) el.setAttribute(k, attrs[k]);
+        return el;
+      }
+
+      const yTicks = 5;
+      for (let i = 0; i <= yTicks; i++) {
+        const v = (maxEntropy / yTicks) * i;
+        const y = yScale(v);
+        svg.appendChild(svgEl('line', { x1: padL, x2: W - padR, y1: y, y2: y, class: 'grid-line' }));
+        const t = svgEl('text', { x: padL - 10, y: y + 4, 'text-anchor': 'end' });
+        t.textContent = v.toFixed(1);
+        svg.appendChild(t);
+      }
+      svg.appendChild(svgEl('line', { x1: padL, x2: padL, y1: padT, y2: H - padB, class: 'axis-line' }));
+      svg.appendChild(svgEl('line', { x1: padL, x2: W - padR, y1: H - padB, y2: H - padB, class: 'axis-line' }));
+
+      const ylab = svgEl('text', { x: 14, y: padT + plotH / 2, 'text-anchor': 'middle', transform: `rotate(-90 14 ${padT + plotH / 2})` });
+      ylab.textContent = 'entropia (bit)';
+      svg.appendChild(ylab);
+
+      const tooltip = document.getElementById('tooltip');
+
+      groups.forEach(g => {
+        const pts = DATA.filter(d => d.correct === g.key);
+        const lab = svgEl('text', { x: g.cx, y: H - padB + 22, 'text-anchor': 'middle' });
+        lab.textContent = g.label;
+        lab.style.fill = g.color;
+        svg.appendChild(lab);
+
+        if (pts.length) {
+          const mean = pts.reduce((a, b) => a + b.entropy, 0) / pts.length;
+          const meanY = yScale(mean);
+          svg.appendChild(svgEl('line', {
+            x1: g.cx - 55, x2: g.cx + 55, y1: meanY, y2: meanY,
+            class: 'mean-line', stroke: g.color,
+          }));
+          const meanLab = svgEl('text', { x: g.cx + 60, y: meanY + 4, 'text-anchor': 'start' });
+          meanLab.textContent = 'media ' + mean.toFixed(2);
+          meanLab.style.fill = g.color;
+          svg.appendChild(meanLab);
+        }
+
+        pts.forEach((d, i) => {
+          const jitter = ((i * 37) % 21 - 10) * 1.8;
+          const cx = g.cx + jitter;
+          const cy = yScale(d.entropy);
+          const hit = svgEl('circle', { cx, cy, r: 12, class: 'dot-hit' });
+          const dot = svgEl('circle', { cx, cy, r: 5.5, class: 'dot', fill: g.color, opacity: 0.88 });
+          const group = svgEl('g', {});
+          group.appendChild(hit);
+          group.appendChild(dot);
+          group.addEventListener('pointerenter', (e) => showTooltip(e, d, g.color));
+          group.addEventListener('pointermove', (e) => positionTooltip(e));
+          group.addEventListener('pointerleave', hideTooltip);
+          svg.appendChild(group);
+        });
+      });
+
+      function showTooltip(e, d, color) {
+        tooltip.innerHTML =
+          '<div class="tt-val" style="color:' + color + '">' + d.entropy.toFixed(3) + ' bit</div>' +
+          '<div>' + d.video_name + '</div>' +
+          '<div class="tt-sub">pred ' + (d.pred_letter || '?') + ' · gt ' + (d.answer_letter || '?') + '</div>';
+        tooltip.style.display = 'block';
+        positionTooltip(e);
+      }
+      function positionTooltip(e) {
+        tooltip.style.left = (e.clientX + 14) + 'px';
+        tooltip.style.top = (e.clientY + 14) + 'px';
+      }
+      function hideTooltip() { tooltip.style.display = 'none'; }
+    })();
+  </script>
+
+  {% endif %}
+</body></html>

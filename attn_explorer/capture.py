@@ -52,7 +52,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from utils.attn_core import AttentionCapture, GridSpec, parse_answer_meta, rank_cells, save_capture
@@ -315,13 +317,45 @@ def extract_cell_frames(video_path: str, grid: GridSpec, frame_indices, frames_d
 # ─────────────────────────────────────────────────────────────────────────────
 # Cattura di UN video → AttentionCapture su disco
 # ─────────────────────────────────────────────────────────────────────────────
-def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store: Path) -> dict:
+def _git_commit() -> str | None:
+    """Hash corto del commit corrente (`None` se non è un repo git o git manca)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent.parent, capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def build_capture_meta(vlm, args) -> dict:
+    """Metadati di riproducibilità dell'invocazione corrente (costo trascurabile,
+    calcolati una volta per l'intero batch): modello, precisione, parametri di
+    campionamento frame, timestamp e commit git — vedi `AttentionCapture.capture_meta`."""
+    return {
+        "model_id": vlm.model_id,
+        "dtype": args.dtype,
+        "device_map": args.device_map,
+        "attn_implementation": ATTN_IMPLEMENTATION,
+        "nframes": args.nframes,
+        "double_frames": bool(args.double_frames),
+        "max_pixels": args.max_pixels,
+        "min_pixels": args.min_pixels,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": _git_commit(),
+    }
+
+
+def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store: Path, capture_meta: dict) -> dict:
     """Forward di prefill su un video, salva `AttentionCapture` + frame.
 
     Scrive in `<store>/<stem>/{capture.pt,frames/}` e ritorna l'entry di indice
     per `index.json` (`meta`, da `parse_answer_meta`, ci finisce dentro così
     la UI del server può mostrare la risposta corretta). Se `args.entity` è
     impostato, stampa un quick-check del ranking per quell'entity (single mode).
+    `capture_meta` (da `build_capture_meta`, calcolato una volta per l'intero
+    batch) finisce dentro il `.pt` per riproducibilità.
     """
     from evals.base import extract_mcq_letters
     from models import Text
@@ -360,7 +394,10 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
         sink_dims=out.sink_dims,
         answer_entropy=out.answer_entropy,
         answer_probs=out.answer_probs,
+        answer_logits=out.answer_logits,
         pred_letter=out.pred_letter,
+        top_tokens=out.top_tokens,
+        capture_meta=capture_meta,
     )
 
     save_capture(cap, out_dir / "capture.pt")
@@ -495,17 +532,23 @@ def main() -> None:
         attn_implementation=ATTN_IMPLEMENTATION,
     )
 
+    capture_meta = build_capture_meta(vlm, args)
+
     store = Path(args.outdir)
     store.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = []
     for i, (video_path, prompt_text, meta) in enumerate(jobs, 1):
         logger.info("[%d/%d] %s", i, len(jobs), video_path)
         try:
-            entries.append(capture_one(vlm, video_path, prompt_text, meta, args, store))
+            entries.append(capture_one(vlm, video_path, prompt_text, meta, args, store, capture_meta))
         except Exception:
             logger.exception("cattura fallita per %s", video_path)
-    if entries:
-        write_index(store, entries)
+        else:
+            # Scritto ad OGNI video (non solo a fine batch): un batch lungo
+            # interrotto (Ctrl-C, crash, OOM) lascia comunque un index.json
+            # aggiornato per i video già catturati, subito navigabili con
+            # `attn_explorer.serve` senza aspettare il resto del batch.
+            write_index(store, entries)
     logger.info("Fatto: %d/%d video catturati in %s", len(entries), len(jobs), store)
 
 
