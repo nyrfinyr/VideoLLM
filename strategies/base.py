@@ -27,9 +27,12 @@ from typing import TYPE_CHECKING, Callable
 from models.media import MediaItem, Video, VideoFrames
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from utils.attn_core import VisualAttention
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,13 @@ class Strategy(ABC):
     """
 
     name: str  # override in subclass
+
+    # Impostato da `main.run` DOPO `Strategy.get(...)` (non nel costruttore:
+    # dipende da `run_dir`, calcolato da `snapshot_config` nello stesso punto),
+    # solo se il preset della strategy ha `capture_attention: true` — vedi
+    # `strategies/entropy_shortcut.py`/`entropy_attention_resample.py` per chi
+    # lo consuma. `None` = capture disattivato, comportamento invariato.
+    capture_dir: Path | None = None
 
     def __init__(self, cfg: dict | None = None) -> None:
         """No-op di default. Override nelle sottoclassi con knob di config."""
@@ -144,3 +154,45 @@ class Strategy(ABC):
             video_start=video_start,
             video_end=video_end,
         )
+
+    def _save_attention_capture(
+        self,
+        vlm: BaseVLM,
+        video_path: str,
+        prompt: str,
+        visual_attention: VisualAttention,
+        budget: SamplingBudget,
+        video_start: float | None,
+        video_end: float | None,
+        extra: dict | None = None,
+    ) -> None:
+        """Scrive un `capture.pt`/`frames/` (formato di `attn_explorer.
+        capture`/`serve`) sotto `self.capture_dir` a partire da un
+        `VisualAttention` già calcolato dal forward di `generate_with_signals`
+        — nessun forward aggiuntivo. Chiamato dalle strategy signal-driven
+        quando il loro preset ha `capture_attention: true` (vedi
+        `entropy_shortcut.py`/`entropy_attention_resample.py` per la policy
+        di QUANDO chiamarlo). `video_start`/`video_end` sono la finestra
+        EFFETTIVAMENTE vista dal pass che ha prodotto `visual_attention`
+        (non necessariamente quella della risposta finale, es. pre-resample
+        in `entropy_attention_resample`). `extra` finisce nell'entry di
+        `index.json` (es. `resampled`/`resample_kind`).
+        """
+        from utils.attn_core import build_capture_meta, capture_index_entry, reconstruct_frame_indices, write_capture, write_index
+
+        frame_indices, fps = reconstruct_frame_indices(
+            video_path, budget.nframes, video_start=video_start, video_end=video_end,
+        )
+        capture_meta = build_capture_meta(
+            model_id=vlm.model_id,
+            dtype=str(vlm.model.dtype),
+            nframes=budget.nframes,
+            max_pixels=budget.max_pixels,
+            min_pixels=budget.min_pixels,
+            extra={"strategy": self.name, **(extra or {})},
+        )
+        cap = write_capture(
+            self.capture_dir, video_path, prompt, visual_attention, frame_indices, fps,
+            double=False, capture_meta=capture_meta,
+        )
+        write_index(self.capture_dir, [capture_index_entry(cap, extra=extra)])

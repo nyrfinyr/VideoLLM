@@ -169,6 +169,12 @@ class EntropyAttentionResampleStrategy(Strategy):
             final_media = self._build_media(video_path, None, new_start, new_end, budget)
             resampled = True
 
+            if self.capture_dir is not None:
+                self._save_attention_capture(
+                    vlm, video_path, prompt, signal.visual_attention, budget, w0, w1,
+                    extra={"resampled": resampled, "resample_kind": resample_kind, "top1_pct": top1_pct},
+                )
+
         messages = vlm.build_messages(final_media, Text(prompt))
         raw = vlm.generate(messages, generation_config=gen_cfg)
 

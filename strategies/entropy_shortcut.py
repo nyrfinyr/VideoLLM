@@ -57,6 +57,9 @@ class EntropyShortcutStrategy(Strategy):
         letters = [chr(ord("A") + i) for i in range(len(options))] if options is not None else None
         signal = vlm.generate_with_signals(media, Text(prompt), gen_cfg, answer_letters=letters)
 
+        if self.capture_dir is not None and frames is None and signal.visual_attention is not None:
+            self._save_attention_capture(vlm, video_path, prompt, signal.visual_attention, budget, video_start, video_end)
+
         result: dict = {
             "raw": signal.text,
             "answer_entropy": signal.answer_entropy,

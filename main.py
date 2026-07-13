@@ -86,6 +86,8 @@ def run(cfg: Cfg) -> None:
 
     dataset: Dataset = Dataset.get(cfg.dataset.name)
     strategy: Strategy = Strategy.get(cfg.strategy.name, cfg.strategy)
+    if cfg.strategy.get("capture_attention"):
+        strategy.capture_dir = snapshot_path.parent / "captures"
     samples: list[dict] = prepare_samples(dataset.loader(cfg.dataset), cfg)
     logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
 

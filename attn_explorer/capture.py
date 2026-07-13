@@ -49,16 +49,22 @@ Output: uno STORE su disco (`--outdir`, default `debug_out/`):
 Lo store è la sorgente del server interattivo `attn_explorer.serve --store <store>`.
 """
 import argparse
-import json
 import logging
 import os
 import shutil
-import subprocess
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
-from utils.attn_core import AttentionCapture, GridSpec, parse_answer_meta, rank_cells, save_capture
+from utils.attn_core import (
+    AttentionCapture,
+    build_capture_meta,
+    capture_index_entry,
+    parse_answer_meta,
+    rank_cells,
+    reconstruct_frame_indices,
+    write_capture,
+    write_index,
+)
 
 # Logging su stderr con timestamp (diagnostica del forward); lo stdout resta
 # per le tabelle del quick-check.
@@ -274,8 +280,6 @@ def build_media(video_path: str, args) -> tuple[object, list[int], Path | None]:
     - altrimenti → `Video` (campiona da sé) + indici ricostruiti per la mappa
       cella→frame.
     """
-    import torch
-
     from models import Video, VideoFrames
 
     if args.double_frames:
@@ -286,82 +290,27 @@ def build_media(video_path: str, args) -> tuple[object, list[int], Path | None]:
         return media, frame_indices, tmpdir
 
     media = Video(video_path, nframes=args.nframes, max_pixels=args.max_pixels, min_pixels=args.min_pixels)
-    import decord
-    vr = decord.VideoReader(video_path)
-    frame_indices = torch.linspace(0, len(vr) - 1, args.nframes).round().long().tolist()
+    frame_indices, _ = reconstruct_frame_indices(video_path, args.nframes)
     return media, frame_indices, None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Estrazione dei frame rappresentanti (uno per cella) per il serving
-# ─────────────────────────────────────────────────────────────────────────────
-def extract_cell_frames(video_path: str, grid: GridSpec, frame_indices, frames_dir: Path) -> None:
-    """Salva un PNG per ogni cella temporale (frame rappresentante).
-
-    Il server li serve direttamente (`/api/<video>/frame?cell=ti`) e ci applica
-    sopra gli overlay rigenerati a runtime.
-    """
-    import decord
-    from PIL import Image
-
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    vr = decord.VideoReader(video_path)
-    last = len(vr) - 1
-    for ti in range(grid.t):
-        _, rep = grid.cell_to_frames(ti, frame_indices)
-        rep = max(0, min(rep, last))
-        Image.fromarray(vr[rep].asnumpy()).save(frames_dir / f"cell_{ti:04d}.png")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cattura di UN video → AttentionCapture su disco
 # ─────────────────────────────────────────────────────────────────────────────
-def _git_commit() -> str | None:
-    """Hash corto del commit corrente (`None` se non è un repo git o git manca)."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).parent.parent, capture_output=True, text=True, timeout=5,
-        )
-        return out.stdout.strip() or None if out.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def build_capture_meta(vlm, args) -> dict:
-    """Metadati di riproducibilità dell'invocazione corrente (costo trascurabile,
-    calcolati una volta per l'intero batch): modello, precisione, parametri di
-    campionamento frame, timestamp e commit git — vedi `AttentionCapture.capture_meta`."""
-    return {
-        "model_id": vlm.model_id,
-        "dtype": args.dtype,
-        "device_map": args.device_map,
-        "attn_implementation": ATTN_IMPLEMENTATION,
-        "nframes": args.nframes,
-        "double_frames": bool(args.double_frames),
-        "max_pixels": args.max_pixels,
-        "min_pixels": args.min_pixels,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "git_commit": _git_commit(),
-    }
-
-
 def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store: Path, capture_meta: dict) -> dict:
     """Forward di prefill su un video, salva `AttentionCapture` + frame.
 
-    Scrive in `<store>/<stem>/{capture.pt,frames/}` e ritorna l'entry di indice
-    per `index.json` (`meta`, da `parse_answer_meta`, ci finisce dentro così
-    la UI del server può mostrare la risposta corretta). Se `args.entity` è
-    impostato, stampa un quick-check del ranking per quell'entity (single mode).
-    `capture_meta` (da `build_capture_meta`, calcolato una volta per l'intero
-    batch) finisce dentro il `.pt` per riproducibilità.
+    Scrive in `<store>/<stem>/{capture.pt,frames/}` (via `utils.attn_core.
+    write_capture`) e ritorna l'entry di indice per `index.json` (`meta`, da
+    `parse_answer_meta`, ci finisce dentro così la UI del server può mostrare
+    la risposta corretta). Se `args.entity` è impostato, stampa un quick-check
+    del ranking per quell'entity (single mode). `capture_meta` (da
+    `build_capture_meta`, calcolato una volta per l'intero batch) finisce
+    dentro il `.pt` per riproducibilità.
     """
     from evals.base import extract_mcq_letters
     from models import Text
 
-    stem = Path(video_path).stem
-    out_dir = store / stem
-    frames_dir = out_dir / "frames"
     text = Text(prompt_text)
     answer_letters = extract_mcq_letters(prompt_text)
 
@@ -375,37 +324,20 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    grid = GridSpec(t=out.t, grid_h=out.grid_h, grid_w=out.grid_w, double=args.double_frames)
-
     # fps reale del video, per i timestamp.
     import decord
     fps = float(decord.VideoReader(video_path).get_avg_fps())
 
-    cap = AttentionCapture(
-        video_path=str(video_path),
-        prompt=prompt_text,
-        fps=fps,
-        frame_indices=tuple(int(i) for i in frame_indices),
-        grid=grid,
-        query_tokens=out.query_tokens,
-        attn=out.attn,
-        sink_map=out.sink_map,
-        sink_dims=out.sink_dims,
-        answer_entropy=out.answer_entropy,
-        answer_probs=out.answer_probs,
-        answer_logits=out.answer_logits,
-        pred_letter=out.pred_letter,
-        top_tokens=out.top_tokens,
-        capture_meta=capture_meta,
+    cap = write_capture(
+        store, video_path, prompt_text, out, frame_indices, fps,
+        double=args.double_frames, capture_meta=capture_meta,
     )
 
-    save_capture(cap, out_dir / "capture.pt")
-    extract_cell_frames(video_path, grid, frame_indices, frames_dir)
-
+    out_dir = store / Path(video_path).stem
     logger.info(
         "Salvato %s | attn=%s | sink_map=%s sink_dims=%s | %d token domanda | regime=%s%s",
         out_dir / "capture.pt", tuple(out.attn.shape), tuple(out.sink_map.shape),
-        out.sink_dims, len(out.query_tokens), grid.regime,
+        out.sink_dims, len(out.query_tokens), cap.grid.regime,
         f" | pred={out.pred_letter} entropy={out.answer_entropy:.3f}bit" if out.pred_letter else "",
     )
 
@@ -413,19 +345,7 @@ def capture_one(vlm, video_path: str, prompt_text: str, meta: dict, args, store:
     if args.entity:
         _print_entity_quickcheck(vlm, out, cap, args)
 
-    return {
-        "stem": stem,
-        "video": str(video_path),
-        "video_name": Path(video_path).name,
-        "prompt": prompt_text,
-        "fps": fps,
-        "cells": grid.t,
-        "n_tokens": len(out.query_tokens),
-        "regime": grid.regime,
-        "pred_letter": out.pred_letter,
-        "answer_entropy": out.answer_entropy,
-        **meta,
-    }
+    return capture_index_entry(cap, extra=meta)
 
 
 def _print_entity_quickcheck(vlm, out, cap: AttentionCapture, args) -> None:
@@ -531,7 +451,12 @@ def main() -> None:
         attn_implementation=ATTN_IMPLEMENTATION,
     )
 
-    capture_meta = build_capture_meta(vlm, args)
+    capture_meta = build_capture_meta(
+        model_id=vlm.model_id, dtype=args.dtype, device_map=args.device_map,
+        attn_implementation=ATTN_IMPLEMENTATION, nframes=args.nframes,
+        double_frames=bool(args.double_frames), max_pixels=args.max_pixels,
+        min_pixels=args.min_pixels,
+    )
 
     store = Path(args.outdir)
     store.mkdir(parents=True, exist_ok=True)

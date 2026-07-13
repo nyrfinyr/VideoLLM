@@ -12,12 +12,19 @@ le entity si possono variare senza rifare il forward del modello.
 """
 from __future__ import annotations
 
+import json
+import logging
+import math
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import torch
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -620,3 +627,187 @@ def load_capture(path: Path) -> AttentionCapture:
         top_tokens=d.get("top_tokens"),
         capture_meta=d.get("capture_meta"),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Costruzione di un AttentionCapture da un VisualAttention + scrittura store
+#
+# Corpo condiviso fra `attn_explorer.capture.capture_one` (cattura standalone,
+# forward dedicato) e le strategy signal-driven (`strategies/entropy_
+# shortcut.py`, `strategies/entropy_attention_resample.py`, opt-in via
+# `capture_attention` nel loro preset) che catturano un `VisualAttention` già
+# calcolato "gratis" da `SupportsSignals.generate_with_signals` durante
+# l'eval — nessun forward aggiuntivo, solo dump su disco.
+# ─────────────────────────────────────────────────────────────────────────────
+def _git_commit() -> str | None:
+    """Hash corto del commit corrente (`None` se non è un repo git o git manca)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent.parent, capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def build_capture_meta(
+    *,
+    model_id: str,
+    dtype: str,
+    nframes: int,
+    max_pixels: int,
+    min_pixels: int | None,
+    double_frames: bool = False,
+    device_map: str | None = None,
+    attn_implementation: dict | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Metadati di riproducibilità di un capture (vedi `AttentionCapture.
+    capture_meta`): modello, precisione, parametri di campionamento frame,
+    timestamp e commit git. `extra` accoglie campi specifici del chiamante
+    (es. le strategy ci mettono `strategy`/`resampled`/`resample_kind`, non
+    pertinenti al tool di cattura standalone)."""
+    return {
+        "model_id": model_id,
+        "dtype": dtype,
+        "device_map": device_map,
+        "attn_implementation": attn_implementation,
+        "nframes": nframes,
+        "double_frames": double_frames,
+        "max_pixels": max_pixels,
+        "min_pixels": min_pixels,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": _git_commit(),
+        **(extra or {}),
+    }
+
+
+def reconstruct_frame_indices(
+    video_path: str,
+    nframes: int,
+    *,
+    video_start: float | None = None,
+    video_end: float | None = None,
+) -> tuple[list[int], float]:
+    """Ricostruisce `(frame_indices assoluti, fps)` per un `Video(nframes=...)`.
+
+    qwen-vl-utils non espone gli indici frame che ha effettivamente campionato
+    dal processor: si ricalcolano con la STESSA formula di
+    `qwen_vl_utils.vision_process.calculate_video_frame_range` +
+    `_read_video_decord` (`start_frame=ceil(video_start*fps)`,
+    `end_frame=floor(video_end*fps)`, poi `linspace(start_frame, end_frame,
+    nframes)`) — se questa diverge dall'implementazione reale, i frame PNG
+    estratti per il capture NON corrispondono più a quelli visti dal modello.
+    `video_start`/`video_end` (secondi, `None` = bordo del video) riproducono
+    l'eventuale trim del dataset (es. LVBench `time_reference`).
+    """
+    import decord
+
+    vr = decord.VideoReader(video_path)
+    total = len(vr)
+    fps = float(vr.get_avg_fps())
+
+    if video_start is None and video_end is None:
+        lo, hi = 0, total - 1
+    else:
+        max_duration = total / fps
+        lo = math.ceil(max(0.0, min(video_start, max_duration)) * fps) if video_start is not None else 0
+        hi = total - 1
+        if video_end is not None:
+            hi = min(math.floor(max(0.0, min(video_end, max_duration)) * fps), total - 1)
+
+    frame_indices = torch.linspace(lo, hi, nframes).round().long().tolist()
+    return frame_indices, fps
+
+
+def extract_cell_frames(video_path: str, grid: GridSpec, frame_indices, frames_dir: Path) -> None:
+    """Salva un PNG per ogni cella temporale (frame rappresentante).
+
+    Il server li serve direttamente (`/api/<stem>/frame?cell=ti`) e ci applica
+    sopra gli overlay rigenerati a runtime.
+    """
+    import decord
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    vr = decord.VideoReader(video_path)
+    last = len(vr) - 1
+    for ti in range(grid.t):
+        _, rep = grid.cell_to_frames(ti, frame_indices)
+        rep = max(0, min(rep, last))
+        Image.fromarray(vr[rep].asnumpy()).save(frames_dir / f"cell_{ti:04d}.png")
+
+
+def write_capture(
+    out_dir: Path,
+    video_path: str,
+    prompt: str,
+    visual_attention: VisualAttention,
+    frame_indices,
+    fps: float,
+    double: bool,
+    capture_meta: dict,
+) -> AttentionCapture:
+    """Costruisce l'`AttentionCapture` da un `VisualAttention` grezzo e lo
+    scrive su `<out_dir>/<stem>/{capture.pt,frames/}`. Ritorna il capture
+    stesso (il chiamante lo passa a `capture_index_entry` per l'entry di
+    `index.json`, o lo usa direttamente per un quick-check)."""
+    stem = Path(video_path).stem
+    stem_dir = out_dir / stem
+    frames_dir = stem_dir / "frames"
+
+    grid = GridSpec(t=visual_attention.t, grid_h=visual_attention.grid_h, grid_w=visual_attention.grid_w, double=double)
+
+    cap = AttentionCapture(
+        video_path=str(video_path),
+        prompt=prompt,
+        fps=fps,
+        frame_indices=tuple(int(i) for i in frame_indices),
+        grid=grid,
+        query_tokens=visual_attention.query_tokens,
+        attn=visual_attention.attn,
+        sink_map=visual_attention.sink_map,
+        sink_dims=visual_attention.sink_dims,
+        answer_entropy=visual_attention.answer_entropy,
+        answer_probs=visual_attention.answer_probs,
+        answer_logits=visual_attention.answer_logits,
+        pred_letter=visual_attention.pred_letter,
+        top_tokens=visual_attention.top_tokens,
+        capture_meta=capture_meta,
+    )
+    save_capture(cap, stem_dir / "capture.pt")
+    extract_cell_frames(video_path, grid, frame_indices, frames_dir)
+    return cap
+
+
+def capture_index_entry(cap: AttentionCapture, extra: dict | None = None) -> dict:
+    """Entry per `index.json` a partire da un `AttentionCapture` scritto da
+    `write_capture` (`extra` ci finisce dentro, es. la risposta corretta da
+    `parse_answer_meta`, o `resampled`/`resample_kind` di una strategy)."""
+    return {
+        "stem": Path(cap.video_path).stem,
+        "video": cap.video_path,
+        "video_name": Path(cap.video_path).name,
+        "prompt": cap.prompt,
+        "fps": cap.fps,
+        "cells": cap.grid.t,
+        "n_tokens": len(cap.query_tokens),
+        "regime": cap.grid.regime,
+        "pred_letter": cap.pred_letter,
+        "answer_entropy": cap.answer_entropy,
+        **(extra or {}),
+    }
+
+
+def write_index(store: Path, entries: list[dict]) -> None:
+    """Scrive/aggiorna `<store>/index.json` (merge per `stem`)."""
+    index_path = store / "index.json"
+    existing: dict[str, dict] = {}
+    if index_path.is_file():
+        for e in json.loads(index_path.read_text(encoding="utf-8")).get("videos", []):
+            existing[e["stem"]] = e
+    for e in entries:
+        existing[e["stem"]] = e
+    payload = {"videos": sorted(existing.values(), key=lambda e: e["stem"])}
+    index_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Indice aggiornato: %s (%d video)", index_path, len(payload["videos"]))

@@ -106,6 +106,7 @@ strategy:
 
   entropy_shortcut:
     name: entropy_shortcut
+    capture_attention: false   # opt-in: dump capture.pt/frames per sample per attn_explorer.serve (I/O non trascurabile)
 
   entropy_attention_resample:
     name: entropy_attention_resample
@@ -115,6 +116,7 @@ strategy:
     phase_shift_frac: 0.5
     sink_percentile: 25.0
     sink_border: 0
+    capture_attention: false   # opt-in: dump capture.pt/frames SOLO per i sample ricampionati (resampled=true)
 
 wandb:
   default:
