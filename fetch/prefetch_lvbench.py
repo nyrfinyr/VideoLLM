@@ -63,11 +63,11 @@ Due modalità di selezione dei chunk:
   deterministico: con `chunks=[1] n=3` scarichi sempre un solo chunk e
   produci un `metadata.jsonl` con le QA dei primi 3 video presenti.
 
-Hydra overrides:
+Overrides (stessa sintassi `key=value` di `main.py`, vedi `utils/config.py`):
     uv run python fetch/prefetch_lvbench.py n=3
     uv run python fetch/prefetch_lvbench.py chunks=[1] n=3
     uv run python fetch/prefetch_lvbench.py keep_zips=true
-    uv run python fetch/prefetch_lvbench.py --cfg job
+    uv run python fetch/prefetch_lvbench.py --print-config
 """
 import json
 import logging
@@ -82,11 +82,13 @@ from pathlib import Path
 # (script, `python -m fetch.prefetch_lvbench`, or installed entry point).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import hydra
 import weave
-from omegaconf import DictConfig
+import yaml
 
+from utils.config import Cfg, load_flat_config
 from utils.obs import init_observability
+
+CONF_PATH = Path(__file__).resolve().parent.parent / "conf" / "fetch" / "prefetch_lvbench.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +399,7 @@ def prefetch(
     }
 
 
-def run(cfg: DictConfig) -> None:
+def run(cfg: Cfg) -> None:
     # `datasets` / `huggingface_hub` leggono HF_HOME al primo import, va
     # settato prima dell'import lazy dentro `prefetch`.
     if cfg.hf_home:
@@ -416,8 +418,18 @@ def run(cfg: DictConfig) -> None:
     )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="fetch/prefetch_lvbench")
-def main(cfg: DictConfig) -> None:
+def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    print_config = "--print-config" in argv
+    if print_config:
+        argv.remove("--print-config")
+
+    cfg = load_flat_config(CONF_PATH, argv)
+    if print_config:
+        print(yaml.safe_dump(dict(cfg), sort_keys=False))
+        return
     run(cfg)
 
 

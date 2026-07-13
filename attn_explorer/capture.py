@@ -28,7 +28,8 @@ Tre sorgenti:
         uv run python -m attn_explorer.capture --video videos/paperella.mp4
 
   3) SAMPLE DI DATASET — pesca un sample dal dump on-disk di un benchmark
-     (root da `conf/dataset/<name>.yaml`) per `video_idx`; il prompt è il MCQ:
+     (root dal preset `dataset.<name>` in `conf/config.yaml`) per `video_idx`;
+     il prompt è il MCQ:
 
         uv run python -m attn_explorer.capture --dataset egoschema \
             --video-idx 03657401-d4a4-40d0-9b03-d7e093ef93d1
@@ -67,8 +68,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("debug_attention")
 
-# Default visivi: stessi dell'eval EgoSchema (conf/dataset/egoschema.yaml),
-# così la heatmap è quella delle reali condizioni di prefill del benchmark.
+# Default visivi: stessi dell'eval EgoSchema (preset `dataset.egoschema`
+# in conf/config.yaml), così la heatmap è quella delle reali condizioni di
+# prefill del benchmark.
 DEFAULT_NFRAMES = 64
 DEFAULT_MAX_PIXELS = 151200
 
@@ -189,18 +191,15 @@ def _sample_prompt(sample: dict) -> str:
 
 def _load_dataset(args) -> tuple[object, list[dict]]:
     """Risolve `Dataset.get(args.dataset)` + i sample caricati dal suo loader."""
-    from omegaconf import OmegaConf
-
     from evals import Dataset
+    from utils.config import load_config
 
-    # `conf/dataset/` vive alla root del repo, non sotto `attn_explorer/`.
-    cfg_path = Path(__file__).parent.parent / "conf" / "dataset" / f"{args.dataset}.yaml"
-    if not cfg_path.is_file():
-        raise FileNotFoundError(f"config dataset non trovata: {cfg_path}")
-    dataset_cfg = OmegaConf.load(cfg_path)
+    # Riusa lo stesso loader/config unica di main.py: `dataset=<nome>` pesca
+    # il preset da `conf/config.yaml` (`dataset.<nome>`), niente file separati.
+    cfg = load_config([f"dataset={args.dataset}"])
     dataset = Dataset.get(args.dataset)
-    samples = dataset.loader(dataset_cfg)
-    logger.info("Caricati %d sample da %s (%s)", len(samples), dataset.name, dataset_cfg.root)
+    samples = dataset.loader(cfg.dataset)
+    logger.info("Caricati %d sample da %s (%s)", len(samples), dataset.name, cfg.dataset.root)
     return dataset, samples
 
 

@@ -1,13 +1,13 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
-# Override wandb defaults for this script (separate project so prefetch
-# runs don't clutter the inference project's run list).
+# Progetto wandb separato da quello di inference, così i prefetch run
+# non ne inquinano la run list.
 wandb:
   project: egoschema-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, egoschema]
+  name: null
+  notes: null
+  group: null
 
 # HF dataset providing QA metadata. lmms-lab/egoschema is metadata-only
 # (question, options, answer, video_idx) — the actual mp4s live elsewhere.

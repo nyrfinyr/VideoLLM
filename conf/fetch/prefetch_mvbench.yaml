@@ -1,13 +1,13 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
-# Override wandb defaults: progetto separato così i prefetch run non
-# inquinano la run list del progetto di inference.
+# Progetto wandb separato così i prefetch run non inquinano la run list
+# del progetto di inference.
 wandb:
   project: mvbench-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, mvbench]
+  name: null
+  notes: null
+  group: null
 
 # Repo HF che impacchetta metadati QA + video di MVBench:
 #   json/<task>.json        — 20 file di QA (uno per task)

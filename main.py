@@ -1,14 +1,18 @@
 import asyncio
 import logging
 import os
-from typing import cast
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-import hydra
 import torch
 import weave
-from omegaconf import DictConfig, OmegaConf
+import yaml
 
 from evals import Dataset, mcq_accuracy
+from strategies import Strategy
+from utils.config import Cfg, load_config
 from utils.obs import init_observability, log_eval_summary
 from utils.samples import prepare_samples
 
@@ -21,8 +25,39 @@ _DTYPES = {
 }
 
 
-def run(cfg: DictConfig) -> None:
-    logger.info("Resolved config:\n%s", OmegaConf.to_yaml(cfg))
+def _git_commit() -> str | None:
+    """Hash corto del commit corrente (`None` se non è un repo git o git manca)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def snapshot_config(cfg: Cfg) -> Path:
+    """Scrive il config risolto (+ commit git) su disco per riprodurre esattamente
+    questo run in futuro — indipendente da `wandb.mode` (per i run online questo
+    stesso config è già nel pannello wandb, ma per `mode=disabled` è l'unica
+    traccia locale). Rimpiazza il vecchio dump automatico `outputs/<data>/<ora>/`
+    di Hydra, perso con la sua rimozione — vedi `conf/config.yaml`.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_dir = Path("outputs") / f"{stamp}-{cfg.dataset.name}-{cfg.model.name}-{cfg.strategy.name}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = dict(cfg)
+    snapshot["_git_commit"] = _git_commit()
+    path = run_dir / "config.yaml"
+    path.write_text(yaml.safe_dump(snapshot, sort_keys=False))
+    return path
+
+
+def run(cfg: Cfg) -> None:
+    logger.info("Resolved config:\n%s", yaml.safe_dump(dict(cfg), sort_keys=False))
+    snapshot_path = snapshot_config(cfg)
+    logger.info("Config snapshot: %s", snapshot_path)
     torch.manual_seed(cfg.seed)
 
     if cfg.hf_home:
@@ -43,13 +78,14 @@ def run(cfg: DictConfig) -> None:
 
     init_observability(cfg)
 
-    model_cfg: dict = cast(dict, OmegaConf.to_container(cfg.model, resolve=True))
+    model_cfg: dict = dict(cfg.model)
     vlm_cls = _MODELS[model_cfg.pop("name")]
     model_cfg["torch_dtype"] = _DTYPES[model_cfg.pop("torch_dtype")]
     vlm: BaseVLM = vlm_cls(**model_cfg)
-    gen_cfg: GenerationConfig = GenerationConfig(**cast(dict, OmegaConf.to_container(cfg.generation, resolve=True)))
+    gen_cfg: GenerationConfig = GenerationConfig(**dict(cfg.generation))
 
     dataset: Dataset = Dataset.get(cfg.dataset.name)
+    strategy: Strategy = Strategy.get(cfg.strategy.name, cfg.strategy)
     samples: list[dict] = prepare_samples(dataset.loader(cfg.dataset), cfg)
     logger.info("Loaded %d samples from %s (%s)", len(samples), dataset.name, cfg.dataset.root)
 
@@ -59,13 +95,23 @@ def run(cfg: DictConfig) -> None:
         dataset=weave_dataset,
         scorers=[mcq_accuracy],
     )
-    summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, gen_cfg, cfg.dataset)))
+    summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, strategy, gen_cfg, cfg.dataset)))
     logger.info("Eval summary: %s", summary)
     log_eval_summary(summary, len(samples))
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
-def main(cfg: DictConfig) -> None:
+def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    print_config = "--print-config" in argv
+    if print_config:
+        argv.remove("--print-config")
+
+    cfg = load_config(argv)
+    if print_config:
+        print(yaml.safe_dump(dict(cfg), sort_keys=False))
+        return
     run(cfg)
 
 

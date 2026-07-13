@@ -23,7 +23,6 @@ echo "node: $(hostname)"; echo "date: $(date -Iseconds)"; echo "job_id: ${SLURM_
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
-export HYDRA_FULL_ERROR=1
 export PYTHONUNBUFFERED=1
 MODEL="${MODEL:-qwen2_5_vl_3b}"
 

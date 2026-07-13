@@ -1,13 +1,13 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
-# Override wandb defaults: progetto separato così i prefetch run non
-# inquinano la run list del progetto di inference.
+# Progetto wandb separato così i prefetch run non inquinano la run list
+# del progetto di inference.
 wandb:
   project: video-mme-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, video_mme]
+  name: null
+  notes: null
+  group: null
 
 # Repo HF che ospita metadata QA + video di Video-MME:
 #   videomme/test-00000-of-00001.parquet   — 2700 domande (4-MCQ)

@@ -1,11 +1,11 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
 wandb:
   project: vnbench-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, vnbench]
+  name: null
+  notes: null
+  group: null
 
 # Repo HF che ospita SOLO le annotazioni di VNBench (2MB, un JSON con le
 # 4 varianti "try" per video). I video grezzi NON sono su HF: sono su

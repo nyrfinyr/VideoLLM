@@ -25,12 +25,12 @@ Solo `try=0` viene usato (coerente con i 30 capture già fatti). Idempotente:
 gli stem già presenti in `out_dir` (mp4 + json) vengono saltati, quindi
 rilanciare con `n_per_subtype` più alto fa solo un top-up incrementale.
 
-Hydra overrides:
+Overrides (stessa sintassi `key=value` di `main.py`, vedi `utils/config.py`):
     uv run python fetch/prefetch_vnbench.py videos_root=/work/shared/vnbench_raw
     uv run python fetch/prefetch_vnbench.py videos_root=... n_per_subtype=100
     uv run python fetch/prefetch_vnbench.py videos_root=... subtypes='[ret_insert1]' n_per_subtype=50
     uv run python fetch/prefetch_vnbench.py videos_root=... symlink=true
-    uv run python fetch/prefetch_vnbench.py --cfg job
+    uv run python fetch/prefetch_vnbench.py --print-config
 
 Run on the login node (compute nodes typically lack internet) — e comunque
 dopo aver estratto l'archivio Drive sotto `videos_root`.
@@ -44,11 +44,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import hydra
 import weave
-from omegaconf import DictConfig
+import yaml
 
+from utils.config import Cfg, load_flat_config
 from utils.obs import init_observability
+
+CONF_PATH = Path(__file__).resolve().parent.parent / "conf" / "fetch" / "prefetch_vnbench.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +168,7 @@ def prefetch(
     }
 
 
-def run(cfg: DictConfig) -> None:
+def run(cfg: Cfg) -> None:
     if cfg.hf_home:
         os.environ["HF_HOME"] = cfg.hf_home
 
@@ -182,8 +184,18 @@ def run(cfg: DictConfig) -> None:
     )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="fetch/prefetch_vnbench")
-def main(cfg: DictConfig) -> None:
+def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    print_config = "--print-config" in argv
+    if print_config:
+        argv.remove("--print-config")
+
+    cfg = load_flat_config(CONF_PATH, argv)
+    if print_config:
+        print(yaml.safe_dump(dict(cfg), sort_keys=False))
+        return
     run(cfg)
 
 

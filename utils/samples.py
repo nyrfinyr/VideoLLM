@@ -6,12 +6,12 @@ invariata, `run` chiama solo `prepare_samples`.
 import logging
 import random
 
-from omegaconf import DictConfig
+from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
 
-def prepare_samples(samples: list[dict], cfg: DictConfig) -> list[dict]:
+def prepare_samples(samples: list[dict], cfg: Cfg) -> list[dict]:
     """Applica nell'ordine shuffle → shard → limit e ritorna la lista risultante.
     """
     if cfg.get("shuffle"):

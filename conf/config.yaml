@@ -1,45 +1,134 @@
-defaults:
-  - model: qwen2_5_vl_3b
-  - generation: precise          # greedy: default per eval riproducibili
-  - dataset: egoschema
-  - wandb: default
-  - _self_
+active:
+  model: qwen2_5_vl_3b         # (qwen2_5_vl_3b | qwen2_5_vl_3b_attn | qwen3_vl_2b | qwen3_vl_4b)
+  generation: precise          # (precise | balanced | creative)
+  dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
+  wandb: default                # (default)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample)
+
+model:
+  qwen2_5_vl_3b:
+    name: qwen25_vl_3b
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+
+  qwen2_5_vl_3b_attn:
+    name: qwen25_vl_3b_attn
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+    attn_implementation:
+      text_config: qwen25_attn_capture
+      vision_config: sdpa
+
+  qwen3_vl_2b:
+    name: qwen3_vl_2b
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+
+  qwen3_vl_4b:
+    name: qwen3_vl_4b
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+
+generation:
+  precise:
+    do_sample: false            # (true | false)
+    num_beams: 1
+    max_new_tokens: 256
+    repetition_penalty: 1.05
+
+  balanced:
+    do_sample: true              # (true | false)
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    max_new_tokens: 512
+    repetition_penalty: 1.05
+
+  creative:
+    do_sample: true              # (true | false)
+    temperature: 0.9
+    top_p: 0.95
+    top_k: 50
+    max_new_tokens: 1024
+    repetition_penalty: 1.0
+
+dataset:
+  egoschema:
+    name: egoschema
+    root: /work/tesi_avalenza/datasets/egoschema
+    nframes: 64
+    max_pixels: 151200
+
+  mvbench:
+    name: mvbench
+    root: /work/tesi_avalenza/datasets/mvbench
+    nframes: 32
+    max_pixels: 151200
+    tasks: null      # (null | [action_sequence | action_prediction | action_antonym | fine_grained_action | unexpected_action | object_existence | object_interaction | object_shuffle | moving_direction | action_localization | scene_transition | action_count | moving_count | moving_attribute | state_change | character_order | egocentric_navigation | episodic_reasoning | counterfactual_inference])
+
+  video_mme:
+    name: video_mme
+    root: /work/tesi_avalenza/datasets/video_mme
+    nframes: 128
+    max_pixels: 151200
+    duration: all          # (short | medium | long | all)
+    use_subtitles: false   # (true | false)
+
+  lvbench:
+    name: lvbench
+    root: /work/tesi_avalenza/datasets/lvbench
+    nframes: 768
+    max_pixels: 50176
+    min_pixels: 3136
+    use_time_reference: false   # (true | false)
+
+  causal2needles:
+    name: causal2needles
+    root: /work/tesi_avalenza/datasets/causal2needles
+    nframes: 128
+    max_pixels: 151200
+
+strategy:
+  uniform:
+    name: uniform
+
+  entropy_shortcut:
+    name: entropy_shortcut
+
+  entropy_attention_resample:
+    name: entropy_attention_resample
+    entropy_threshold: 0.7
+    concentration_threshold: 30.0
+    window_frac: 0.3
+    phase_shift_frac: 0.5
+    sink_percentile: 25.0
+    sink_border: 0
+
+wandb:
+  default:
+    project: ${dataset.name}
+    entity: alesvale97-unimore
+    mode: online       # (online | offline | disabled)
+    tags: []
+    name: null
+    notes: null
+    group: null
 
 seed: 42
-
-# Root della cache HuggingFace (modelli + datasets). null = lascia il
-# default (`$HF_HOME` se già esportata, altrimenti `~/.cache/huggingface`).
-# Su HPC override col path della cache condivisa, es.
-# `python main.py hf_home=/work/shared/hf`. main.py applica questo
-# valore PRIMA di importare transformers, perché `huggingface_hub` legge
-# le costanti di cache al momento dell'import.
 hf_home: ${oc.env:HF_HOME,null}
-
-# Numero massimo di sample da valutare (null = tutti). Tronca DOPO il
-# loader e i filtri dataset-specifici (duration/tasks/...). Pensato per gli
-# smoke test (`limit=5`): chiude la pipeline in pochi minuti ma le metriche
-# NON sono significative. Lascialo null per i run di prod.
 limit: null
-
-# Se true, mischia i sample (RNG seedato con `seed`) PRIMA di applicare
-# `limit`. Pensato per le probe di throughput: un subset `limit=N` così è
-# RAPPRESENTATIVO dell'intero dataset, mentre i loader restituiscono i
-# sample in ordine (mvbench per task, lvbench per video) → i primi N
-# sarebbero biased. Irrilevante a `limit=null` (accuracy invariata: ogni
-# sample è indipendente). Default false per i run di prod.
-shuffle: false
-
-# NB: il debug dell'attenzione entity→token visivi su UN singolo video NON
-# vive più qui. È uno script top-level separato e senza Hydra:
-#   uv run python debug_attention.py --video videos/paperella.mp4 --entity duck
-# Vedi debug_attention.py e utils/attn_probe.py / utils/attn_frames.py.
-
-# Sharding per job array SLURM (run pesanti: lvbench). `num_shards` = numero
-# totale di job; `shard` = indice di QUESTO job (0..num_shards-1). Slice
-# strided `samples[shard::num_shards]` → ogni shard mescola le fasce di durata
-# (lvbench ha video 1-2h molto variabili) bilanciando il walltime fra i job.
-# Deterministico (no shuffle in prod) → i shard sono disgiunti e coprono tutto
-# il dataset. I risultati si combinano per `wandb.group` a fine array.
-# Entrambi null = nessuno sharding (default, singolo job).
+shuffle: false        # (true | false)
 shard: null
 num_shards: null

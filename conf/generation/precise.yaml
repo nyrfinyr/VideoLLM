@@ -1,7 +1,0 @@
-# Deterministic baseline: greedy decoding, short outputs.
-# Use for reproducible runs, eval harnesses, or when you want the single
-# most-likely answer (e.g. VQA, OCR-style prompts).
-do_sample: false
-num_beams: 1
-max_new_tokens: 256
-repetition_penalty: 1.05

@@ -27,11 +27,11 @@ NTU RGB+D non è incluso nel repo HF (licenza), quindi il task
 
 Run on the login node (compute nodes typically lack internet).
 
-Hydra overrides:
+Overrides (stessa sintassi `key=value` di `main.py`, vedi `utils/config.py`):
     uv run python fetch/prefetch_mvbench.py tasks='[action_antonym]'
     uv run python fetch/prefetch_mvbench.py n=5
     uv run python fetch/prefetch_mvbench.py keep_zips=true
-    uv run python fetch/prefetch_mvbench.py --cfg job
+    uv run python fetch/prefetch_mvbench.py --print-config
 """
 import json
 import logging
@@ -46,11 +46,13 @@ from pathlib import Path
 # (script, `python -m fetch.prefetch_mvbench`, or installed entry point).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import hydra
 import weave
-from omegaconf import DictConfig
+import yaml
 
+from utils.config import Cfg, load_flat_config
 from utils.obs import init_observability
+
+CONF_PATH = Path(__file__).resolve().parent.parent / "conf" / "fetch" / "prefetch_mvbench.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +244,7 @@ def prefetch(
     }
 
 
-def run(cfg: DictConfig) -> None:
+def run(cfg: Cfg) -> None:
     # `datasets`/`huggingface_hub` leggono HF_HOME al primo import, va
     # settato prima di importare dentro `prefetch`.
     if cfg.hf_home:
@@ -259,8 +261,18 @@ def run(cfg: DictConfig) -> None:
     )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="fetch/prefetch_mvbench")
-def main(cfg: DictConfig) -> None:
+def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    print_config = "--print-config" in argv
+    if print_config:
+        argv.remove("--print-config")
+
+    cfg = load_flat_config(CONF_PATH, argv)
+    if print_config:
+        print(yaml.safe_dump(dict(cfg), sort_keys=False))
+        return
     run(cfg)
 
 

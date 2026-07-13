@@ -1,13 +1,13 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
-# Override wandb defaults for this script (separate project so prefetch
-# runs don't clutter the inference project's run list).
+# Progetto wandb separato da quello di inference, così i prefetch run
+# non ne inquinano la run list.
 wandb:
   project: causal2needles-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, causal2needles]
+  name: null
+  notes: null
+  group: null
 
 # Single HF repo carrying both the QA parquet (test_questions.parquet,
 # config="default", split="test") and the raw .mp4 files at

@@ -26,7 +26,6 @@ echo "job_id: ${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
-export HYDRA_FULL_ERROR=1
 MODEL="${MODEL:-qwen2_5_vl_3b}"
 
 uv run python main.py \

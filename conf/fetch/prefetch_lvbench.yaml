@@ -1,13 +1,13 @@
-# @package _global_
-defaults:
-  - /wandb: default
-  - _self_
-
-# Override wandb defaults: progetto separato così i prefetch run non
-# inquinano la run list del progetto di inference.
+# Progetto wandb separato così i prefetch run non inquinano la run list
+# del progetto di inference.
 wandb:
   project: lvbench-prefetch
+  entity: alesvale97-unimore
+  mode: online
   tags: [prefetch, lvbench]
+  name: null
+  notes: null
+  group: null
 
 # Repo HF che ospita metadata QA + video di LVBench (mirror self-contained
 # di lmms-lab; non serve più YouTube/yt-dlp):

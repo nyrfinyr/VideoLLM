@@ -15,10 +15,10 @@ layout (self-contained, no `datasets` dependency at read time):
             0001.mp4
             ...
 
-Hydra overrides:
+Overrides (stessa sintassi `key=value` di `main.py`, vedi `utils/config.py`):
     uv run python fetch/prefetch_egoschema.py n=50
     uv run python fetch/prefetch_egoschema.py wandb.mode=disabled
-    uv run python fetch/prefetch_egoschema.py --cfg job
+    uv run python fetch/prefetch_egoschema.py --print-config
 """
 import json
 import logging
@@ -32,11 +32,13 @@ from pathlib import Path
 # (script, `python -m fetch.prefetch_egoschema`, or installed entry point).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import hydra
 import weave
-from omegaconf import DictConfig
+import yaml
 
+from utils.config import Cfg, load_flat_config
 from utils.obs import init_observability
+
+CONF_PATH = Path(__file__).resolve().parent.parent / "conf" / "fetch" / "prefetch_egoschema.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +111,7 @@ def prefetch(
     }
 
 
-def run(cfg: DictConfig) -> None:
+def run(cfg: Cfg) -> None:
     # `datasets` reads HF_HOME at first import, so set it before the
     # lazy import inside `prefetch`.
     if cfg.hf_home:
@@ -125,8 +127,18 @@ def run(cfg: DictConfig) -> None:
     )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="fetch/prefetch_egoschema")
-def main(cfg: DictConfig) -> None:
+def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    print_config = "--print-config" in argv
+    if print_config:
+        argv.remove("--print-config")
+
+    cfg = load_flat_config(CONF_PATH, argv)
+    if print_config:
+        print(yaml.safe_dump(dict(cfg), sort_keys=False))
+        return
     run(cfg)
 
 
