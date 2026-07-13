@@ -6,7 +6,7 @@
 #SBATCH --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=00:45:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%j.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%j.err
 
@@ -30,11 +30,20 @@
 #
 # shuffle+limit come video_mme-test.sbatch (subset rappresentativo fra le
 # fasce di durata short/medium/long), stesso limit=40 per confrontabilità
-# con la baseline uniform già misurata. Logging Weave ATTIVO, group tagga
-# anche la strategy così i run non si mescolano con la baseline uniform.
+# con la baseline uniform già misurata. `--time` alzato a 1h30 (contro i 45
+# min della baseline): `entropy_attention_resample` fa SEMPRE un prefill
+# extra (`generate_with_signals`, pass 1) PRIMA della vera `generate()` —
+# non solo sui sample poi ricampionati, quindi costa di più per OGNI sample
+# a prescindere dal ricampionamento (vedi anche video_mme-signal.sbatch).
+# `entropy_shortcut` invece salta `generate()` del tutto (solo prefill) ed
+# è probabilmente più economico della baseline, non più caro.
+# Logging Weave ATTIVO, group tagga anche la strategy così i run non si
+# mescolano con la baseline uniform.
 #   grep -A6 'Evaluation summary' logs/video_mme-signal-test-<jobid>.out
-# In UI Weave guarda anche `resampled`/`resample_kind`/`top1_pct` per capire
-# quanto spesso e come sta ricampionando a questa scala di frame/durata clip.
+# In UI Weave guarda `model_latency.mean` (serve a dimensionare il --time
+# del prod, vedi video_mme-signal.sbatch) e — solo per entropy_attention_
+# resample — `resampled`/`resample_kind`/`top1_pct` per capire quanto spesso
+# e come sta ricampionando a questa scala di frame/durata clip.
 set -euo pipefail
 
 echo "node: $(hostname)"; echo "date: $(date -Iseconds)"; echo "job_id: ${SLURM_JOB_ID}"
