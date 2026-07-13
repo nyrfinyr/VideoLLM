@@ -6,9 +6,12 @@ MVBench, ...) e implementa due metodi:
 - `loader(cfg)`: legge il dump on-disk prodotto da `fetch/prefetch_<x>.py`
   e ritorna le righe normalizzate per Weave (chiavi che matchano gli
   arg di `predict` e degli scorer).
-- `predict_factory(vlm, gen_cfg, cfg)`: ritorna una closure
+- `predict_factory(vlm, strategy, gen_cfg, cfg)`: ritorna una closure
   `@weave.op predict(...)` la cui signature matcha le colonne ritornate
-  da `loader`.
+  da `loader`. Il corpo costruisce solo il prompt e i parametri
+  dataset-specifici (frame pre-estratti, trim), poi delega a
+  `strategy.answer(...)` (`strategies/base.py`) la scelta di come
+  interrogare il modello — vedi quel modulo per il contratto completo.
 
 Il dispatch da `cfg.dataset.name` (stringa) alla classe avviene via
 `Dataset.get(name)`, che scansiona `__subclasses__()`. Per essere
@@ -32,7 +35,6 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Callable
 
 import weave
-from omegaconf import DictConfig
 
 from utils.mcq import find_mcq_answer, parse_mcq_letter  # noqa: F401
 
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from strategies.base import Strategy
+    from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
@@ -96,19 +100,19 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
 class Dataset(ABC):
     """ABC per i dataset di evaluation.
 
-    Le sottoclassi pinnano `name` (chiave usata in `conf/dataset/<x>.yaml`
-    sotto `name:` e nel dispatch di `main.py`) e implementano `loader`
-    + `predict_factory`. Restano stateless: `Dataset.get(name)`
-    instanzia al volo.
+    Le sottoclassi pinnano `name` (chiave del preset sotto `dataset:` in
+    `conf/config.yaml`, matcha il suo campo `name:` e il dispatch di
+    `main.py`) e implementano `loader` + `predict_factory`. Restano
+    stateless: `Dataset.get(name)` instanzia al volo.
     """
 
     name: str  # override in subclass
 
     @abstractmethod
-    def loader(self, cfg: DictConfig) -> list[dict]:
+    def loader(self, cfg: Cfg) -> list[dict]:
         """Legge il dump locale e ritorna le righe normalizzate.
 
-        `cfg` è `cfg.dataset` di Hydra: contiene almeno `name`, `root`
+        `cfg` è `cfg.dataset` (config composta da `utils.config.load_config`): contiene almeno `name`, `root`
         (path dump on-disk) e i field dataset-specifici (`tasks`,
         `duration`, ...).
         """
@@ -117,14 +121,20 @@ class Dataset(ABC):
     def predict_factory(
         self,
         vlm: BaseVLM,
+        strategy: Strategy,
         gen_cfg: GenerationConfig,
-        cfg: DictConfig,
+        cfg: Cfg,
     ) -> Callable:
         """Ritorna la closure `@weave.op predict(...)` traced da Weave.
 
-        `cfg` è `cfg.dataset` di Hydra: simmetrico a `loader`, ogni
+        `cfg` è `cfg.dataset` (config composta da `utils.config.load_config`): simmetrico a `loader`, ogni
         dataset pesca i field che gli servono (es. `nframes` ovunque,
-        `use_subtitles` su Video-MME). Tenere la stessa signature in
+        `use_subtitles` su Video-MME) per costruire `prompt` +
+        `strategies.base.SamplingBudget` + eventuali `frames`/
+        `video_start`/`video_end` dataset-specifici, poi delega a
+        `strategy.answer(...)` — la scelta di COME interrogare il modello
+        (campionamento frame, numero di forward pass, uso di segnali) non
+        è più responsabilità del dataset. Tenere la stessa signature in
         tutte le sottoclassi semplifica il dispatch in `main.py`.
         """
 

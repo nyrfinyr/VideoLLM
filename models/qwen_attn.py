@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from transformers import AttentionInterface
+from transformers import AttentionInterface, GenerationConfig
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv
 
@@ -8,6 +8,7 @@ from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_an
 
 from .media import MediaItem, Text
 from .qwen import Qwen25VL3B
+from .signals import SignalAnswer, SupportsSignals
 
 
 # Indici di canale "outlier" per modello: i token visivi-sink hanno hidden
@@ -95,7 +96,7 @@ AttentionInterface.register("qwen25_attn_capture", qwen25_attn_capture)
 AttentionMaskInterface.register("qwen25_attn_capture", eager_mask)
 
 
-class Qwen25VLAttention(Qwen25VL3B):
+class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
     """Qwen2.5-VL con attention interface custom per analisi dell'attenzione.
 
     L'interface `qwen25_attn_capture` (registrata sopra, attivata via
@@ -105,7 +106,10 @@ class Qwen25VLAttention(Qwen25VL3B):
     `full_visual_attention` orchestra il giro completo: span domanda/visivo →
     forward di prefill → media sui layer centrali → mappa 2D per ogni token
     della domanda. `entity_visual_attention` è un wrapper che seleziona le righe
-    di una specifica entity e le media.
+    di una specifica entity e le media. `generate_with_signals` (contratto
+    `SupportsSignals`, `models/signals.py`) è il punto d'ingresso usato dalle
+    strategy signal-driven (es. `strategies.entropy_shortcut`): avvolge
+    `full_visual_attention` senza duplicarne la logica.
     """
 
     def _find_entity_span(self, input_ids: torch.Tensor, entity: str) -> tuple[int, int]:
@@ -281,6 +285,32 @@ class Qwen25VLAttention(Qwen25VL3B):
             top_tokens=top_tokens,
             visual_span=visual_span,
             input_ids=input_ids.cpu(),
+        )
+
+    def generate_with_signals(
+        self,
+        media: MediaItem,
+        text: Text,
+        gen_cfg: GenerationConfig,
+        *,
+        answer_letters: list[str] | None = None,
+    ) -> SignalAnswer:
+        """Implementa `SupportsSignals` avvolgendo `full_visual_attention`.
+
+        Prefill-only (nessun `model.generate()`): `SignalAnswer.text` resta
+        `None`, `pred_letter` viene dalla softmax ristretta alle lettere
+        candidate sui logit dell'ultimo token del prefill — sufficiente per
+        rispondere a un MCQ senza generazione autoregressiva. `gen_cfg` non
+        è usato (nessun campionamento avviene in questo path); resta nella
+        firma per uniformità col contratto `SupportsSignals`.
+        """
+        va = self.full_visual_attention(media, text, answer_letters=answer_letters)
+        return SignalAnswer(
+            text=None,
+            pred_letter=va.pred_letter,
+            answer_entropy=va.answer_entropy,
+            answer_probs=va.answer_probs,
+            visual_attention=va,
         )
 
     def entity_visual_attention(

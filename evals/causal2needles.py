@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import weave
-from omegaconf import DictConfig
 
 from .base import Dataset
 
@@ -38,6 +37,8 @@ if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from strategies.base import Strategy
+    from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ logger = logging.getLogger(__name__)
 class CausalNeedles(Dataset):
     name = "causal2needles"
 
-    def loader(self, cfg: DictConfig) -> list[dict]:
+    def loader(self, cfg: Cfg) -> list[dict]:
         root = Path(cfg.root)
         with (root / "metadata.jsonl").open() as f:
             rows = [json.loads(line) for line in f]
@@ -71,20 +72,19 @@ class CausalNeedles(Dataset):
     def predict_factory(
         self,
         vlm: BaseVLM,
+        strategy: Strategy,
         gen_cfg: GenerationConfig,
-        cfg: DictConfig,
+        cfg: Cfg,
     ) -> Callable:
-        from models import Text, Video
+        from strategies.base import SamplingBudget
 
-        nframes = cfg.nframes
-        max_pixels = cfg.max_pixels
-        min_pixels = cfg.get("min_pixels")
+        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
 
         @weave.op
         def predict(video_path: str, question: str) -> dict:
-            media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
-            messages = vlm.build_messages(media, Text(question))
-            raw = vlm.generate(messages, generation_config=gen_cfg)
-            return {"raw": raw}
+            # options=None: open-ended, nessuna chiave "pred" nel dict
+            # ritornato (stesso comportamento di oggi — questo dataset
+            # non è agganciato a mcq_accuracy).
+            return strategy.answer(vlm, video_path=video_path, prompt=question, options=None, gen_cfg=gen_cfg, budget=budget)
 
         return predict

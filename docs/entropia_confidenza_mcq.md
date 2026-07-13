@@ -3,9 +3,12 @@
 > **Stato** (2026-07-05): pipeline di cattura estesa con dati di confidenza
 > "gratuiti" (nessun forward aggiuntivo), server interattivo con pagina di
 > analisi live, prima evidenza sperimentale raccolta su 30 video VNBench
-> "retrieval". Documento preparato come input per un agente di formulazione
-> di ipotesi di ricerca — riporta meccanismo, funzionalità disponibili,
-> dataset, numeri grezzi e caveat, senza precotturare le conclusioni.
+> "retrieval". Aggiunto un secondo segnale, ortogonale all'entropia — la
+> **concentrazione dell'attenzione sink-filtrata** — con prima correlazione
+> empirica raccolta sullo stesso campione. Documento preparato come input
+> per un agente di formulazione di ipotesi di ricerca — riporta meccanismo,
+> funzionalità disponibili, dataset, numeri grezzi e caveat, senza
+> precotturare le conclusioni.
 
 ## 1. Domanda di partenza
 
@@ -20,6 +23,11 @@ possibili sono state messe alla prova su un primo campione:
 2. Quando il modello indovina, è perché il frame che conterrebbe
    l'informazione risolutiva ("needle") non è stato campionato dal
    sotto-campionamento uniforme dei frame del video.
+3. (aggiunta successiva, §5.3) Indipendentemente dall'entropia della
+   risposta, un modello che "trova" un frame su cui fissare l'attenzione
+   (attenzione concentrata, al netto dei token sink) ha più probabilità di
+   rispondere correttamente rispetto a uno con attenzione dispersa su tutto
+   il video — un segnale di *grounding* visivo, non di confidenza verbale.
 
 ## 2. Meccanismo di misura (come si calcola l'entropia, a costo zero)
 
@@ -54,6 +62,32 @@ debug/riproducibilità — non usati nell'analisi statistica sotto):
   alle condizioni sperimentali di un dato `.pt` senza dover rilanciare la
   cattura (costosa, richiede GPU) solo per saperlo.
 
+## 2bis. Meccanismo di misura (concentrazione dell'attenzione, `attention_concentration`)
+
+Secondo segnale, calcolato dalla mappa di attenzione testo→visivo già
+catturata (non richiede logit né forward aggiuntivi, ma richiede che il
+`.pt` contenga `sink_map` — vedi `docs/qwen25vl_entity_attention.md` per il
+meccanismo di attention-sink):
+
+1. Si aggrega l'attenzione su tutti i token della domanda
+   (`AttentionCapture.aggregate`), ottenendo una heatmap per cella
+   spazio-temporale (frame × patch).
+2. Si azzerano le celle classificate come **sink** (`sink_view(...,
+   view="nonsink")`) — senza questo filtro il segnale è quasi piatto,
+   perché i token sink assorbono la maggior parte della massa di
+   attenzione indipendentemente dal contenuto visivo.
+3. Le celle residue vengono ordinate per massa totale (`rank_cells(...,
+   metric="sum")`).
+4. `top1_pct` = percentuale della massa (post-filtro-sink) concentrata
+   sulla cella più attenzionata; `topk_pct` = stessa percentuale sulle
+   prime `k=3` celle.
+   - `top1_pct` alto ⇒ il modello "si fissa" su un frame/regione preciso
+     (grounding).
+   - `top1_pct` basso e vicino all'uniforme ⇒ attenzione dispersa su tutto
+     il video, nessun frame spicca.
+
+Implementazione: `attention_concentration()` in `utils/attn_core.py`.
+
 ## 3. Funzionalità disponibili per esplorare i dati (tooling di questa sessione)
 
 ### 3.1 Cattura (`attn_explorer/capture.py`, `utils/attn_core.py`)
@@ -85,12 +119,25 @@ uv run python -m attn_explorer.serve --store data/vnbench/output_v4/retrieval \
   e i metadati di riproducibilità; un bottone apre una modale con **tutti**
   i dati raw del `.pt` (utile per debug e per mostrare il dato grezzo a un
   supervisore); un bottone apre il video originale in una modale.
-- **`/analisi`** (nuova) — calcolata **live** da `index.json` su tutti gli
-  store passati al server (non uno snapshot statico): correlazione di
-  Pearson r(entropia, corretta), entropia media per gruppo
-  corretta/sbagliata, rapporto fra le medie, grafico a dispersione (con
-  jitter) per ispezione punto-per-punto, tabella di dettaglio linkata alle
-  pagine dei singoli video. Raggiungibile da un link in cima a `/`.
+- **`/analisi`** — calcolata **live** da `index.json` (+ rilettura dei
+  `.pt` per la concentrazione) su tutti gli store passati al server (non
+  uno snapshot statico):
+  - Pannello entropia: correlazione di Pearson r(entropia, corretta),
+    entropia media per gruppo corretta/sbagliata, rapporto fra le medie,
+    grafico a dispersione (con jitter) per ispezione punto-per-punto.
+  - Pannello concentrazione (nuovo): correlazione di Pearson
+    r(`top1_pct`, corretta) sui video il cui `.pt` contiene `sink_map`
+    (skip silenzioso — `try/except` — per i video catturati prima
+    dell'introduzione degli attention-sink).
+  - Pannello quadranti (nuovo): incrocia entropia e concentrazione,
+    soglie = **mediana del campione corrente** (non fisse), in 4 quadranti
+    — A "sicuro e concentrato", B "sicuro ma disperso", C "incerto ma
+    concentrato", D "incerto e disperso" — con n e accuratezza per
+    quadrante, più uno scatter plot dedicato (assi entropia × `top1_pct`,
+    linee tratteggiate sulle mediane).
+  - Tabella di dettaglio linkata alle pagine dei singoli video, ora con
+    colonne `top1_pct` e quadrante di appartenenza.
+  Raggiungibile da un link in cima a `/`.
 
 Questa pagina ricalcola i numeri riportati nella sezione 5 automaticamente
 ogni volta che vengono catturati altri video: è lo strumento da usare per
@@ -189,6 +236,42 @@ leggibilità/risoluzione del needle nel frame effettivamente campionato,
 ambiguità fra opzioni distrattrici, o errore di lettura del modello a
 parità di evidenza visiva disponibile.
 
+### 5.3 Ipotesi 3 — la concentrazione dell'attenzione (grounding) predice la correttezza
+
+Stesso campione VNBench "retrieval" (N = 30, §4), stesso store, segnale
+aggiuntivo calcolato post-hoc dai `.pt` già catturati (nessuna nuova
+cattura richiesta, a patto che `sink_map` sia presente — vedi §2bis).
+
+**Risultato** (riportato nel docstring di `attention_concentration()`,
+`utils/attn_core.py`, non ancora salvato come tabella/export separato):
+
+- **Correlazione di Pearson r(`top1_pct`, corretta) = 0.58** — più debole
+  del segnale di entropia (r = −0.75, §5.1) ma nello stesso verso atteso:
+  attenzione più concentrata associata a risposta corretta.
+- **Correlazione di Pearson r = 0.37** fra concentrazione e un secondo
+  proxy, la presenza **content-grounded** del needle nei frame campionati
+  (a differenza del proxy puramente temporale `covered` di §5.2, questo
+  richiede — o comunque suggerisce — un controllo sul contenuto del frame,
+  non solo sulla sua distanza temporale dal timestamp del needle). Più
+  debole del legame con la correttezza, ma coerente con l'idea che la
+  concentrazione dell'attenzione tracci *dove* il modello guarda più che
+  *cosa* risponde.
+
+**Quadranti entropia × concentrazione** (`/analisi`, soglie = mediana del
+campione corrente): la pagina isola un bucket "incerto **e** disperso" (D)
+dove — l'aspettativa da verificare quando il campione crescerà — dovrebbero
+concentrarsi gli errori più che nei bucket "sicuro e concentrato" (A). I
+numeri per quadrante (n, accuratezza) sul campione da 30 video non sono
+stati fissati in questo documento — sono ricalcolati live da `/analisi` e
+vanno letti da lì per lo stato aggiornato.
+
+**Caveat**: r = 0.58 è più debole del segnale di entropia (r = −0.75) sullo
+stesso campione, e con N = 30 (7 errori) l'incertezza sulla stima è ampia
+quanto quella già discussa in §5.2. Il filtro sink è **necessario** perché
+il segnale sia informativo (§2bis) — qualunque estensione del campione
+richiede quindi capture con `sink_map` popolato, non riutilizzabile su
+capture precedenti privi di quel campo.
+
 ## 6. Limiti del campione attuale
 
 - Un'unica categoria VNBench ("retrieval") su tre disponibili nel dataset
@@ -201,6 +284,11 @@ parità di evidenza visiva disponibile.
   frame-doubling disattivato, o con un modello più grande.
 - Il proxy di "copertura" (§5.2) è un'euristica temporale grezza, non una
   verifica visiva del contenuto del frame.
+- Il segnale di concentrazione (§5.3) richiede `sink_map` nel `.pt`: non è
+  calcolabile sui capture fatti prima dell'introduzione del filtro
+  attention-sink, e i numeri r = 0.58/0.37 sono al momento solo nel
+  docstring di `attention_concentration()`, non riprodotti come
+  tabella/export a parte in questo documento.
 
 ## 7. Cosa si può fare senza ricatturare nulla
 
@@ -209,17 +297,35 @@ Tutti i `.pt` già catturati contengono `answer_logits`/`answer_probs`/
 video (es. guardare `top_tokens` per capire cosa il modello "vorrebbe dire"
 senza il vincolo MCQ, o rianalizzare con soglie di entropia diverse) non
 richiedono un nuovo forward, solo lettura dei `.pt` esistenti o uso di
-`/analisi` e `/v/<stem>` nel server già in esecuzione. Servirebbe invece
-una nuova cattura per: altre categorie VNBench, altri modelli, o varianti
-di campionamento frame.
+`/analisi` e `/v/<stem>` nel server già in esecuzione. Lo stesso vale per
+la concentrazione (§5.3), **a patto che il `.pt` contenga già
+`sink_map`**: se sì, `/analisi` la ricalcola live senza bisogno di
+ricatturare nulla. Servirebbe invece una nuova cattura per: altre categorie
+VNBench, altri modelli, varianti di campionamento frame, o video privi di
+`sink_map`.
+
+Per scalare il campione oltre i 30 video attuali, `fetch/prefetch_vnbench.py`
+(aggiunto insieme al segnale di concentrazione) automatizza la selezione e
+copia dei video/sidecar VNBench nel layout atteso da
+`attn_explorer.capture --video-dir --prompt-from-json` — i video grezzi
+restano su Google Drive (non scriptabile come gli altri `fetch/prefetch_*`
+del repo, che tirano da HF), quindi richiede comunque un download manuale
+una tantum su un nodo con internet; lo script poi fa solo top-up
+incrementale (`videos_root=... n_per_subtype=N`).
 
 ## 8. Riferimenti
 
 - Store dati: `data/vnbench/output_v4/retrieval/` (+ video originali in
   `data/vnbench/retrieval/`).
 - Codice: `attn_explorer/capture.py`, `attn_explorer/serve.py`,
-  `utils/attn_core.py` (funzioni `mcq_answer_stats`, `top_k_logits`).
+  `utils/attn_core.py` (funzioni `mcq_answer_stats`, `top_k_logits`,
+  `attention_concentration`, `sink_view`, `rank_cells`).
+- Prefetch per scalare il campione: `fetch/prefetch_vnbench.py` +
+  `conf/fetch/prefetch_vnbench.yaml`.
 - Pagina interattiva: `uv run python -m attn_explorer.serve --store
   data/vnbench/output_v4/retrieval --videos data/vnbench/retrieval`, poi
-  `/analisi` per la correlazione live, `/v/<stem>` per ispezionare un
-  singolo caso (es. i due controesempi citati sopra).
+  `/analisi` per entrambe le correlazioni (entropia e concentrazione) live
+  più i quadranti, `/v/<stem>` per ispezionare un singolo caso (es. i due
+  controesempi citati sopra).
+- Attention-sink (prerequisito di `attention_concentration`):
+  `docs/qwen25vl_entity_attention.md`.

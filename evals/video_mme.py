@@ -34,14 +34,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import weave
-from omegaconf import DictConfig
 
-from .base import OPTION_PREFIX_RE, Dataset, format_mcq_prompt, parse_mcq_letter
+from .base import OPTION_PREFIX_RE, Dataset, format_mcq_prompt
 
 if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from strategies.base import Strategy
+    from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _read_srt_text(path: Path) -> str:
 class VideoMME(Dataset):
     name = "video_mme"
 
-    def loader(self, cfg: DictConfig) -> list[dict]:
+    def loader(self, cfg: Cfg) -> list[dict]:
         """Carica Video-MME in righe normalizzate per Weave.
 
         Legge `cfg.root` (path assoluto al dump di `prefetch_videomme.py`),
@@ -178,8 +179,9 @@ class VideoMME(Dataset):
     def predict_factory(
         self,
         vlm: BaseVLM,
+        strategy: Strategy,
         gen_cfg: GenerationConfig,
-        cfg: DictConfig,
+        cfg: Cfg,
     ) -> Callable:
         """Costruisce la closure `@weave.op predict(...)`.
 
@@ -188,13 +190,14 @@ class VideoMME(Dataset):
         - True: `predict(video_path, question, options, subtitle_path)` —
           legge il .srt, estrae le linee di dialogo, le prepend al prompt
           MCQ con la formulazione standard "This video's subtitles are
-          listed below:" (allineata a lmms-eval/videomme).
+          listed below:" (allineata a lmms-eval/videomme). Il prompt
+          (con o senza sottotitoli) è l'unica parte dataset-specifica:
+          la selezione frame e la chiamata al modello sono delegate a
+          `strategy.answer`.
         """
-        from models import Text, Video
+        from strategies.base import SamplingBudget
 
-        nframes = cfg.nframes
-        max_pixels = cfg.max_pixels
-        min_pixels = cfg.get("min_pixels")
+        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
         use_subtitles = bool(cfg.use_subtitles)
 
         if use_subtitles:
@@ -211,17 +214,11 @@ class VideoMME(Dataset):
                     f"{sub_text}\n\n"
                     + format_mcq_prompt(question, options)
                 )
-                media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
-                messages = vlm.build_messages(media, Text(prompt))
-                raw = vlm.generate(messages, generation_config=gen_cfg)
-                return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
+                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
         else:
             @weave.op
             def predict(video_path: str, question: str, options: list[str]) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
-                messages = vlm.build_messages(media, Text(prompt))
-                raw = vlm.generate(messages, generation_config=gen_cfg)
-                return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
+                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
 
         return predict

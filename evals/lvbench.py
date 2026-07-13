@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import weave
-from omegaconf import DictConfig
 
 from .base import Dataset, format_mcq_prompt, parse_mcq_letter
 
@@ -48,6 +47,8 @@ if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from strategies.base import Strategy
+    from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def _parse_time_reference(tr: str) -> tuple[float, float]:
 class LVBench(Dataset):
     name = "lvbench"
 
-    def loader(self, cfg: DictConfig) -> list[dict]:
+    def loader(self, cfg: Cfg) -> list[dict]:
         """Carica LVBench in righe normalizzate per Weave.
 
         Schema di output:
@@ -178,23 +179,23 @@ class LVBench(Dataset):
     def predict_factory(
         self,
         vlm: BaseVLM,
+        strategy: Strategy,
         gen_cfg: GenerationConfig,
-        cfg: DictConfig,
+        cfg: Cfg,
     ) -> Callable:
         """Costruisce la closure `@weave.op predict(...)`.
 
         Default: video INTERO (no trim), il modello deve trovare il
         segmento rilevante — è la metodologia ufficiale di LVBench.
 
-        `cfg.use_time_reference=true`: trim a `[video_start, video_end]`
-        via qwen-vl-utils. Eval "open-book" / oracle baseline — utile per
-        misurare l'upper bound se il modello sapesse già dove guardare.
+        `cfg.use_time_reference=true`: trim a `[video_start, video_end]`,
+        passato a `strategy.answer` — eval "open-book" / oracle baseline,
+        utile per misurare l'upper bound se il modello sapesse già dove
+        guardare.
         """
-        from models import Text, Video
+        from strategies.base import SamplingBudget
 
-        nframes = cfg.nframes
-        max_pixels = cfg.max_pixels
-        min_pixels = cfg.get("min_pixels")
+        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
         use_tr = bool(cfg.get("use_time_reference", False))
 
         if use_tr:
@@ -207,24 +208,14 @@ class LVBench(Dataset):
                 video_end: float | None,
             ) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                media = Video(
-                    video_path,
-                    nframes=nframes,
-                    max_pixels=max_pixels,
-                    min_pixels=min_pixels,
-                    video_start=video_start,
-                    video_end=video_end,
+                return strategy.answer(
+                    vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg,
+                    budget=budget, video_start=video_start, video_end=video_end,
                 )
-                messages = vlm.build_messages(media, Text(prompt))
-                raw = vlm.generate(messages, generation_config=gen_cfg)
-                return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
         else:
             @weave.op
             def predict(video_path: str, question: str, options: list[str]) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                media = Video(video_path, nframes=nframes, max_pixels=max_pixels, min_pixels=min_pixels)
-                messages = vlm.build_messages(media, Text(prompt))
-                raw = vlm.generate(messages, generation_config=gen_cfg)
-                return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
+                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
 
         return predict

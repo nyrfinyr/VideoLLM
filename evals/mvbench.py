@@ -28,14 +28,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import weave
-from omegaconf import DictConfig
 
-from .base import Dataset, format_mcq_prompt, parse_mcq_letter
+from .base import Dataset, format_mcq_prompt
 
 if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
+    from strategies.base import Strategy
+    from utils.config import Cfg
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def _list_frames(folder: Path) -> list[str]:
 class MVBench(Dataset):
     name = "mvbench"
 
-    def loader(self, cfg: DictConfig) -> list[dict]:
+    def loader(self, cfg: Cfg) -> list[dict]:
         """Carica MVBench in righe normalizzate per Weave.
 
         Legge `cfg.root` (assoluto) e `cfg.tasks` (lista task da
@@ -129,23 +130,21 @@ class MVBench(Dataset):
     def predict_factory(
         self,
         vlm: BaseVLM,
+        strategy: Strategy,
         gen_cfg: GenerationConfig,
-        cfg: DictConfig,
+        cfg: Cfg,
     ) -> Callable:
         """Discrimina per `data_type`:
 
-        - `video`  → `Video(path, nframes, video_start=..., video_end=...)`.
-                     I backend decord/torchvision/torchcodec di
-                     qwen-vl-utils fanno il trim a `[video_start,
-                     video_end]` al decode, poi campionano `nframes`.
-        - `frame`  → `VideoFrames([list di jpg ordinati])`. nframes/start/end
-                     sono ignorati (frame già pre-estratti).
+        - `video`  → frame campionati da `strategy` secondo `budget`, con
+                     trim `[video_start, video_end]`.
+        - `frame`  → frame GIÀ pre-estratti (`_list_frames`), passati alla
+                     strategy come `frames=` (nessuna libertà di
+                     selezione — vedi `Strategy._build_media`).
         """
-        from models import Text, Video, VideoFrames
+        from strategies.base import SamplingBudget
 
-        nframes = cfg.nframes
-        max_pixels = cfg.max_pixels
-        min_pixels = cfg.get("min_pixels")
+        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
 
         @weave.op
         def predict(
@@ -157,19 +156,10 @@ class MVBench(Dataset):
             video_end: float | None,
         ) -> dict:
             prompt = format_mcq_prompt(question, options)
-            if data_type == "frame":
-                media = VideoFrames(video=_list_frames(Path(video_path)))
-            else:
-                media = Video(
-                    video_path,
-                    nframes=nframes,
-                    max_pixels=max_pixels,
-                    min_pixels=min_pixels,
-                    video_start=video_start,
-                    video_end=video_end,
-                )
-            messages = vlm.build_messages(media, Text(prompt))
-            raw = vlm.generate(messages, generation_config=gen_cfg)
-            return {"raw": raw, "pred": parse_mcq_letter(raw, options)}
+            frames = _list_frames(Path(video_path)) if data_type == "frame" else None
+            return strategy.answer(
+                vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg,
+                budget=budget, video_start=video_start, video_end=video_end, frames=frames,
+            )
 
         return predict
