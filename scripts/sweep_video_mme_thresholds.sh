@@ -24,13 +24,15 @@
 # affinano gli altri in un secondo round, solo sulla coppia vincente qui.
 #
 # `--time` per ogni submit è STIMATO (nessuna misura reale ancora per
-# entropy_attention_resample su Video-MME), volutamente generoso: la
-# baseline uniform a 128 frame misura ~12.4s/sample su L40S ma fino a ~3x
-# su RTX6000-24G (docs/probe_throughput.md) — entropy_attention_resample fa
-# SEMPRE un prefill extra per sample (vedi strategies/entropy_attention_
-# resample.py, video_mme-signal-test.sbatch), quindi si stima ~1.5-2.5x la
-# baseline. Se un job va comunque in timeout, ALZARE SWEEP_TIME/CONTROL_TIME
-# sotto e rilanciare solo le combinazioni mancanti (i job sono indipendenti).
+# entropy_attention_resample su Video-MME). SWEEP_TIME=1h (ridotto da un
+# giro precedente troppo prudente, 8h, per 250 sample): sulla baseline
+# uniform a 128 frame (~12.4s/sample su L40S, docs/probe_throughput.md) e col
+# prefill extra di entropy_attention_resample (~1.5-2.5x) 250 sample stanno
+# in ~1.3-2.2h su L40S — 1h basta su card veloce ma è STRETTO o insufficiente
+# su RTX6000/A5000-24G (fino a ~3x più lente, docs/probe_throughput.md), che
+# il constraint non esclude. Se un job va in timeout non è uno spreco grave
+# (job indipendenti, si nota subito da `squeue`/Weave): alza SWEEP_TIME/
+# CONTROL_TIME sotto e rilancia solo le combinazioni mancanti.
 #
 # DRY_RUN=1 stampa i comandi `sbatch` senza sottometterli (utile per
 # controllare la grid prima di spendere GPU-ore):
@@ -40,7 +42,7 @@ set -euo pipefail
 LIMIT=250
 MODEL="${MODEL:-qwen2_5_vl_3b_attn}"
 GROUP="${MODEL}-sweep-video_mme-test"
-SWEEP_TIME="${SWEEP_TIME:-08:00:00}"    # entropy_attention_resample: pass1 + generate(), per sample
+SWEEP_TIME="${SWEEP_TIME:-01:00:00}"    # entropy_attention_resample: pass1 + generate(), per sample
 CONTROL_TIME="${CONTROL_TIME:-03:00:00}" # uniform: singola generate(), più economico
 
 run() {
