@@ -150,7 +150,7 @@ class EntropyAttentionResampleStrategy(Strategy):
                 # visti, stesso budget. Clampata a [0, duration]: se il
                 # pass 1 copriva già tutto il video, lo shift si limita
                 # a restringere leggermente da sinistra.
-                interval = (w1 - w0) / t if t else 0.0
+                interval = (w1 - w0) / budget.nframes if budget.nframes else 0.0
                 shift = interval * self.phase_shift_frac
                 new_start = min(w0 + shift, duration)
                 new_end = min(w1 + shift, duration)
