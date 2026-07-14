@@ -170,6 +170,17 @@ introduce nessuna differenza rispetto a `uniform`.
 **Al massimo un ricampionamento**: non c'è un terzo pass che rivaluti il
 segnale sui nuovi frame per decidere se ricampionare ancora.
 
+> **TODO (miglioramento accuracy)**: oggi, se `parse_mcq_letter(raw,
+> options)` non trova una lettera valida nell'output libero di `generate()`,
+> `pred` resta `None` — il sample è contato come non parseabile (vedi
+> `docs/strategie_inferenza.md §3` più sopra e la nota MVBench nel
+> `README.md`: "52/3800 senza `pred` parseabile"). Il segnale del pass 1
+> (`signal.pred_letter`, argmax della softmax ristretta) è già disponibile
+> a costo zero in quel punto (`strategies/entropy_attention_resample.py:181-190`)
+> e potrebbe fare da fallback invece di lasciare `None` — recupererebbe
+> accuracy sui sample persi solo per parsing, senza generare ipotesi nuove
+> (la lettera è quella su cui il modello pesava già di più al pass 1).
+
 ## 4. Segnali condivisi (riepilogo formule)
 
 | Segnale | Dove | Formula |

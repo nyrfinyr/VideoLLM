@@ -186,5 +186,13 @@ class EntropyAttentionResampleStrategy(Strategy):
             "resample_kind": resample_kind,
         }
         if options is not None:
-            result["pred"] = parse_mcq_letter(raw, options)
+            pred = parse_mcq_letter(raw, options)
+            # TODO: se `pred` è None (generate() non ha prodotto una lettera
+            # parseabile), fare fallback a `signal.pred_letter` (argmax della
+            # softmax ristretta del pass 1, `signal.answer_probs`) invece di
+            # lasciare il sample unparseable — recupererebbe accuracy sui
+            # sample oggi persi (vedi nota MVBench nel README, "52/3800
+            # senza pred parseabile") senza costo aggiuntivo, il segnale è
+            # già calcolato.
+            result["pred"] = pred
         return result
