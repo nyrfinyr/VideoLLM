@@ -212,11 +212,25 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
         set_capture_spans(query_span, visual_span)
         try:
             with torch.no_grad():
-                outputs = self.model(**inputs, logits_to_keep=1)
+                # use_cache=False: questo è un prefill isolato (nessuna
+                # generazione autoregressiva segue in questa chiamata), la
+                # KV cache costruita da un forward normale verrebbe scartata
+                # subito insieme a `outputs` — inutile tenerla in VRAM. A
+                # nframes alti (es. Video-MME 128) risparmia memoria
+                # sufficiente a evitare OOM sulle GPU da 24G.
+                outputs = self.model(**inputs, logits_to_keep=1, use_cache=False)
         finally:
             for h in hooks:
                 h.remove()
             set_capture_spans(None, None)
+            # Le strategy signal-driven (`entropy_shortcut`, `entropy_
+            # attention_resample`) fanno questo forward PRIMA di un secondo
+            # pass (`generate()`) nello stesso processo/contesto CUDA: senza
+            # svuotare la cache dell'allocator qui, un OOM su un sample
+            # lascia memoria "reserved but unallocated" che non torna
+            # disponibile per i sample successivi (osservato: fallimento a
+            # cascata su tutti i sample dopo il primo OOM).
+            torch.cuda.empty_cache()
 
         # [L, n_q, n_vis]: pesi (già mediati sulle teste) per layer.
         attn = torch.stack([layer.self_attn._last_attn for layer in layers])
