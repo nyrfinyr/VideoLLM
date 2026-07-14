@@ -24,15 +24,14 @@
 # affinano gli altri in un secondo round, solo sulla coppia vincente qui.
 #
 # `--time` per ogni submit è STIMATO (nessuna misura reale ancora per
-# entropy_attention_resample su Video-MME). SWEEP_TIME=1h (ridotto da un
-# giro precedente troppo prudente, 8h, per 250 sample): sulla baseline
-# uniform a 128 frame (~12.4s/sample su L40S, docs/probe_throughput.md) e col
-# prefill extra di entropy_attention_resample (~1.5-2.5x) 250 sample stanno
-# in ~1.3-2.2h su L40S — 1h basta su card veloce ma è STRETTO o insufficiente
-# su RTX6000/A5000-24G (fino a ~3x più lente, docs/probe_throughput.md), che
-# il constraint non esclude. Se un job va in timeout non è uno spreco grave
-# (job indipendenti, si nota subito da `squeue`/Weave): alza SWEEP_TIME/
-# CONTROL_TIME sotto e rilancia solo le combinazioni mancanti.
+# entropy_attention_resample su Video-MME). SWEEP_TIME=2h: la run di verifica
+# OOM (et0.7/ct30, limit=250, wandb y6u5k1pq, fix `empty_cache` di
+# models/qwen_attn.py già applicato) ha impiegato 6152s (~1h42m) su L40S,
+# completando tutti i 250 sample senza timeout né OOM — 2h lascia margine
+# anche su RTX6000/A5000-24G (fino a ~3x più lente, docs/probe_throughput.md),
+# che il constraint non esclude. Se un job va comunque in timeout non è uno
+# spreco grave (job indipendenti, si nota subito da `squeue`/Weave): alza
+# SWEEP_TIME/CONTROL_TIME sotto e rilancia solo le combinazioni mancanti.
 #
 # DRY_RUN=1 stampa i comandi `sbatch` senza sottometterli (utile per
 # controllare la grid prima di spendere GPU-ore):
@@ -42,7 +41,10 @@ set -euo pipefail
 LIMIT=250
 MODEL="${MODEL:-qwen2_5_vl_3b_attn}"
 GROUP="${MODEL}-sweep-video_mme-test"
-SWEEP_TIME="${SWEEP_TIME:-01:00:00}"    # entropy_attention_resample: pass1 + generate(), per sample
+SWEEP_TIME="${SWEEP_TIME:-02:00:00}"    # entropy_attention_resample: pass1 + generate(), per sample —
+                                          # 1h era troppo stretto: la run di verifica OOM (et0.7/ct30,
+                                          # limit=250, wandb y6u5k1pq) ha impiegato 6152s (~1h42m) su
+                                          # L40S; 2h lascia margine anche su GPU più lente.
 CONTROL_TIME="${CONTROL_TIME:-03:00:00}" # uniform: singola generate(), più economico
 
 run() {
