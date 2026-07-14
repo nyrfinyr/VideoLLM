@@ -40,7 +40,45 @@ rilanciato su GPU ≥ 40 GiB
 ([`usuy6en7`](https://wandb.ai/alesvale97-unimore/lvbench/runs/usuy6en7),
 227/516). In linea col paper (−0.3 punti).
 
+## Sweep `entropy_attention_resample` (Video-MME, in corso)
+
+Subset comune a tutte le righe: `limit=250`, `shuffle=true`, `seed=42`
+(stesso subset per ogni combinazione — shuffle deterministico, vedi
+`scripts/sweep_video_mme_thresholds.sh`). Grid su `entropy_threshold` ×
+`concentration_threshold`, più un controllo `uniform` di baseline sullo
+stesso subset. `Δ vs uniform` = accuracy − accuracy del controllo uniform
+**su questo stesso subset** (non il 59.93% della tabella Baseline sopra,
+che è sull'intero set da 2700 sample — varianza campionaria diversa, non
+confrontabile direttamente). `—` = run non ancora lanciata/completata, o
+delta non calcolabile finché manca il controllo uniform.
+
+| strategy                   | entropy_threshold | concentration_threshold | accuracy         | Δ vs uniform | run |
+|-----------------------------|-------------------:|--------------------------:|------------------:|-------------:|-----|
+| uniform (controllo)         |                   — |                          — | —                  |            — | —   |
+| entropy_attention_resample  |                 0.3 |                         20 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.3 |                         30 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.3 |                         45 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.5 |                         20 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.5 |                         30 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.5 |                         45 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.7 |                         20 | —                  |            — | —   |
+| entropy_attention_resample  |                 0.7 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) (165/250) |            — | [`y6u5k1pq`](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) |
+| entropy_attention_resample  |                 0.7 |                         45 | —                  |            — | —   |
+| entropy_attention_resample  |                 1.0 |                         20 | —                  |            — | —   |
+| entropy_attention_resample  |                 1.0 |                         30 | —                  |            — | —   |
+| entropy_attention_resample  |                 1.0 |                         45 | —                  |            — | —   |
+
+La riga et0.7/ct30 è la run di verifica pre-sweep (post-fix OOM
+`empty_cache`, vedi `models/qwen_attn.py`) — non fa parte dello sweep group
+(`qwen2_5_vl_3b_attn-sweep-video_mme-test`) ma condivide lo stesso subset e
+config, quindi il numero è valido e riportato qui; il suo Δ resta `—`
+finché non gira il controllo uniform sullo stesso subset.
+
 ## In corso
 
-Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
-altre due colonne della tabella baseline.
+- Sweep soglie `entropy_attention_resample` su Video-MME (tabella sopra) —
+  obiettivo: scegliere la coppia (entropy_threshold, concentration_threshold)
+  migliore contro il controllo uniform, poi confrontare Qwen2.5-VL-7B contro
+  AdaptToken (vedi `docs/diario/riunione_07-07-26.md`).
+- Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
+  altre due colonne della tabella baseline.
