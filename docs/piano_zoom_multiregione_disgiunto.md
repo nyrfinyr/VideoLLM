@@ -1,9 +1,10 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
 > **Stato**: **C1 implementato** (codice, 2026-07-15) — knob dietro flag,
-> default OFF. **Non ancora validato empiricamente** su cluster (§4): manca
-> la run del 250-subset su GPU 45G e l'analisi win/loss. Questo documento
-> fissa le decisioni prese nella discussione di design e traccia il percorso
+> default OFF. **Code review superata** (2026-07-15, finding in coda). **Non
+> ancora validato empiricamente** su cluster (§4): manca la run del
+> 250-subset su GPU 24G e l'analisi win/loss. Questo documento fissa le
+> decisioni prese nella discussione di design e traccia il percorso
 > implementativo + protocollo di validazione.
 >
 > **Contesto a monte**: leggere prima
@@ -184,8 +185,20 @@ Nessun'altra modifica al path `generate`.
 Subset e infrastruttura identici allo sweep (per confrontabilità diretta):
 `limit=250 shuffle=true seed=42`, `model=qwen2_5_vl_3b_attn`,
 `scripts/sbatch/video_mme-signal-test.sbatch`, **constraint pinnato alle GPU
-45G** (`gpu_A40_45G|gpu_L40S_45G` — l'host `nullazzo`/RTX6000 24G ha OOMmato
-tutte le sue run nello sweep, vedi win/loss doc).
+24G** (`gpu_RTX6000_24G|gpu_RTX_A5000_24G` — decisione 2026-07-15: si valida
+proprio sulle card memory-constrained per verificare che C1 ci stia).
+
+Caveat OOM: nello sweep le run della signal strategy erano OOMmate **solo**
+sull'host `nullazzo`/RTX6000 24G (non su `huber`/A5000 24G, vedi win/loss
+doc). Importante: quell'OOM era nel forward di prefill del segnale
+(`full_visual_attention`, `models/qwen_attn.py:221`) — **che C1 non tocca**:
+il ramo multi-regione cambia solo il media della seconda `generate()`, con
+frame totali ≤ `budget.nframes` (stesso footprint dello zoom singolo). Quindi
+il comportamento a 24G di C1 dovrebbe ricalcare quello della strategy
+esistente: un eventuale OOM su `nullazzo` sarebbe un problema pre-esistente
+del prefill, non una regressione di C1. Se si vuole isolare C1 dal nodo
+noto-cattivo, pinnare la sola A5000 (`gpu_RTX_A5000_24G`), che nello sweep ha
+girato la signal strategy senza problemi.
 
 Passi:
 1. **Isolare C1** con `force_zoom_for_debug=true`: instrada in zoom
@@ -220,7 +233,7 @@ Passi:
   sweep esistente riproducibile bit-per-bit.
 - `VideoFrames.sample_fps` estende il media senza rompere i path `Video`/
   `Image` esistenti.
-- Run di validazione (250-subset, GPU 45G) con win/loss loggato e
+- Run di validazione (250-subset, GPU 24G) con win/loss loggato e
   confrontato vs `uniform` e vs `phase_shift`.
 - Documentato l'esito nel `README.md` (tabella sweep / nota) e in un follow-up
   di questo file (sezione "Risultati C1").
@@ -243,5 +256,40 @@ precedente.
 **Non ancora fatto**: run di validazione reale (§4) — richiede GPU e non è
 stata eseguita in questo passaggio. Prossimo passo: lanciare il 250-subset
 con `force_zoom_for_debug=true`, `zoom_multi_region=true` su
-`scripts/sbatch/video_mme-signal-test.sbatch` (constraint GPU 45G) e
+`scripts/sbatch/video_mme-signal-test.sbatch` (constraint GPU 24G, vedi §4) e
 ripetere l'analisi win/loss.
+
+## Note dalla code review (2026-07-15)
+
+Review del diff C1 su `main`: requisiti del piano (§3) tutti soddisfatti,
+default path (flag OFF) verificato bit-per-bit equivalente al codice
+precedente, vincolo VRAM (somma frame ≤ `budget.nframes`) verificato,
+disgiunzione delle regioni verificata con test sulle funzioni pure. Nessun
+finding bloccante. Finding minori da tenere presenti (non bloccano la
+validazione), in ordine di rilevanza per l'esito:
+
+1. **`reconstruct_frame_indices(..., n=1)` ritorna il frame di *inizio*
+   regione, non il centro/picco** (`torch.linspace(lo, hi, 1) == [lo]`).
+   Colpisce le regioni a bassa massa che ricevono 1 solo frame con
+   `budget_allocation=proportional`. Tocca la *qualità* dello zoom (quale
+   frame si vede) — cioè proprio ciò che la validazione misura — quindi
+   fixarlo prima del run è consigliato (usare il frame centrale/di picco).
+   Su Video-MME medium/long con 3 regioni su 128 frame (~40 frame/regione)
+   si attiva di rado.
+2. **Regione stretta + budget alto → indici duplicati → dedup collassa a
+   meno frame di quelli allocati**: la risoluzione dello zoom è limitata
+   dalla densità sorgente nella finestra. Inerente a video/finestre corti;
+   su clip medium/long non morde. Da tenere a mente leggendo un eventuale
+   `n_regions_used`/conteggio frame più basso dell'atteso.
+3. **`budget_allocation="equal"` con `nframes < n_regions`** scarta le
+   regioni per indice, non per massa (lieve scostamento dal piano §3.2.3,
+   "massa più alta"). Caso praticamente irraggiungibile (nframes=128 ≫ 3).
+4. **`_ranked_cells` calcolato due volte** per i sample multi-regione (una
+   in `_peak_cell` in cima ad `answer`, una nel ramo zoom): `sink_view +
+   rank_cells` non è gratis, si può passare la lista già calcolata. *(perf)*
+5. **`decord.VideoReader` aperto `m+1` volte** in `_build_multi_region_media`
+   (una diretta + una per regione dentro `reconstruct_frame_indices`).
+   *(perf)*
+6. **Piccola finestra di leak della temp dir** se `_build_multi_region_media`
+   solleva un'eccezione dopo `mkdtemp` ma prima del `return` (la dir non è
+   ancora assegnata alla variabile di cleanup del `finally`). *(robustezza)*
