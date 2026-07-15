@@ -1,9 +1,10 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
-> **Stato**: piano di design, **non ancora implementato**. L'implementazione
-> vera e propria è affidata a un altro agente. Questo documento fissa le
-> decisioni prese nella discussione di design (2026-07-15) e traccia un
-> percorso implementativo concreto + protocollo di validazione.
+> **Stato**: **C1 implementato** (codice, 2026-07-15) — knob dietro flag,
+> default OFF. **Non ancora validato empiricamente** su cluster (§4): manca
+> la run del 250-subset su GPU 45G e l'analisi win/loss. Questo documento
+> fissa le decisioni prese nella discussione di design e traccia il percorso
+> implementativo + protocollo di validazione.
 >
 > **Contesto a monte**: leggere prima
 > `docs/analisi_winloss_resampling_video_mme.md` (perché il resampling attuale
@@ -224,3 +225,23 @@ Passi:
 - Documentato l'esito nel `README.md` (tabella sweep / nota) e in un follow-up
   di questo file (sezione "Risultati C1").
 - Decisione go/no-go su C2 (tempo corretto) basata sull'esito.
+
+## Risultati C1
+
+**Codice** (2026-07-15): implementato in `strategies/entropy_attention_resample.py`
+(`_ranked_cells`, `_select_region_cells`, `_multi_region_spans`,
+`_allocate_region_budget`, `_build_multi_region_media`) + knob nel preset
+`strategy.entropy_attention_resample` di `conf/config.yaml` + `VideoFrames.
+sample_fps` in `models/media.py`. Logica di selezione/merge/allocazione
+budget verificata con test standalone (senza dipendenze torch/decord, non
+installabili in questo ambiente) su scenari sintetici: picchi separati →
+regioni disgiunte, picchi vicini → merge, budget più stretto del numero di
+regioni → si scartano le regioni a massa minore. Comportamento di default
+(flag OFF) verificato per ispezione: bit-per-bit equivalente al codice
+precedente.
+
+**Non ancora fatto**: run di validazione reale (§4) — richiede GPU e non è
+stata eseguita in questo passaggio. Prossimo passo: lanciare il 250-subset
+con `force_zoom_for_debug=true`, `zoom_multi_region=true` su
+`scripts/sbatch/video_mme-signal-test.sbatch` (constraint GPU 45G) e
+ripetere l'analisi win/loss.

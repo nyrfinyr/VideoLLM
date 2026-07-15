@@ -117,6 +117,15 @@ strategy:
     sink_percentile: 25.0
     sink_border: 0
     capture_attention: false   # opt-in: dump capture.pt/frames SOLO per i sample ricampionati (resampled=true)
+    # --- C1: zoom multi-regione disgiunto (docs/piano_zoom_multiregione_disgiunto.md) ---
+    zoom_multi_region: false  # master switch, default OFF: sweep esistente invariato
+    n_regions: 3              # numero massimo di regioni disgiunte
+    region_select: adaptive   # (topk | adaptive) selezione delle celle-picco
+    region_mad_k: 2.0         # soglia adattiva = mediana + k*MAD (esclude il picco, vedi §1.2)
+    region_merge_gap_frac: 0.05  # fondi celle selezionate a distanza < questa frazione della finestra
+    region_window_frac: 0.1     # semi-larghezza di ogni regione (frazione della finestra pass-1)
+    budget_allocation: proportional  # (equal | proportional) come spartire budget.nframes fra le regioni
+    force_zoom_for_debug: false  # instrada TUTTI i sample ricampionati nel ramo zoom, bypassando concentration_threshold
 
 wandb:
   default:
