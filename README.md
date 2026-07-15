@@ -60,7 +60,7 @@ confrontabile direttamente). `—` = 0 predizioni valide per OOM, vedi nota.
 | entropy_attention_resample  |                 0.5 |                         20 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) (164/250) |        +2.80 | [`86jyn8n7`](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) |
 | entropy_attention_resample  |                 0.5 |                         30 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) (164/250) |        +2.80 | [`yp7r9ziy`](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) |
 | entropy_attention_resample  |                 0.5 |                         45 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) (164/250) |        +2.80 | [`mb7cgbq5`](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) |
-| entropy_attention_resample  |                 0.7 |                         20 | 65.60\*\* (164/250) |        +2.80 | [`lgs1jrxb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/lgs1jrxb) |
+| entropy_attention_resample  |                 0.7 |                         20 | — (0/250, OOM — vedi nota) |            — | [`lgs1jrxb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/lgs1jrxb) |
 | entropy_attention_resample  |                 0.7 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) (165/250) |        +3.20 | [`y6u5k1pq`](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) |
 | entropy_attention_resample  |                 0.7 |                         45 | — (0/250, OOM — vedi nota) |            — | [`tzhm99kn`](https://wandb.ai/alesvale97-unimore/video_mme/runs/tzhm99kn) |
 | entropy_attention_resample  |                 1.0 |                         20 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) (165/250) |        +3.20 | [`hmpib0w2`](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) |
@@ -72,50 +72,45 @@ La riga et0.7/ct30 è la run di verifica pre-sweep (post-fix OOM
 (`qwen2_5_vl_3b_attn-sweep-video_mme-test`) ma condivide lo stesso subset e
 config, quindi il numero è valido e riportato qui.
 
-\*\* `et0.7-ct20`: lo score non è nel summary wandb (che ha solo
-`model_latency_mean`/`n_samples`) — recuperato dalla call
-`Evaluation.evaluate` su [Weave](https://wandb.ai/alesvale97-unimore/video_mme/weave)
-(`mcq_accuracy.correct.true_fraction = 0.656`, 164/250). La call su Weave è
-rimasta per un po' in stato `running` con figli parziali subito dopo il
-`finished` di wandb — sync lag del trace backend, non perdita dati: dopo
-qualche decina di minuti la call è passata a `success` con tutti i 250
-sample e lo score sopra. Se un run futuro mostra `finished` su wandb ma
-senza `mcq_accuracy` nel summary, controllare prima la call
-`Evaluation.evaluate` corrispondente su Weave (via `weave.init(...)` +
-`client.get_call(<id>)`) prima di assumere un fallimento: potrebbe essere
-solo in ritardo di sync.
-
-**OOM confermato per `concentration_threshold=45`** — `et1.0-ct45` e
-`et0.7-ct45` hanno **0/250 predizioni valide**: ogni singola
-`predict_and_score` fallisce con `torch.OutOfMemoryError` dentro
-`full_visual_attention` (`models/qwen_attn.py:221`, il forward di prefill
-per il segnale, chiamato da `generate_with_signals` — **prima** di
-qualunque logica di resampling/soglia), traceback verificato via Weave
-(`CUDA out of memory ... GPU 0 has a total capacity of 23.64 GiB`, quindi
-un nodo 24G). `Evaluation.evaluate` di Weave cattura l'eccezione per
+**OOM totale su 3 combinazioni, legato all'host non alle soglie** —
+`et0.7-ct20`, `et0.7-ct45` ed `et1.0-ct45` hanno **0/250 predizioni
+valide**: ogni singola `predict_and_score` fallisce con
+`torch.OutOfMemoryError` dentro `full_visual_attention`
+(`models/qwen_attn.py:221`, il forward di prefill per il segnale, chiamato
+da `generate_with_signals` — **prima** di qualunque logica di
+resampling/soglia). `Evaluation.evaluate` di Weave cattura l'eccezione per
 sample invece di far crashare il job, quindi wandb marca il run
 `finished` senza errore visibile — solo `mcq_accuracy` risulta assente
-perché calcolato su zero sample validi. Il fix `empty_cache` (commit
-`d826301`) non basta a evitarlo su GPU 24G con questo carico (128 frame +
-capture attention completa su tutti i layer/head, indipendentemente da
-`entropy_threshold`/`concentration_threshold`, che intervengono solo
-DOPO questo prefill). Probabile che il primo sample capitato OOMi la GPU
-e la frammentazione di memoria non si liberi per i sample successivi
-(spiegherebbe perché è tutto-o-niente per run, non un parziale). Prossimo
-passo: escludere i nodi 24G per questa strategy, es.
-`--constraint="gpu_A40_45G|gpu_L40S_45G"` su
-`scripts/sbatch/video_mme-signal-test.sbatch`, e rilanciare le due combo
-`ct45` mancanti.
+perché calcolato su zero sample validi (attenzione: un run `finished` con
+`model_latency_mean`/`n_samples` ma senza `mcq_accuracy` nel summary va
+sempre controllato via Weave, `client.get_call(<id>).output`, prima di
+fidarsi — non basta guardare lo stato wandb).
+
+**Non è un effetto di `concentration_threshold=45`**: `et0.3-ct45` ed
+`et0.5-ct45` sono riusciti senza problemi. È l'**host** — le 3 run fallite
+sono girate **tutte e sole** su `nullazzo` (Quadro RTX 6000 24G); `huber`
+(RTX A5000, anch'essa 24G) è invece andata bene due volte
+(`et1.0-ct20`/`et1.0-ct30`) — dettagli e tabella host/GPU completa in
+`docs/analisi_winloss_resampling_video_mme.md`. Il fix `empty_cache`
+(commit `d826301`) non basta a evitarlo su quel nodo con questo carico
+(128 frame + capture attention completa su tutti i layer/head). Il full
+eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
+45G (A40/L40S), quindi esclude comunque `nullazzo`.
 
 ## In corso
 
 - Sweep soglie `entropy_attention_resample` su Video-MME (tabella sopra) —
-  10/12 combinazioni completate con score (65.6-66.0%, tutte sopra il
-  controllo uniform 62.8%, nessuna correlazione chiara ancora fra soglie e
-  accuracy nel range testato). Mancano `et0.7-ct45`/`et1.0-ct45`: OOM
-  totale su GPU 24G (vedi nota sopra), da rilanciare escludendo quei nodi.
-  Poi si sceglie la coppia (entropy_threshold, concentration_threshold)
-  migliore contro il controllo uniform, e si confronta Qwen2.5-VL-7B
-  contro AdaptToken (vedi `docs/diario/riunione_07-07-26.md`).
+  9/12 combinazioni completate con score (65.6-66.0%, tutte sopra il
+  controllo uniform 62.8%). Analisi win/loss sample-per-sample in
+  `docs/analisi_winloss_resampling_video_mme.md`: il beneficio netto
+  nasconde un turnover di 12-13 sample recuperati contro 5-6 rovinati,
+  **sempre gli stessi id** in tutte le combinazioni — `ct` non ha alcun
+  effetto misurabile in {20,30,45} su Video-MME (dominio diverso da dove
+  le soglie erano state tarate, VNBench). Mancano `et0.7-ct20`/
+  `et0.7-ct45`/`et1.0-ct45`: OOM totale, tutte e sole sull'host `nullazzo`
+  (vedi nota sopra), da rilanciare escludendo quel nodo. Poi si sceglie la
+  coppia (entropy_threshold, concentration_threshold) migliore contro il
+  controllo uniform, e si confronta Qwen2.5-VL-7B contro AdaptToken (vedi
+  `docs/diario/riunione_07-07-26.md`).
 - Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
   altre due colonne della tabella baseline.
