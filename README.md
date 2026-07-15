@@ -112,5 +112,12 @@ eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
   coppia (entropy_threshold, concentration_threshold) migliore contro il
   controllo uniform, e si confronta Qwen2.5-VL-7B contro AdaptToken (vedi
   `docs/diario/riunione_07-07-26.md`).
+- Miglioramenti a `entropy_attention_resample` in fase di design:
+  selettore di ramo a **entropia dell'attenzione normalizzata** (sostituisce
+  il `concentration_threshold` fisso, inerte) e **zoom multi-regione
+  disgiunto** (Opzione C) — piano e vincoli tecnici (encoding a tempo
+  assoluto single-fps di Qwen2.5-VL) in
+  `docs/piano_zoom_multiregione_disgiunto.md`. Implementazione affidata a un
+  agente separato.
 - Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
   altre due colonne della tabella baseline.
