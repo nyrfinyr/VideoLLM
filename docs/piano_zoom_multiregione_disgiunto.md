@@ -1,9 +1,11 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
-> **Stato**: **C1 implementato** (codice, 2026-07-15) — knob dietro flag,
-> default OFF. **Code review superata** (2026-07-15, finding in coda). **Non
-> ancora validato empiricamente** su cluster (§4): manca la run del
-> 250-subset su GPU 24G e l'analisi win/loss. Questo documento fissa le
+> **Stato**: **C1 implementato + validato** (2026-07-15) — knob dietro flag,
+> default OFF, code review superata. Run di validazione fatta (250-subset,
+> `force_zoom_for_debug`): C1 batte uniform ma non `phase_shift` in aggregato,
+> però recupera un pool DISTINTO di ~13 sample → risultati e conclusioni in
+> "Risultati validazione empirica" in coda. **Prossimo passo: selettore di
+> ramo a entropia** (§1.3) prima di decidere su C2. Questo documento fissa le
 > decisioni prese nella discussione di design e traccia il percorso
 > implementativo + protocollo di validazione.
 >
@@ -324,3 +326,86 @@ mano la formula `lo`/`hi`/midpoint in isolamento (senza torch) e per
 ispezione che l'unica altra fonte di `reconstruct_frame_indices` (pass-1
 `zoom_peak`/`phase_shift`, via `_build_media`) resta invariata — il ramo
 multi-regione era l'unico chiamante toccato dal fix.
+
+## Risultati validazione empirica (2026-07-15)
+
+Run eseguita: `force_zoom_for_debug=true`, `zoom_multi_region=true`,
+`entropy_threshold=0.7`, subset 250 (`shuffle=true seed=42`), su host
+`franco`/L40S 45G (il constraint 24G non entrava in coda, riallargato a
+`gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G` — nullazzo comunque escluso).
+Run wandb [`z4qx9hnb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/z4qx9hnb).
+
+### Accuracy e costo
+
+| strategia | accuracy | n_correct | latenza media |
+|---|---:|---:|---:|
+| uniform (controllo) | 62.80% | 157/250 | 13.05 s |
+| et0.7-ct30 (phase_shift) | 66.00% | 165/250 | 24.45 s |
+| **C1 forced (zoom multi-regione)** | **64.00%** | **160/250** | **39.92 s** |
+
+C1 forzato **batte il controllo uniform (+3.2 pt) ma NON `phase_shift`**
+(−2.0 pt) e costa ~63% di latenza in più (estrazione/salvataggio PNG
+multi-regione per sample). Atteso: `force_zoom_for_debug` manda in zoom
+multi-regione TUTTI i 163 sample che superano il gate, inclusi quelli
+"dispersi" che `phase_shift` gestirebbe meglio.
+
+### Il multi-regione si attiva davvero
+
+Dei 163 sample ricampionati, `n_regions_used`: **1 regione = 74, 2 = 76,
+3 = 13**. Quindi 89/163 (55%) usano genuinamente 2-3 regioni disgiunte —
+il meccanismo non degenera a single-zoom.
+
+### Win/loss — C1 e phase_shift recuperano sample DIVERSI
+
+| confronto vs uniform | fixed (❌→✅) | broken (✅→❌) | net |
+|---|---:|---:|---:|
+| phase_shift (et0.7-ct30) | 13 | 5 | **+8** |
+| C1 forced | 19 | 16 | **+3** |
+
+C1 è un intervento **a varianza molto più alta**: recupera di più (19 vs
+13) ma rompe molto di più (16 vs 5). Confronto diretto sui 163 sample
+ricampionati da entrambi: C1 giusto & phase sbagliato = 15, phase giusto &
+C1 sbagliato = 20, stesso esito = 128.
+
+**Complementarità (il risultato più importante)** — i sample recuperati
+NON sono gli stessi:
+
+| | fixed in comune | solo C1 | solo phase |
+|---|---:|---:|---:|
+| recuperi (vs uniform) | 6 | **13** | 7 |
+| rotture (vs uniform) | 3 | 13 | 2 |
+
+**C1 recupera 13 sample che `phase_shift` NON recupera** — c'è segnale
+reale che il multi-regione cattura qualcosa di diverso. Ma li paga con 13
+rotture uniche. La domanda dell'utente ("lo zoom multi-regione disgiunto
+funziona?") ha risposta: **sì, su un sottoinsieme distinto di sample — ma
+applicato indiscriminatamente a tutti i ricampionati è troppo distruttivo.**
+
+### Segnale: il multi-regione vero aiuta, la singola regione no
+
+Stratificando il win/loss (vs uniform) per numero di regioni usate:
+
+| n. regioni | n | fixed | broken | net |
+|---|---:|---:|---:|---:|
+| multi (2-3) | 89 | 11 | 7 | **+4** |
+| singola (1) | 74 | 8 | 9 | **−1** |
+
+Quando l'attenzione si distribuisce davvero su più regioni e C1 ne usa 2-3,
+il bilancio è **positivo** (+4); quando collassa a 1 regione, è single-zoom
+rumoroso (−1). ⚠️ Numeri piccoli (sotto-sottoinsiemi di 250) → indicativo,
+non conclusivo.
+
+### Conclusione e go/no-go su C2
+
+Il forced-everywhere è troppo grezzo, ma mostra due cose: (a) il
+multi-regione recupera un pool distinto di ~13 sample, (b) il beneficio si
+concentra nei casi 2-3 regioni. **Prima di C2 (timestamp corretti,
+invasiva) va fatto il passo più economico**: implementare il **selettore di
+ramo a entropia dell'attenzione** (§1.3) — instradare in multi-regione SOLO
+i sample a bassa entropia (concentrati), lasciando `phase_shift` per i
+dispersi. Questo isola "il multi-regione aiuta dove appropriato" da "forzarlo
+ovunque danneggia", e potrebbe combinare i 7 recuperi unici di phase + i 13
+di C1 evitando gran parte delle rotture. **Solo se**, con routing corretto, le
+rotture multi-regione persistono (net negativo sul sottoinsieme concentrato),
+allora la distorsione temporale di C1 è il sospetto e si affronta C2. Go/no-go
+su C2: **rimandato** al risultato del routing a entropia.

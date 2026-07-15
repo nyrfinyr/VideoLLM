@@ -112,12 +112,15 @@ eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
   coppia (entropy_threshold, concentration_threshold) migliore contro il
   controllo uniform, e si confronta Qwen2.5-VL-7B contro AdaptToken (vedi
   `docs/diario/riunione_07-07-26.md`).
-- Miglioramenti a `entropy_attention_resample` in fase di design:
-  selettore di ramo a **entropia dell'attenzione normalizzata** (sostituisce
-  il `concentration_threshold` fisso, inerte) e **zoom multi-regione
-  disgiunto** (Opzione C) — piano e vincoli tecnici (encoding a tempo
-  assoluto single-fps di Qwen2.5-VL) in
-  `docs/piano_zoom_multiregione_disgiunto.md`. Implementazione affidata a un
-  agente separato.
+- **Zoom multi-regione disgiunto (Opzione C1)** — implementato e validato
+  ([`z4qx9hnb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/z4qx9hnb),
+  subset 250, `force_zoom_for_debug`): 64.0%, batte uniform (62.8%) ma non
+  `phase_shift` (66.0%) in aggregato, però recupera un pool DISTINTO di ~13
+  sample che `phase_shift` non prende (win/loss + stratificazione per n.
+  regioni in `docs/piano_zoom_multiregione_disgiunto.md`, "Risultati
+  validazione empirica"). Prossimo passo prima di C2: **selettore di ramo a
+  entropia dell'attenzione normalizzata** (instrada in multi-regione solo i
+  sample concentrati, `phase_shift` per i dispersi), che sostituisce anche
+  il `concentration_threshold` fisso (inerte, vedi sweep sopra).
 - Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
   altre due colonne della tabella baseline.
