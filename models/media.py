@@ -53,6 +53,17 @@ class VideoFrames:
     # del debug attenzione). None = default di qwen-vl-utils.
     max_pixels: int | None = None
     min_pixels: int | None = None
+    # `qwen_vl_utils.fetch_video` costruisce fake metadata per una lista di
+    # frame (`frames_indices=[0..n-1]`, spaziatura uniforme assunta) e usa
+    # QUESTO scalare come fps per il calcolo M-RoPE di `second_per_grid_ts`
+    # (`vision_process.py`, `ele.get("sample_fps", 2.0)`) — non ci sono
+    # timestamp per-frame reali da iniettare. Serve quando la lista non
+    # rappresenta un campionamento uniforme del video sorgente (es. zoom
+    # multi-regione disgiunto, `docs/piano_zoom_multiregione_disgiunto.md`
+    # §3.3): il modello vedrà comunque i frame come equispaziati a questo
+    # fps, la spaziatura reale (buchi fra regioni) è persa in encoding.
+    # None = default di qwen-vl-utils (2.0).
+    sample_fps: float | None = None
 
 MediaItem = Image | Video | VideoFrames
 
