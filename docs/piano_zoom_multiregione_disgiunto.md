@@ -293,3 +293,34 @@ validazione), in ordine di rilevanza per l'esito:
 6. **Piccola finestra di leak della temp dir** se `_build_multi_region_media`
    solleva un'eccezione dopo `mkdtemp` ma prima del `return` (la dir non è
    ancora assegnata alla variabile di cleanup del `finally`). *(robustezza)*
+
+### Follow-up ai finding (2026-07-15)
+
+Applicati 1, 4, 5, 6 in `strategies/entropy_attention_resample.py` prima del
+run di validazione:
+
+- **#1** — `_build_multi_region_media` non passa più da
+  `reconstruct_frame_indices`: calcola `lo`/`hi` inline e, per `n<=1`, prende
+  il frame **centrale** della regione (`round((lo+hi)/2)`) invece del primo
+  estremo.
+- **#4** — `answer()` calcola `ranked_cells` una sola volta (rimossa
+  `_peak_cell`, ora morta); `top1_pct`/`peak_cell` derivano da
+  `ranked_cells[0]` e lo stesso `ranked_cells` viene passato a
+  `_multi_region_spans` nel ramo `zoom_multi_region`.
+- **#5** — conseguenza di #1: un solo `decord.VideoReader` aperto in
+  `_build_multi_region_media`, riusato per tutte le regioni (fps/total letti
+  una volta).
+- **#6** — l'estrazione dei PNG in `_build_multi_region_media` è in
+  `try/except`: un'eccezione a metà estrazione ripulisce la `tmp_dir` prima
+  di propagare, invece di lasciarla orfana.
+
+**#2 e #3** lasciati come da nota del revisore: edge case pre-esistenti,
+non toccati da questo cambio, praticamente non raggiungibili sui budget/
+config di validazione previsti (§4).
+
+Non rieseguibile il test standalone sulle funzioni pure (nessun torch/decord
+in questo ambiente, invariato rispetto al passaggio precedente); verificata a
+mano la formula `lo`/`hi`/midpoint in isolamento (senza torch) e per
+ispezione che l'unica altra fonte di `reconstruct_frame_indices` (pass-1
+`zoom_peak`/`phase_shift`, via `_build_media`) resta invariata — il ramo
+multi-regione era l'unico chiamante toccato dal fix.

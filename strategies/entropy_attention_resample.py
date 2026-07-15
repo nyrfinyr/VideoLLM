@@ -41,17 +41,19 @@ definizione impossibile: si accetta sempre il pass 1.
 """
 from __future__ import annotations
 
+import math
 import shutil
 import statistics
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import torch
 from PIL import Image
 
 from models.media import Text, VideoFrames
 from models.signals import SupportsSignals
-from utils.attn_core import GridSpec, RankedCell, rank_cells, reconstruct_frame_indices, sink_view
+from utils.attn_core import GridSpec, RankedCell, rank_cells, sink_view
 from utils.mcq import parse_mcq_letter
 
 from .base import SamplingBudget, Strategy
@@ -89,12 +91,6 @@ def _ranked_cells(visual_attention, *, percentile: float, border: int) -> list[R
     grid = GridSpec(t=visual_attention.t, grid_h=visual_attention.grid_h, grid_w=visual_attention.grid_w, double=True)
     heat_nonsink, _ = sink_view(heat, visual_attention.sink_map, view="nonsink", percentile=percentile, border=border)
     return rank_cells(heat_nonsink, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
-
-
-def _peak_cell(visual_attention, *, percentile: float, border: int) -> tuple[float, int]:
-    """`(top1_pct, cella_di_picco)` — vedi `_ranked_cells`."""
-    top1 = _ranked_cells(visual_attention, percentile=percentile, border=border)[0]
-    return top1.pct, top1.cell
 
 
 def _select_region_cells(
@@ -236,7 +232,10 @@ def _build_multi_region_media(
     import decord
 
     vr = decord.VideoReader(video_path)
-    last = len(vr) - 1
+    total = len(vr)
+    last = total - 1
+    fps = float(vr.get_avg_fps())
+    max_duration = total / fps
 
     all_indices: list[int] = []
     seen: set[int] = set()
@@ -244,7 +243,19 @@ def _build_multi_region_media(
     for (a, b, _mass), n in zip(spans, counts):
         if n <= 0:
             continue
-        idxs, _fps = reconstruct_frame_indices(video_path, n, video_start=a, video_end=b)
+        # Stessa formula lo/hi di `utils.attn_core.reconstruct_frame_indices`,
+        # ma riusa il `vr`/`fps` già aperti (un solo VideoReader per tutte le
+        # regioni, non uno per regione) e gestisce n=1 a parte: la fascia
+        # `linspace(lo, hi, 1)` di torch collassa sempre sul primo estremo
+        # (il frame di INIZIO regione), che è arbitrario quanto il frame
+        # centrale ma meno rappresentativo — per una sola cattura si preferisce
+        # il frame centrale della regione.
+        lo = math.ceil(max(0.0, min(a, max_duration)) * fps)
+        hi = min(math.floor(max(0.0, min(b, max_duration)) * fps), last)
+        if n <= 1:
+            idxs = [round((lo + hi) / 2)]
+        else:
+            idxs = torch.linspace(lo, hi, n).round().long().tolist()
         for idx in idxs:
             if idx not in seen:
                 seen.add(idx)
@@ -256,12 +267,20 @@ def _build_multi_region_media(
     sample_fps = len(all_indices) / total_span if total_span > 0 else 2.0
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="zoom_multi_region_"))
-    frame_paths = []
-    for i, idx in enumerate(all_indices):
-        idx = max(0, min(idx, last))
-        p = tmp_dir / f"frame_{i:04d}.png"
-        Image.fromarray(vr[idx].asnumpy()).save(p)
-        frame_paths.append(str(p))
+    try:
+        frame_paths = []
+        for i, idx in enumerate(all_indices):
+            idx = max(0, min(idx, last))
+            p = tmp_dir / f"frame_{i:04d}.png"
+            Image.fromarray(vr[idx].asnumpy()).save(p)
+            frame_paths.append(str(p))
+    except Exception:
+        # Senza questo cleanup, un'eccezione qui lascerebbe la tmp_dir
+        # orfana: la variabile che il chiamante userebbe per ripulirla
+        # (`tmp_dir_to_cleanup`) non viene mai assegnata perché
+        # l'unpacking del `return` di questa funzione non si completa.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
     media = VideoFrames(frame_paths, max_pixels=budget.max_pixels, min_pixels=budget.min_pixels, sample_fps=sample_fps)
     return media, used_spans, tmp_dir
@@ -315,12 +334,17 @@ class EntropyAttentionResampleStrategy(Strategy):
 
         # top1_pct/peak_cell del pass 1: calcolati una volta, loggati SEMPRE
         # (anche nei rami "accetta") per poter analizzare a posteriori come
-        # si distribuiscono rispetto alla decisione di resampling.
+        # si distribuiscono rispetto alla decisione di resampling. Si tiene
+        # anche l'intera `ranked_cells` (non solo il top1) per riuso nel ramo
+        # `zoom_multi_region` più sotto — evita di richiamare `sink_view` +
+        # `rank_cells` una seconda volta sullo stesso tensore.
         top1_pct = peak_cell = None
+        ranked_cells: list[RankedCell] | None = None
         if signal.visual_attention is not None:
-            top1_pct, peak_cell = _peak_cell(
+            ranked_cells = _ranked_cells(
                 signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
             )
+            top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
 
         final_media = media
         resampled = False
@@ -358,10 +382,10 @@ class EntropyAttentionResampleStrategy(Strategy):
                 # Concentrata (o `force_zoom_for_debug`): fino a `n_regions`
                 # finestre disgiunte attorno alle celle a massa più alta,
                 # invece di una sola finestra centrata sul picco — Opzione
-                # C1 di `docs/piano_zoom_multiregione_disgiunto.md`.
-                ranked = _ranked_cells(signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border)
+                # C1 di `docs/piano_zoom_multiregione_disgiunto.md`. Riusa
+                # `ranked_cells` già calcolato sopra per top1_pct/peak_cell.
                 spans = _multi_region_spans(
-                    ranked, t=t, w0=w0, w1=w1, duration=duration,
+                    ranked_cells, t=t, w0=w0, w1=w1, duration=duration,
                     n_regions=self.n_regions, region_select=self.region_select, region_mad_k=self.region_mad_k,
                     region_merge_gap_frac=self.region_merge_gap_frac, region_window_frac=self.region_window_frac,
                 )
