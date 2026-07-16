@@ -1,11 +1,14 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
 > **Stato**: **C1 implementato** (codice, 2026-07-15) — knob dietro flag,
-> default OFF. **Code review superata** (2026-07-15, finding in coda). **Non
-> ancora validato empiricamente** su cluster (§4): manca la run del
-> 250-subset su GPU 24G e l'analisi win/loss. Questo documento fissa le
-> decisioni prese nella discussione di design e traccia il percorso
-> implementativo + protocollo di validazione.
+> default OFF. **Code review superata** (2026-07-15, finding in coda).
+> **Selettore di ramo a entropia (§1.3) implementato** (codice, 2026-07-16) —
+> knob `branch_selector` dietro flag, default `"concentration"` (invariato).
+> **Non ancora validato empiricamente** su cluster (§4): manca la run del
+> 250-subset su GPU 24G e l'analisi win/loss, sia per C1 sia per il
+> selettore a entropia. Questo documento fissa le decisioni prese nella
+> discussione di design e traccia il percorso implementativo + protocollo
+> di validazione.
 >
 > **Contesto a monte**: leggere prima
 > `docs/analisi_winloss_resampling_video_mme.md` (perché il resampling attuale
@@ -324,3 +327,41 @@ mano la formula `lo`/`hi`/midpoint in isolamento (senza torch) e per
 ispezione che l'unica altra fonte di `reconstruct_frame_indices` (pass-1
 `zoom_peak`/`phase_shift`, via `_build_media`) resta invariata — il ramo
 multi-regione era l'unico chiamante toccato dal fix.
+
+## Risultati selettore di ramo a entropia (§1.3)
+
+**Codice** (2026-07-16): implementato in
+`strategies/entropy_attention_resample.py` (`_attention_entropy_norm`) +
+knob `branch_selector`/`attention_entropy_threshold` nel preset
+`strategy.entropy_attention_resample` di `conf/config.yaml`.
+
+- `_attention_entropy_norm(ranked_cells)` calcola `H/log(t)` (entropia di
+  Shannon normalizzata) sulle masse `pct` per-cella già disponibili in
+  `ranked_cells` (nessuna chiamata aggiuntiva a `sink_view`/`rank_cells` —
+  costo ≈ zero come previsto in §1.3). Casi limite: `t<=1` → `0.0`
+  (nessuna dispersione possibile); massa non-sink totale nulla → `1.0`
+  (nessun segnale, si tratta prudenzialmente come "disperso" → `phase_shift`,
+  coerente con `top1_pct==0` nel selettore storico).
+- `branch_selector` (`"concentration"` default, `"entropy"` opt-in)
+  seleziona quale segnale discrimina ramo A (`phase_shift`) vs ramo B
+  (zoom): a `branch_selector="concentration"` il comportamento è
+  **bit-per-bit identico** al codice precedente (stesso confronto
+  `top1_pct < concentration_threshold`, invariato); solo la strada
+  `"entropy"` (opt-in) usa `attention_entropy_norm > attention_entropy_threshold`.
+- `attention_entropy_norm` è ora **sempre** calcolato e loggato (result dict
+  + `capture.pt` extra) quando `signal.visual_attention is not None` — anche
+  nei rami "accetta" e indipendentemente da quale `branch_selector` sia
+  attivo — così l'analisi win/loss può confrontare a posteriori i due
+  selettori sullo stesso run, come richiesto da §3.2 punto 6.
+- Verificata a mano (senza torch, non installabile in questo ambiente) la
+  formula dell'entropia su casi sintetici: distribuzione uniforme su `t`
+  celle → `H_norm≈1.0`; distribuzione one-hot (tutta la massa su una cella)
+  → `H_norm≈0.0`; massa totale nulla → `1.0`; `t=1` → `0.0`; distribuzione
+  intermedia → valore in `[0,1]` coerente con l'ordinamento atteso.
+
+**Non ancora fatto**: run di validazione reale (§4) con
+`branch_selector=entropy` per confrontare l'instradamento coi due
+selettori su Video-MME — richiede GPU e non è stata eseguita in questo
+passaggio. Nessuna ablazione su `attention_entropy_threshold` (soglia non
+validata, stesso status di `concentration_threshold` all'origine di questo
+piano — vedi §1.1).
