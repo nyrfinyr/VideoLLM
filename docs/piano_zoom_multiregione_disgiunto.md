@@ -8,10 +8,15 @@
 > nella direzione del §1.3 (oracolo 98 vs 83/163; router a concentrazione
 > ~68.8% vs 66.0% di phase-alone). **Selettore di ramo a entropia (§1.3)
 > implementato** (codice 2026-07-16) — knob `branch_selector` dietro flag,
-> default `"concentration"` (invariato). **Non ancora validato su cluster con
-> `branch_selector=entropy`**: manca lo Stage B (calibrazione della soglia
-> `attention_entropy_threshold` sull'entropia vera loggata) e lo Stage C (run
-> del router + win/loss vs phase-alone). Go/no-go su C2 rimandato all'esito del
+> default `"concentration"` (invariato). **Stage B completato (2026-07-16,
+> in coda): `H_norm` NON batte `top1_pct` come segnale di routing** — separa
+> nella direzione giusta ma più debolmente (z=2.23 vs 2.77 sui bucket
+> discordanti; plateau 85-87/163 vs 88-90/163 di `top1_pct`). **Decisione:
+> non implementare `branch_selector=entropy` in produzione** — il router va
+> costruito su `top1_pct` adattivo per-sample (soglia ~5.9-7.0, non le soglie
+> assolute fisse 20/30/45 già note come inerti). Stage C (run del router +
+> win/loss vs phase-alone) resta da fare, ma con `branch_selector=concentration`
+> e soglia adattiva, non con `entropy`. Go/no-go su C2 rimandato all'esito del
 > router. Questo documento fissa le decisioni di design e traccia percorso
 > implementativo + protocollo di validazione.
 >
@@ -657,3 +662,108 @@ selettori su Video-MME — richiede GPU e non è stata eseguita in questo
 passaggio. Nessuna ablazione su `attention_entropy_threshold` (soglia non
 validata, stesso status di `concentration_threshold` all'origine di questo
 piano — vedi §1.1).
+
+## Stage B — calibrazione soglia sull'entropia vera: risultato (2026-07-16)
+
+**Run di raccolta dati**: [`o54z2xsd`](https://wandb.ai/alesvale97-unimore/video_mme/runs/o54z2xsd)
+(`qwen2_5_vl_3b_attn-stageB-entropy-log`), stesso 250-subset/seed di
+`z4qx9hnb`/`y6u5k1pq`, `branch_selector="concentration"` (invariato — questo
+run è bit-per-bit identico a `phase_shift` et0.7-ct30, riproduce 165/250),
+ma con `attention_entropy_norm` ora loggato su tutti i sample con
+`visual_attention`, come richiesto dallo Stage A.
+
+**Metodo**: replica esatta dell'analisi "Verifica pre-implementazione"
+qui sopra (join a tre vie via `example.id`/`wb_run_id`, bucket
+pro-C1/pro-phase sui sample dove i due rami discordano, sweep di soglia),
+sostituendo `top1_pct` con `attention_entropy_norm`. Join di controllo:
+la ri-esecuzione con `top1_pct` su questi dati riproduce **esattamente** i
+numeri già documentati sopra (oracolo 98/163, always-phase 83/163, U=233,
+plateau 88-90) — il join è verificato corretto prima di fidarsi del
+risultato su `H_norm`.
+
+### Separazione statistica (35 sample discordanti: 15 pro-C1, 20 pro-phase)
+
+| segnale | mediana pro-C1 | mediana pro-phase | direzione | Mann-Whitney z |
+|---|---:|---:|---|---:|
+| `top1_pct` | 7.60 | 4.96 | ✓ concentrato→C1 | **2.77** |
+| `attention_entropy_norm` | 0.941 | 0.967 | ✓ concentrato→C1 | 2.23 (più debole) |
+
+### Sweep di soglia — router completo sui 163 ricampionati
+
+| segnale | plateau ottenibile | miglior T |
+|---|---:|---|
+| always-phase (riferimento) | 83/163 | — |
+| oracolo (riferimento) | 98/163 | — |
+| `top1_pct` | **88–90/163** | ~5.9–7.0 |
+| `attention_entropy_norm` | 85–87/163 | ~0.90–0.97 |
+
+`top1_pct` e `attention_entropy_norm` sono fortemente anti-correlati su
+questi 163 sample (Pearson r = −0.81, Spearman ρ = −0.83): misurano
+essenzialmente la stessa cosa. Ma **l'entropia sull'intera distribuzione
+discrimina la decisione C1-vs-phase peggio della massa sulla sola cella di
+picco**, sia nel test di separazione sia nel plateau di accuracy.
+
+### Verdetto — ipotesi del piano respinta
+
+Il piano ipotizzava "l'entropia è misura di concentrazione più ricca e
+monotòna → dovrebbe fare *almeno* quanto `top1_pct`" (fine di "Caveat
+(onesti)" sopra). **Su questo confronto l'ipotesi non regge**:
+`attention_entropy_norm` è direzionalmente corretto ma strettamente
+dominato da `top1_pct` come segnale di routing. Conseguenze pratiche:
+
+- **Non implementare `branch_selector=entropy` in produzione.** Il router
+  va costruito su `branch_selector="concentration"` con soglia **adattiva
+  per-sample** su `top1_pct` (~5.9–7.0), non le soglie assolute fisse
+  (20/30/45) già note come inerti su Video-MME (`top1_pct` max ~23%, mai
+  raggiunge quelle soglie — vedi sopra).
+- Lo **Stage C** (run del router reale + win/loss vs phase-alone) resta da
+  fare, ma il target è: implementare una soglia adattiva su `top1_pct`
+  (es. percentile del batch, o valore fisso ~6.0 dato che qui si è mostrato
+  stabile su un plateau ampio), non il ramo a entropia.
+- `attention_entropy_norm` resta comunque loggato (costo zero) per analisi
+  future, ma non è la via per il selettore di ramo.
+
+### Soglia adattiva su `top1_pct`: normalizzazione per livello di caso
+
+Una soglia assoluta su `top1_pct` (es. 6.0) ha lo stesso problema di
+`concentration_threshold` all'origine di questo piano: è tarata sulla scala
+di **questa** config (`nframes=128`) e non si trasferisce ad altri dataset/
+budget di frame. `top1_pct` è una percentuale su `t` celle, quindi il suo
+valore atteso sotto attenzione uniforme è `100/t` — normalizzando per questo
+livello di caso (`ratio = top1_pct / (100/t)`, stesso principio già
+applicato a `H_norm` via `log t`) la soglia diventa trasferibile fra config
+con `t` diverso.
+
+**`t` verificato su GPU locale (2026-07-16)**, non solo dedotto dal
+commento in `models/media.py:29`: cattura reale con `Qwen25VLAttention`
+(video sintetico 10s/250 frame generato con PyAV, `nframes=128`, stessi
+`max_pixels=151200` del preset Video-MME) → log della cattura:
+`attn=(15, 64, 12, 12) ... regime=merge a coppie (cella=2 frame)`.
+**`t=64` confermato esatto** (`nframes/2`, merge temporale a coppie).
+
+Rifacendo lo sweep di soglia in unità di ratio (`chance = 100/64 ≈ 1.56%`)
+sugli stessi 163 sample ricampionati in comune fra `o54z2xsd`/`z4qx9hnb`:
+
+| ratio (`top1_pct / (100/t)`) | equivalente `top1_pct` | acc |
+|---|---|---:|
+| ≥3.41 | ≥5.33 | 88/163 |
+| **≥3.85** | **≥6.02** | **90/163 (picco)** |
+| ≥4.33 | ≥6.77 | 88/163 |
+
+Stesso plateau di prima (riscalato, `t` è costante in questo run — quindi
+il ratio qui non aggiunge potere discriminante, aggiunge **trasferibilità**):
+con `t` diverso (es. MVBench `nframes=32` → `t≈16`, chance level 6.25%) una
+soglia assoluta di 6.0 sarebbe già al livello di caso e classificherebbe
+quasi tutto come disperso, mentre **ratio ≈ 3.85** si riscala automaticamente
+a `top1_pct ≈ 24` in quel contesto, restando nella stessa posizione relativa.
+
+**Raccomandazione per lo Stage C**: soglia di routing = `top1_pct >=
+3.85 * (100/t)` (con `t = signal.visual_attention.t`, già disponibile nel
+punto del codice dove si calcola `top1_pct`), non un numero assoluto fisso
+in `conf/config.yaml`.
+
+**Effetto collaterale**: la cattura di verifica ha trovato un bug reale in
+`attn_explorer/capture.py` — `write_index` usa `json.dumps` (riga 386) ma
+il modulo non era importato, quindi ogni run crashava a fine esecuzione
+(dopo aver salvato `capture.pt`, prima di scrivere `index.json`). Fixato
+(`import json` aggiunto) nella stessa sessione.

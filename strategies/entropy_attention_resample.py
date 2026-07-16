@@ -126,6 +126,35 @@ def _attention_entropy_norm(ranked: list[RankedCell]) -> float:
     return h / math.log(t)
 
 
+def _top1_zscore(ranked: list[RankedCell]) -> float:
+    """Z-score DELLA CELLA DI PICCO rispetto alla distribuzione delle masse
+    (`pct`) di TUTTE le `t` celle dello stesso video (`docs/
+    piano_zoom_multiregione_disgiunto.md`, sezione soglia adattiva): quanto
+    `top1_pct` è un outlier rispetto alla media/dev.std delle masse di
+    QUESTO video, non rispetto a un livello di caso teorico fisso (`100/t`)
+    o a soglie assolute tarate su un altro dataset/`nframes`. Nessuna
+    calibrazione esterna: media e dev.std sono per-sample, quindi il segnale
+    si adatta automaticamente a `t` e alla forma reale della distribuzione,
+    incluso il caso concentrato (poche celle alte, coda lunga di celle quasi
+    a zero) che rende `pct` fortemente non-normale — lo z-score resta
+    comunque un indice valido di "quanto spicca" il picco, non un test di
+    normalità.
+
+    Degenera a `0.0` se `t <= 1` (nessuna cella di confronto) o se la
+    dev.std delle masse è nulla (tutte le celle uguali, incluso il caso
+    massa totale nulla) — nessuna cella spicca rispetto alle altre.
+    """
+    t = len(ranked)
+    if t <= 1:
+        return 0.0
+    pcts = [c.pct for c in ranked]
+    mean = statistics.fmean(pcts)
+    stdev = statistics.pstdev(pcts, mu=mean)
+    if stdev <= 0:
+        return 0.0
+    return (pcts[0] - mean) / stdev
+
+
 def _select_region_cells(
     ranked: list[RankedCell], *, n_regions: int, region_select: str, region_mad_k: float,
 ) -> list[RankedCell]:
@@ -374,7 +403,7 @@ class EntropyAttentionResampleStrategy(Strategy):
         # anche l'intera `ranked_cells` (non solo il top1) per riuso nel ramo
         # `zoom_multi_region` più sotto — evita di richiamare `sink_view` +
         # `rank_cells` una seconda volta sullo stesso tensore.
-        top1_pct = peak_cell = attention_entropy_norm = None
+        top1_pct = peak_cell = attention_entropy_norm = top1_zscore = None
         ranked_cells: list[RankedCell] | None = None
         if signal.visual_attention is not None:
             ranked_cells = _ranked_cells(
@@ -382,6 +411,7 @@ class EntropyAttentionResampleStrategy(Strategy):
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
             attention_entropy_norm = _attention_entropy_norm(ranked_cells)
+            top1_zscore = _top1_zscore(ranked_cells)
 
         final_media = media
         resampled = False
@@ -458,7 +488,7 @@ class EntropyAttentionResampleStrategy(Strategy):
                     vlm, video_path, prompt, signal.visual_attention, budget, w0, w1,
                     extra={
                         "resampled": resampled, "resample_kind": resample_kind, "top1_pct": top1_pct,
-                        "attention_entropy_norm": attention_entropy_norm,
+                        "attention_entropy_norm": attention_entropy_norm, "top1_zscore": top1_zscore,
                         "n_regions_used": n_regions_used, "region_spans": region_spans,
                     },
                 )
@@ -475,6 +505,7 @@ class EntropyAttentionResampleStrategy(Strategy):
             "answer_entropy": signal.answer_entropy,
             "top1_pct": top1_pct,
             "attention_entropy_norm": attention_entropy_norm,
+            "top1_zscore": top1_zscore,
             "resampled": resampled,
             "resample_kind": resample_kind,
             "n_regions_used": n_regions_used,
