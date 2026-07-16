@@ -126,33 +126,40 @@ def _attention_entropy_norm(ranked: list[RankedCell]) -> float:
     return h / math.log(t)
 
 
-def _top1_zscore(ranked: list[RankedCell]) -> float:
+def _cell_mass_stats(ranked: list[RankedCell]) -> tuple[float, float]:
+    """Media e dev.std (di popolazione) delle masse `pct` di TUTTE le `t`
+    celle — ingredienti grezzi condivisi da `_top1_zscore` e da qualunque
+    normalizzazione alternativa si voglia provare offline (es. un
+    ratio robusto mediana/MAD) senza dover ricatturare: loggati anche da
+    soli in `answer()`, non solo lo z-score derivato.
+    """
+    pcts = [c.pct for c in ranked]
+    mean = statistics.fmean(pcts)
+    stdev = statistics.pstdev(pcts, mu=mean)
+    return mean, stdev
+
+
+def _top1_zscore(ranked: list[RankedCell], mean: float, stdev: float) -> float:
     """Z-score DELLA CELLA DI PICCO rispetto alla distribuzione delle masse
     (`pct`) di TUTTE le `t` celle dello stesso video (`docs/
     piano_zoom_multiregione_disgiunto.md`, sezione soglia adattiva): quanto
     `top1_pct` è un outlier rispetto alla media/dev.std delle masse di
     QUESTO video, non rispetto a un livello di caso teorico fisso (`100/t`)
     o a soglie assolute tarate su un altro dataset/`nframes`. Nessuna
-    calibrazione esterna: media e dev.std sono per-sample, quindi il segnale
-    si adatta automaticamente a `t` e alla forma reale della distribuzione,
-    incluso il caso concentrato (poche celle alte, coda lunga di celle quasi
-    a zero) che rende `pct` fortemente non-normale — lo z-score resta
-    comunque un indice valido di "quanto spicca" il picco, non un test di
-    normalità.
+    calibrazione esterna: media e dev.std sono per-sample (`_cell_mass_
+    stats`), quindi il segnale si adatta automaticamente a `t` e alla forma
+    reale della distribuzione, incluso il caso concentrato (poche celle
+    alte, coda lunga di celle quasi a zero) che rende `pct` fortemente
+    non-normale — lo z-score resta comunque un indice valido di "quanto
+    spicca" il picco, non un test di normalità.
 
-    Degenera a `0.0` se `t <= 1` (nessuna cella di confronto) o se la
-    dev.std delle masse è nulla (tutte le celle uguali, incluso il caso
-    massa totale nulla) — nessuna cella spicca rispetto alle altre.
+    Degenera a `0.0` se `t <= 1` (nessuna cella di confronto, `mean`/`stdev`
+    non significativi) o se `stdev` è nulla (tutte le celle uguali, incluso
+    il caso massa totale nulla) — nessuna cella spicca rispetto alle altre.
     """
-    t = len(ranked)
-    if t <= 1:
+    if len(ranked) <= 1 or stdev <= 0:
         return 0.0
-    pcts = [c.pct for c in ranked]
-    mean = statistics.fmean(pcts)
-    stdev = statistics.pstdev(pcts, mu=mean)
-    if stdev <= 0:
-        return 0.0
-    return (pcts[0] - mean) / stdev
+    return (ranked[0].pct - mean) / stdev
 
 
 def _select_region_cells(
@@ -404,6 +411,7 @@ class EntropyAttentionResampleStrategy(Strategy):
         # `zoom_multi_region` più sotto — evita di richiamare `sink_view` +
         # `rank_cells` una seconda volta sullo stesso tensore.
         top1_pct = peak_cell = attention_entropy_norm = top1_zscore = None
+        t_cells = cell_mass_mean = cell_mass_std = None
         ranked_cells: list[RankedCell] | None = None
         if signal.visual_attention is not None:
             ranked_cells = _ranked_cells(
@@ -411,7 +419,14 @@ class EntropyAttentionResampleStrategy(Strategy):
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
             attention_entropy_norm = _attention_entropy_norm(ranked_cells)
-            top1_zscore = _top1_zscore(ranked_cells)
+            # `t_cells`/`cell_mass_mean`/`cell_mass_std` loggati SEMPRE (non solo
+            # `top1_zscore` derivato): permettono di ricalcolare offline sia il
+            # ratio-a-livello-di-caso (100/t_cells) sia normalizzazioni diverse
+            # dallo z-score, senza dover ricatturare (vedi docs/piano_zoom_
+            # multiregione_disgiunto.md, sezione soglia adattiva).
+            t_cells = signal.visual_attention.t
+            cell_mass_mean, cell_mass_std = _cell_mass_stats(ranked_cells)
+            top1_zscore = _top1_zscore(ranked_cells, cell_mass_mean, cell_mass_std)
 
         final_media = media
         resampled = False
@@ -489,6 +504,8 @@ class EntropyAttentionResampleStrategy(Strategy):
                     extra={
                         "resampled": resampled, "resample_kind": resample_kind, "top1_pct": top1_pct,
                         "attention_entropy_norm": attention_entropy_norm, "top1_zscore": top1_zscore,
+                        "peak_cell": peak_cell, "t_cells": t_cells,
+                        "cell_mass_mean": cell_mass_mean, "cell_mass_std": cell_mass_std,
                         "n_regions_used": n_regions_used, "region_spans": region_spans,
                     },
                 )
@@ -506,6 +523,10 @@ class EntropyAttentionResampleStrategy(Strategy):
             "top1_pct": top1_pct,
             "attention_entropy_norm": attention_entropy_norm,
             "top1_zscore": top1_zscore,
+            "peak_cell": peak_cell,
+            "t_cells": t_cells,
+            "cell_mass_mean": cell_mass_mean,
+            "cell_mass_std": cell_mass_std,
             "resampled": resampled,
             "resample_kind": resample_kind,
             "n_regions_used": n_regions_used,
