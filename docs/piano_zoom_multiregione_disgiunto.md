@@ -333,7 +333,6 @@ ispezione che l'unica altra fonte di `reconstruct_frame_indices` (pass-1
 `zoom_peak`/`phase_shift`, via `_build_media`) resta invariata — il ramo
 multi-regione era l'unico chiamante toccato dal fix.
 
-<<<<<<< HEAD
 ## Risultati validazione empirica (2026-07-15)
 
 Run eseguita: `force_zoom_for_debug=true`, `zoom_multi_region=true`,
@@ -611,7 +610,16 @@ offline). Il più economico:
 - Soglia calibrata su `H_norm` reale (Stage B), non sul proxy `top1_pct`.
 - Run router (Stage C) con acc + win/loss loggato vs phase-alone e vs uniform.
 - Esito documentato in coda a questo file; go/no-go su C2 aggiornato.
-=======
+
+> **Nota di reconciliation (post-merge 2026-07-16)**: il selettore è stato
+> implementato con nomi diversi da quelli proposti nello Stage A qui sopra —
+> knob **`branch_selector`** (enum `concentration|entropy`) al posto del
+> booleano `branch_by_entropy`, e **`attention_entropy_threshold`** al posto
+> di `entropy_branch_threshold`. La direzione e la logica restano quelle dello
+> Stage A. I nomi reali e il dettaglio d'implementazione sono nella sezione
+> "Risultati selettore di ramo a entropia (§1.3)" subito sotto. Stage B e C
+> (calibrazione soglia + run router) restano da fare.
+
 ## Risultati selettore di ramo a entropia (§1.3)
 
 **Codice** (2026-07-16): implementato in
@@ -649,4 +657,3 @@ selettori su Video-MME — richiede GPU e non è stata eseguita in questo
 passaggio. Nessuna ablazione su `attention_entropy_threshold` (soglia non
 validata, stesso status di `concentration_threshold` all'origine di questo
 piano — vedi §1.1).
->>>>>>> origin/claude/project-status-visibility-6fabkq
