@@ -2,6 +2,25 @@
 
 Checkpoint dello stato esperimenti — aggiornato a ogni push. 
 
+## Struttura del repo
+
+Layout piatto (niente `src/` — nessun pacchetto distribuito, tutto gira
+via `uv run python main.py` dal root, vedi `CLAUDE.md` per i dettagli).
+
+| Cartella | Contenuto |
+|---|---|
+| `main.py` | entrypoint eval (compone config → dataset → strategy → modello) |
+| `conf/` | `config.yaml` unico con tutti i preset (model/dataset/strategy/wandb) |
+| `evals/` | un modulo per benchmark (EgoSchema, MVBench, Video-MME, LVBench, Causal2Needles) |
+| `strategies/` | logica di campionamento/ricampionamento frame (`uniform`, `entropy_shortcut`, `entropy_attention_resample`) |
+| `models/` | wiring dei VLM (Qwen2.5-VL, Qwen3-VL, variante con cattura attenzione) |
+| `utils/` | helper condivisi (config loader, MCQ parsing, attention core) |
+| `attn_explorer/` | tool standalone cattura + esplorazione interattiva delle mappe di attenzione |
+| `fetch/` | script di prefetch dei dump dataset (girano su nodo con internet) |
+| `scripts/` | sbatch SLURM + script di sweep/lancio |
+| `docs/` | analisi, piani, diario — cronologia del ragionamento dietro le scelte |
+| `data/`, `outputs/`, `logs/`, `wandb/`, `debug_out/` | scratch locale, gitignored |
+
 ## Wired
 
 - **Modelli:** 
