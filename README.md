@@ -137,9 +137,16 @@ eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
   `phase_shift` (66.0%) in aggregato, però recupera un pool DISTINTO di ~13
   sample che `phase_shift` non prende (win/loss + stratificazione per n.
   regioni in `docs/piano_zoom_multiregione_disgiunto.md`, "Risultati
-  validazione empirica"). Prossimo passo prima di C2: **selettore di ramo a
-  entropia dell'attenzione normalizzata** (instrada in multi-regione solo i
-  sample concentrati, `phase_shift` per i dispersi), che sostituisce anche
-  il `concentration_threshold` fisso (inerte, vedi sweep sopra).
+  validazione empirica"). **Selettore di ramo (§1.3)**: tre segnali di
+  concentrazione confrontati come router concentrato→C1/disperso→phase_shift
+  (join a tre vie sui 163 sample ricampionati, stesso subset) — `top1_pct`
+  grezzo (plateau 88-90/163) batte sia l'entropia di Shannon normalizzata
+  `H/log(t)` (85-87/163) sia lo z-score del picco vs le altre celle
+  (87/163, il più debole dei tre). Nessuno dei due segnali "più
+  sofisticati" ha battuto il proxy semplice — dettagli in
+  `docs/piano_zoom_multiregione_disgiunto.md`. Prossimo passo: Stage C,
+  router in produzione con `top1_pct` a soglia adattiva (`ratio ≈
+  3.85 × 100/t`, non le soglie assolute fisse 20/30/45 già note come
+  inerti su Video-MME).
 - Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
   altre due colonne della tabella baseline.

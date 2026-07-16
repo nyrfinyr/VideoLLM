@@ -14,9 +14,12 @@
 > discordanti; plateau 85-87/163 vs 88-90/163 di `top1_pct`). **Decisione:
 > non implementare `branch_selector=entropy` in produzione** — il router va
 > costruito su `top1_pct` adattivo per-sample (soglia ~5.9-7.0, non le soglie
-> assolute fisse 20/30/45 già note come inerti). Stage C (run del router +
-> win/loss vs phase-alone) resta da fare, ma con `branch_selector=concentration`
-> e soglia adattiva, non con `entropy`. Go/no-go su C2 rimandato all'esito del
+> assolute fisse 20/30/45 già note come inerti). **Terzo candidato provato
+> (`top1_zscore`, in coda): battuto anche lui** (z=1.70, plateau 87/163) —
+> `top1_pct` grezzo resta il miglior segnale di routing fra i tre testati.
+> Stage C (run del router + win/loss vs phase-alone) resta da fare, con
+> `branch_selector=concentration` e soglia adattiva a ratio (~3.85×100/t),
+> non con `entropy` né `top1_zscore`. Go/no-go su C2 rimandato all'esito del
 > router. Questo documento fissa le decisioni di design e traccia percorso
 > implementativo + protocollo di validazione.
 >
@@ -767,3 +770,49 @@ in `conf/config.yaml`.
 il modulo non era importato, quindi ogni run crashava a fine esecuzione
 (dopo aver salvato `capture.pt`, prima di scrivere `index.json`). Fixato
 (`import json` aggiunto) nella stessa sessione.
+
+### Terzo candidato provato: `top1_zscore` — anche questo non batte `top1_pct`
+
+Prima di accettare il ratio-a-livello-di-caso come soluzione finale, si è
+provata una terza normalizzazione completamente per-sample (nessuna
+calibrazione esterna, nessun bisogno di conoscere `t`): lo z-score della
+cella di picco rispetto a media/dev.std delle masse di TUTTE le celle dello
+stesso video (`top1_zscore`, `strategies/entropy_attention_resample.py`,
+`_top1_zscore`/`_cell_mass_stats`, commit `4cad346`).
+
+**Run di raccolta dati**: `qwen2_5_vl_3b_attn-stageB-zscore-log`. Primo
+tentativo ([`eg27ylc4`](https://wandb.ai/alesvale97-unimore/video_mme/runs/eg27ylc4))
+**crashato** — 0/250 predizioni valide, `CUDA OutOfMemoryError` dentro
+`generate_with_signals`/`full_visual_attention` su **ogni** sample: il job
+era finito su nodo `nullazzo` (Quadro RTX 6000, 24GB), mentre questa
+config (nframes=128 + cattura attenzione completa non-flash) richiede le
+45GB delle L40S/A40 già usate dagli altri run — lo sbatch di default
+(`video_mme-signal-test.sbatch`) include ancora `gpu_RTX6000_24G` nel
+`--constraint`. Rilanciato con override CLI
+(`--partition=boost_usr_prod --constraint="gpu_A40_45G|gpu_L40S_45G"`),
+finito su `mereu` (L40S) senza errori:
+[`ujdksy60`](https://wandb.ai/alesvale97-unimore/video_mme/runs/ujdksy60),
+165/250 (identico bit-per-bit a `o54z2xsd`, come atteso — `branch_selector`
+invariato).
+
+**Metodo**: stesso join a tre vie, sanity-check riprodotto esatto (83/78/98
+su 163). Nota: questo run ha `top1_zscore` ma non `t_cells`/`cell_mass_mean`/
+`cell_mass_std` (checkout senza l'ultimo commit) — non blocca l'analisi
+principale, impedisce solo la verifica incrociata del ratio-a-caso su
+`t` misurato invece che assunto.
+
+| segnale | separazione (\|z\| Mann-Whitney, 35 discordanti) | plateau accuracy /163 |
+|---|---:|---:|
+| `top1_pct` | **2.77** | **88–90** |
+| `attention_entropy_norm` | 2.23 | 85–87 |
+| `top1_zscore` | 1.70 | 87 (best T≈5.17) |
+
+Direzione corretta (pro-C1 ha z-score mediano più alto: 4.56 vs 3.97 di
+pro-phase) ma **potere discriminante il più debole dei tre segnali
+provati**. Nessuna delle due alternative "più sofisticate" (`H_norm`,
+`top1_zscore`) batte il proxy grezzo `top1_pct`.
+
+**Verdetto finale su questo filone**: chiuso. Lo Stage C usa `top1_pct`
+con soglia adattiva per livello di caso (`ratio ≈ 3.85 × 100/t`, sezione
+sopra) — nessun altro segnale di concentrazione da provare prima di quello,
+salvo nuove idee non ancora esplorate.
