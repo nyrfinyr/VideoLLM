@@ -27,19 +27,27 @@ resample` in `conf/config.yaml`).
 
 ## 2. Come funziona il meccanismo (pipeline per ogni sample)
 
+```mermaid
+flowchart TD
+    A["Pass 1 — SEMPRE<br/>generate_with_signals()<br/>prefill-only, frame uniformi (baseline)"] --> B{"answer_entropy ><br/>entropy_threshold ?"}
+    B -- "NO — confidente" --> C["Accetta risposta del pass 1"]
+    B -- "SI — sta indovinando" --> D{"Ramo: dove guardava?<br/>(branch_selector)"}
+    D -- disperso --> E["phase_shift<br/>sfasa la griglia uniforme"]
+    D -- concentrato --> F["zoom_peak / zoom_multi_region<br/>infittisce vicino al picco"]
+    C --> G["Pass 2 — vlm.generate() vero<br/>sui frame ORIGINALI"]
+    E --> H["Pass 2 — vlm.generate() vero<br/>sui frame RICAMPIONATI"]
+    F --> H
+    G --> I["Risposta finale"]
+    H --> I
+
+    style C fill:#2d5,stroke:#333
+    style E fill:#e94,stroke:#333
+    style F fill:#e94,stroke:#333
 ```
-pass 1 (SEMPRE)          →  gate su answer_entropy       →  pass 2 (risposta finale)
-generate_with_signals()     "il modello sta indovinando?"    vlm.generate() vero
-(prefill-only, nessuna       │                                (sui frame originali
-generazione, frame            NO → accetta la risposta         SE si accetta,
-uniformi come baseline)              del pass 1                su frame RICAMPIONATI
-                             SI → decide IL RAMO                SE si ricampiona)
-                                  (dove si guardava?)
-                                  disperso   → sfasa la
-                                              griglia (phase_shift)
-                                  concentrato → infittisce vicino
-                                              al picco (zoom)
-```
+
+Nota: i sample che finiscono in "Accetta risposta del pass 1" (nessun
+ricampionamento) sono **bit-per-bit identici** alla baseline `uniform` —
+solo il pass 2 conta per la risposta, il pass 1 serve solo a decidere.
 
 Punti chiave del design:
 
@@ -62,6 +70,31 @@ Tutti calcolati in `strategies/entropy_attention_resample.py::answer()`
 `Qwen25VLAttention.generate_with_signals` in `models/qwen_attn.py`, che
 avvolge `full_visual_attention` — stesso forward già necessario per la
 cattura, zero costo aggiuntivo).
+
+```mermaid
+flowchart LR
+    SA["SignalAnswer<br/>(generate_with_signals)"] --> AE["answer_entropy<br/>softmax ristretta lettere MCQ<br/>— GATE"]
+    SA --> VA["visual_attention<br/>mappa attenzione testo→visivo"]
+    VA --> SV["sink_view()<br/>azzera i token sink"]
+    SV --> RC["rank_cells()<br/>ranked_cells: t celle ordinate per massa"]
+    RC --> T1["top1_pct<br/>massa della cella di picco"]
+    RC --> HN["H_norm<br/>_attention_entropy_norm()"]
+    RC --> CMS["cell_mass_mean / cell_mass_std<br/>_cell_mass_stats()"]
+    CMS --> ZS["top1_zscore<br/>_top1_zscore()"]
+    RC --> PC["peak_cell"]
+    VA --> TC["t_cells"]
+
+    style AE fill:#59f,stroke:#333
+    style T1 fill:#2d5,stroke:#333
+    style HN fill:#e94,stroke:#333
+    style ZS fill:#e94,stroke:#333
+```
+
+`answer_entropy` (blu) è il segnale di gate, calcolato indipendentemente
+dall'attenzione. Tutto il resto discende dalla stessa `ranked_cells`:
+`top1_pct` (verde, il vincitore) guarda solo il picco; `H_norm` e
+`top1_zscore` (arancio, entrambi battuti) provano a usare l'intera
+distribuzione delle masse invece del solo picco.
 
 ### 3.1 `answer_entropy` — il segnale di GATE
 
@@ -209,10 +242,31 @@ storici):
 | `"concentration_ratio"` | `top1_pct < concentration_ratio * (100/t)` | **Stage C, in validazione ora** |
 | `"entropy"` | `H_norm > attention_entropy_threshold` | provato, **battuto da `top1_pct`** |
 
-Se non "disperso" (concentrato): o `zoom_peak` (finestra stretta sul
-frame di picco) o, se `zoom_multi_region=true`, fino a `n_regions`
-finestre disgiunte sulle celle a massa più alta ("Opzione C1", `docs/
-piano_zoom_multiregione_disgiunto.md`).
+```mermaid
+flowchart TD
+    G{"can_resample?<br/>answer_entropy > entropy_threshold"} -- no --> ACC["accetta pass 1"]
+    G -- si --> BS{{"branch_selector"}}
+
+    BS -- concentration --> C1{"top1_pct <<br/>concentration_threshold?<br/>(assoluto, es. 30 — INERTE)"}
+    BS -- concentration_ratio --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C)"}
+    BS -- entropy --> C3{"H_norm ><br/>attention_entropy_threshold?<br/>(battuto da top1_pct)"}
+
+    C1 -- "si (disperso)" --> PS
+    C1 -- "no (concentrato)" --> ZOOM
+    C2 -- "si (disperso)" --> PS
+    C2 -- "no (concentrato)" --> ZOOM
+    C3 -- "si (disperso)" --> PS
+    C3 -- "no (concentrato)" --> ZOOM
+
+    PS["phase_shift"]
+    ZOOM{"zoom_multi_region?"}
+    ZOOM -- true --> ZMR["zoom_multi_region<br/>fino a n_regions finestre disgiunte"]
+    ZOOM -- false --> ZP["zoom_peak<br/>1 finestra sul frame di picco"]
+
+    style C2 fill:#2d5,stroke:#333
+    style C1 fill:#999,stroke:#333
+    style C3 fill:#e94,stroke:#333
+```
 
 ## 6. Risultati sperimentali chiave (Video-MME, subset 250, seed 42)
 
