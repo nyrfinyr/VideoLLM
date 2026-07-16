@@ -113,8 +113,9 @@ strategy:
     entropy_threshold: 0.7
     concentration_threshold: 30.0
     # --- selettore di ramo disperso/concentrato (docs/piano_zoom_multiregione_disgiunto.md §1.3) ---
-    branch_selector: concentration  # (concentration | entropy) default = comportamento storico, invariato
-    attention_entropy_threshold: 0.7  # soglia su H/log(t) se branch_selector=entropy, NON validata
+    branch_selector: concentration  # (concentration | concentration_ratio | entropy) default = comportamento storico, invariato
+    attention_entropy_threshold: 0.7  # soglia su H/log(t) se branch_selector=entropy, NON usare: top1_pct batte H_norm (vedi piano)
+    concentration_ratio: 3.85  # soglia adattiva (top1_pct < ratio*100/t) se branch_selector=concentration_ratio, calibrata su Video-MME nframes=128 (Stage C)
     window_frac: 0.3
     phase_shift_frac: 0.5
     sink_percentile: 25.0

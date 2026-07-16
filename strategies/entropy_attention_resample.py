@@ -23,11 +23,16 @@ Logica (pass 1 sempre uniforme, budget `nframes` invariato):
 Il ramo "disperso" vs "concentrato" è deciso da `branch_selector`
 (`conf/config.yaml`, preset `strategy.entropy_attention_resample`):
 `"concentration"` (default, comportamento storico) confronta `top1_pct`
-con `concentration_threshold`; `"entropy"` (`docs/piano_zoom_multiregione_
-disgiunto.md` §1.3) usa invece l'entropia di Shannon normalizzata
-`H/log(t)` sulle masse per-cella sink-filtrate — bassa (attenzione
-concentrata) → zoom, alta (dispersa) → phase_shift. Le due soglie sono
-indipendenti e NON tarate l'una sull'altra.
+con `concentration_threshold` assoluto; `"concentration_ratio"` (Stage C,
+`docs/piano_zoom_multiregione_disgiunto.md` §1.3) confronta invece contro
+una soglia adattiva al livello di caso (`concentration_ratio * 100/t`,
+trasferibile fra `nframes`/dataset diversi — vedi "Soglia adattiva su
+top1_pct" nel piano); `"entropy"` usa l'entropia di Shannon normalizzata
+`H/log(t)` sulle masse per-cella sink-filtrate. Tre segnali di
+concentrazione confrontati empiricamente (`top1_pct` grezzo, `H_norm`,
+z-score del picco): `top1_pct` separa meglio degli altri due — vedi
+"Risultati" nel piano per i numeri. Le soglie sono indipendenti e NON
+tarate l'una sull'altra.
 
 Al massimo UN ricampionamento (non c'è un terzo pass che ri-verifica il
 segnale). La risposta FINALE — sia nei rami "accetta" sia dopo un
@@ -365,6 +370,12 @@ class EntropyAttentionResampleStrategy(Strategy):
         # --- selettore di ramo disperso/concentrato (docs/piano_zoom_multiregione_disgiunto.md §1.3) ---
         self.branch_selector = str(cfg.get("branch_selector", "concentration"))
         self.attention_entropy_threshold = float(cfg.get("attention_entropy_threshold", 0.7))
+        # soglia adattiva su top1_pct normalizzata per livello di caso (100/t):
+        # `dispersed = top1_pct < concentration_ratio * (100/t)` invece di un
+        # valore assoluto fisso — trasferibile fra config con `t` diverso
+        # (nframes/dataset), vedi "Soglia adattiva su top1_pct" nel piano.
+        # 3.85 = soglia calibrata su Video-MME nframes=128 (Stage C).
+        self.concentration_ratio = float(cfg.get("concentration_ratio", 3.85))
         self.window_frac = float(cfg.get("window_frac", 0.3))
         self.phase_shift_frac = float(cfg.get("phase_shift_frac", 0.5))
         self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
@@ -452,9 +463,13 @@ class EntropyAttentionResampleStrategy(Strategy):
                 dispersed = attention_entropy_norm > self.attention_entropy_threshold
             elif self.branch_selector == "concentration":
                 dispersed = top1_pct < self.concentration_threshold
+            elif self.branch_selector == "concentration_ratio":
+                chance = 100.0 / t if t else 0.0
+                dispersed = top1_pct < self.concentration_ratio * chance
             else:
                 raise ValueError(
-                    f"branch_selector sconosciuto: {self.branch_selector!r}. Valide: 'concentration', 'entropy'"
+                    f"branch_selector sconosciuto: {self.branch_selector!r}. Valide: "
+                    "'concentration', 'concentration_ratio', 'entropy'"
                 )
 
             if not self.force_zoom_for_debug and dispersed:
