@@ -100,16 +100,21 @@ distribuzione delle masse invece del solo picco.
 
 **Cos'è**: entropia di Shannon (in bit) della distribuzione softmax
 **ristretta alle sole lettere candidate** (A/B/C/D...) sui logit
-dell'ultimo token del prefill — non la softmax sull'intero vocabolario.
-`H = 0` → il modello è certissimo di una lettera. `H = log2(n_opzioni)` →
+dell'ultimo token del prefill — non la softmax sull'intero vocabolario:
+
+$$H = -\sum_{i=1}^{n_{\text{opzioni}}} p_i \log_2 p_i$$
+
+$H = 0$ → il modello è certissimo di una lettera. $H = \log_2(n_{\text{opzioni}})$ →
 distribuzione piatta, sta indovinando.
 
 **Perché**: prima ipotesi testata (pilota VNBench, 30 video, `docs/
-entropia_confidenza_mcq.md`) — correlazione con la correttezza **r = −0.75**,
+entropia_confidenza_mcq.md`) — correlazione con la correttezza $r = -0.75$,
 il segnale più forte fra tutti quelli provati. Usato oggi come **gate**:
-`can_resample = answer_entropy > entropy_threshold` (default `0.7`, non
-validato per Video-MME nello specifico — soglia ereditata dal pilota
-VNBench, dominio/nframes diversi).
+
+$$\text{can\_resample} = \text{answer\_entropy} > \text{entropy\_threshold}$$
+
+(default $0.7$, non validato per Video-MME nello specifico — soglia
+ereditata dal pilota VNBench, dominio/nframes diversi).
 
 ### 3.2 `top1_pct` — concentrazione dell'attenzione (il segnale vincente)
 
@@ -123,17 +128,21 @@ il modello "si fissa" su un frame preciso (grounding). Basso/vicino
 all'uniforme → attenzione dispersa su tutto il video.
 
 **Perché**: seconda ipotesi (stesso pilota VNBench) — correlazione più
-debole dell'entropia (r = 0.58) ma stesso verso atteso. Usato per
+debole dell'entropia ($r = 0.58$) ma stesso verso atteso. Usato per
 decidere **il ramo** (vedi §4) — e si è rivelato, dopo un confronto
 empirico a tre (§4.3), il **migliore** dei segnali di concentrazione
 provati, nonostante sia il più "grezzo".
 
 ### 3.3 `attention_entropy_norm` (H_norm) — tentativo di segnale più ricco
 
-**Cos'è**: entropia di Shannon **normalizzata** `H/log(t)` sulle masse
-di **tutte** le `t` celle (non solo il picco) — `0` = tutta la massa su
-una cella, `1` = dispersione perfettamente uniforme su `t` celle.
-Funzione `_attention_entropy_norm` (righe 110-131).
+**Cos'è**: entropia di Shannon **normalizzata** sulle masse di **tutte**
+le $t$ celle (non solo il picco):
+
+$$H_{\text{norm}} = \frac{H}{\log t}, \qquad H = -\sum_{i=1}^{t} p_i \log p_i$$
+
+$H_{\text{norm}} = 0$ → tutta la massa su una cella, $H_{\text{norm}} = 1$
+→ dispersione perfettamente uniforme su $t$ celle. Funzione
+`_attention_entropy_norm` (righe 110-131).
 
 **Perché provato**: `top1_pct` guarda solo il picco, ignora la forma di
 tutto il resto della distribuzione — l'intuizione era che l'entropia
@@ -144,10 +153,14 @@ retto** — separa nella direzione giusta ma più debolmente di `top1_pct`.
 ### 3.4 `top1_zscore` — tentativo di segnale adattivo per-sample
 
 **Cos'è**: quanto la cella di picco è un **outlier** rispetto alla media/
-dev.std delle masse di **tutte** le celle dello stesso video — `(top1_pct
-− media) / dev.std`, calcolato interamente dai dati di quel singolo video
-(nessuna calibrazione esterna, nessun bisogno di conoscere `t`). Funzioni
-`_cell_mass_stats`/`_top1_zscore` (righe 134-167).
+dev.std delle masse di **tutte** le celle dello stesso video:
+
+$$z = \frac{\text{top1\_pct} - \mu}{\sigma}$$
+
+calcolato interamente dai dati di quel singolo video ($\mu$, $\sigma$ =
+media e dev.std delle masse per-cella; nessuna calibrazione esterna,
+nessun bisogno di conoscere $t$). Funzioni `_cell_mass_stats`/
+`_top1_zscore` (righe 134-167).
 
 **Perché provato**: tentativo di normalizzazione **completamente
 per-sample**, l'alternativa più "pulita" concettualmente a una soglia
@@ -185,7 +198,7 @@ preso da solo — **+15 di margine puro dal solo instradamento**.
 
 ### 4.2 Le soglie assolute fisse sono morte su Video-MME
 
-Le soglie originali (`concentration_threshold` ∈ {20, 30, 45}) venivano
+Le soglie originali ($\text{concentration\_threshold} \in \{20, 30, 45\}$) venivano
 dal pilota VNBench (dominio/nframes diversi). Su Video-MME (`nframes=128`)
 `top1_pct` non supera mai ~23% — **nessuna** di quelle soglie discrimina
 mai nulla: uno sweep 4×3 di soglie ha dato risultati piatti (tutti i
@@ -217,17 +230,22 @@ grezzo** — decisione: usare `top1_pct`.
 Anche con `top1_pct` come segnale vincente, una soglia assoluta (es. 6.0,
 il valore ottimale trovato per `nframes=128`) avrebbe lo stesso problema
 di trasferibilità di quelle originali: cambiando `nframes`/dataset la
-scala di `top1_pct` si sposta. `top1_pct` è una percentuale su `t` celle,
+scala di `top1_pct` si sposta. `top1_pct` è una percentuale su $t$ celle,
 quindi il suo valore atteso sotto attenzione uniforme ("livello di caso")
-è `100/t`. Normalizzando per questo (`ratio = top1_pct / (100/t)`), la
-soglia si riscala automaticamente.
+è $100/t$. Normalizzando per questo,
 
-`t` (= 64 per `nframes=128`) è stato **verificato su GPU reale** (non solo
-dedotto dal codice): una cattura di test ha confermato `t=64` esatto, dal
-fattore di merge temporale a coppie del modello (`nframes/2`).
+$$\text{ratio} = \frac{\text{top1\_pct}}{100/t}$$
 
-**Soglia scelta: `concentration_ratio = 3.85`** (equivalente a `top1_pct
-≈ 6.02` a `t=64`, dentro il plateau 88-90/163 di §4.3).
+la soglia si riscala automaticamente.
+
+$t$ ($=64$ per $\text{nframes}=128$) è stato **verificato su GPU reale**
+(non solo dedotto dal codice): una cattura di test ha confermato $t=64$
+esatto, dal fattore di merge temporale a coppie del modello
+($t = \text{nframes}/2$).
+
+**Soglia scelta: $\text{concentration\_ratio} = 3.85$** (equivalente a
+$\text{top1\_pct} \approx 6.02$ a $t=64$, dentro il plateau 88-90/163 di
+§4.3).
 
 ## 5. Cosa fa il codice OGGI (`branch_selector`, `conf/config.yaml`)
 
@@ -238,35 +256,104 @@ storici):
 
 | `branch_selector` | condizione "disperso" (→ fase sfasata) | stato |
 |---|---|---|
-| `"concentration"` (default) | `top1_pct < concentration_threshold` (assoluto, es. 30) | storico, **soglia inerte** su Video-MME |
-| `"concentration_ratio"` | `top1_pct < concentration_ratio * (100/t)` | **Stage C, in validazione ora** |
-| `"entropy"` | `H_norm > attention_entropy_threshold` | provato, **battuto da `top1_pct`** |
+| `"concentration"` (default) | $\text{top1\_pct} < \text{concentration\_threshold}$ (assoluto, es. 30) | storico, **soglia inerte** su Video-MME |
+| `"concentration_ratio"` | $\text{top1\_pct} < \text{concentration\_ratio} \cdot \frac{100}{t}$ | **Stage C, in validazione ora** |
+| `"entropy"` | $H_{\text{norm}} > \text{attention\_entropy\_threshold}$ | provato, **battuto da `top1_pct`** |
 
 ```mermaid
 flowchart TD
     G{"can_resample?<br/>answer_entropy > entropy_threshold"} -- no --> ACC["accetta pass 1"]
-    G -- si --> BS{{"branch_selector"}}
+    G -- si --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C)"}
 
-    BS -- concentration --> C1{"top1_pct <<br/>concentration_threshold?<br/>(assoluto, es. 30 — INERTE)"}
-    BS -- concentration_ratio --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C)"}
-    BS -- entropy --> C3{"H_norm ><br/>attention_entropy_threshold?<br/>(battuto da top1_pct)"}
-
-    C1 -- "si (disperso)" --> PS
-    C1 -- "no (concentrato)" --> ZOOM
-    C2 -- "si (disperso)" --> PS
-    C2 -- "no (concentrato)" --> ZOOM
-    C3 -- "si (disperso)" --> PS
-    C3 -- "no (concentrato)" --> ZOOM
-
-    PS["phase_shift"]
-    ZOOM{"zoom_multi_region?"}
+    C2 -- "si (disperso)" --> PS["phase_shift"]
+    C2 -- "no (concentrato)" --> ZOOM{"zoom_multi_region?"}
     ZOOM -- true --> ZMR["zoom_multi_region<br/>fino a n_regions finestre disgiunte"]
     ZOOM -- false --> ZP["zoom_peak<br/>1 finestra sul frame di picco"]
 
     style C2 fill:#2d5,stroke:#333
-    style C1 fill:#999,stroke:#333
-    style C3 fill:#e94,stroke:#333
 ```
+
+### 5.1 Come sono implementati `zoom_peak` e `zoom_multi_region`
+
+**`zoom_peak`** (`strategies/entropy_attention_resample.py`, righe 502-512)
+— finestra unica centrata sul frame di picco:
+
+1. `peak_cell` è l'indice della cella a massa più alta (`ranked_cells[0]`,
+   già calcolato prima del branch).
+2. Converte l'indice di cella in posizione temporale **frazionaria**:
+
+   $$\text{frac} = \frac{\text{peak\_cell} + 0.5}{t}$$
+
+   (il $+0.5$ centra sulla cella, non sul bordo).
+3. Mappa la frazione sulla finestra reale del pass 1 ($w_0$/$w_1$):
+
+   $$\text{peak\_time} = w_0 + \text{frac} \cdot (w_1 - w_0)$$
+
+4. Costruisce una finestra stretta di semi-larghezza
+
+   $$\frac{\text{window\_frac} \cdot (w_1 - w_0)}{2}$$
+
+   (default $\text{window\_frac}=0.3$ → 30% dell'intervallo originale)
+   centrata su $\text{peak\_time}$, clampata a $[0, \text{duration}]$.
+5. `_build_media(video_path, None, new_start, new_end, budget)` ricampiona
+   `nframes` **uniformi** dentro questa finestra ristretta — stesso
+   meccanismo della baseline `uniform`, solo su un intervallo più corto
+   (→ più densità temporale sulla stessa zona).
+
+Una sola regione, nessuna gestione di sovrapposizioni o budget-splitting.
+
+**`zoom_multi_region`** (righe 170-360, orchestrato a 487-501) — stesso
+principio ma fino a `n_regions` finestre **disgiunte**, ciascuna centrata
+su una cella a massa alta, con budget frame ripartito fra loro. Quattro
+fasi:
+
+1. **`_select_region_cells`** (righe 170-193) — quali celle-picco usare.
+   `"topk"`: le prime `n_regions` di `ranked_cells` (già ordinate per
+   massa decrescente). `"adaptive"` (default): mediana + `region_mad_k`·MAD
+   calcolate **escludendo il picco globale** (altrimenti l'outlier che si
+   vuole selezionare gonfierebbe la propria stessa soglia —
+   auto-mascheramento), poi cap a `n_regions`.
+2. **`_multi_region_spans`** (righe 196-254) — da celle a finestre
+   temporali disgiunte. Ogni cella selezionata → centro temporale (stessa
+   formula frazionaria di `zoom_peak`); centri più vicini di
+
+   $$\text{region\_merge\_gap\_frac} \cdot (w_1 - w_0)$$
+
+   vengono fusi in un solo centro (media pesata dalla massa); ogni centro
+   (fuso) diventa una finestra di semi-larghezza fissa
+
+   $$\text{region\_window\_frac} \cdot (w_1 - w_0)$$
+
+   (default 10%, quindi più stretta di `zoom_peak`); passata finale di
+   merge per garantire che, anche dopo l'allargamento a larghezza fissa,
+   le finestre restino disgiunte.
+3. **`_allocate_region_budget`** (righe 257-284) — come dividere `nframes`
+   fra le regioni trovate. `"equal"`: parti uguali. `"proportional"`
+   (default): pesato per la massa d'attenzione di ciascuna regione.
+   Vincolo: la somma non supera mai `nframes` (limite VRAM); se
+   `nframes < numero di regioni`, tiene solo le regioni a peso più alto
+   con 1 frame ciascuna.
+4. **`_build_multi_region_media`** (righe 287-360) — estrazione frame
+   reale. Per ogni regione con budget > 0 estrae frame equispaziati
+   (`linspace`) dentro la finestra (`n=1` → frame centrale, non il
+   bordo); deduplica/ordina tutti gli indici sull'unione delle regioni;
+   calcola
+
+   $$\text{sample\_fps} = \frac{\text{frame totali}}{\text{durata totale regioni usate}}$$
+
+   (non dell'intera finestra pass-1) — la densità effettiva vista dentro
+   le regioni, ignorando i "buchi" fra una regione e l'altra; impacchetta
+   come `VideoFrames` con quel `sample_fps`
+   iniettato, così il modello li vede come uniformemente spaziati su un
+   video continuo (semplificazione accettata: i buchi fra regioni
+   "spariscono" dalla codifica posizionale). La directory temporanea
+   viene ripulita in un `finally` dopo la `generate()` finale, anche in
+   caso di eccezione durante l'estrazione.
+
+In sintesi: `zoom_peak` è "una finestra sul massimo"; `zoom_multi_region`
+generalizza la stessa idea a più massimi locali, con la complicazione di
+dover fondere finestre vicine/sovrapposte e spartire un budget frame
+fisso fra loro in proporzione alla massa.
 
 ## 6. Risultati sperimentali chiave (Video-MME, subset 250, seed 42)
 
