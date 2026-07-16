@@ -107,8 +107,14 @@ Se il trigger non scatta, la risposta finale viene comunque da un
 
 ### 3.3 Due rami di ricampionamento, mutuamente esclusivi
 
-Quando il trigger scatta, la scelta fra i due rami dipende **solo** da
-`top1_pct` confrontato con `concentration_threshold` (default `30.0`%):
+Quando il trigger scatta, la scelta fra i due rami dipende da
+`branch_selector` (default `"concentration"`, invariato): confronta
+`top1_pct` con `concentration_threshold` (default `30.0`%). L'alternativa
+`branch_selector: "entropy"` (`docs/piano_zoom_multiregione_disgiunto.md`
+§1.3) usa invece l'entropia di Shannon normalizzata `H/log(t)` sulle masse
+per-cella sink-filtrate (`attention_entropy_norm`, sempre calcolata e
+loggata) confrontata con `attention_entropy_threshold` (default `0.7`,
+NON validato): `H` bassa → ramo B (zoom), `H` alta → ramo A (dispersa).
 
 Notazione comune ai due rami: $W = w_1 - w_0$ è l'ampiezza della finestra
 vista dal pass 1 (`video_start`/`video_end`, o l'intero video se non
@@ -220,7 +226,9 @@ config: 250/250 completati).
 | Parametro | Default | Significato |
 |---|---:|---|
 | `entropy_threshold` | `0.7` (bit) | soglia minima di entropia risposta per considerare il resampling |
-| `concentration_threshold` | `30.0` (%) | soglia di `top1_pct` che discrimina ramo dispersa (A) vs concentrata (B) |
+| `branch_selector` | `"concentration"` | `concentration` \| `entropy` — quale segnale discrimina ramo dispersa (A) vs concentrata (B) |
+| `concentration_threshold` | `30.0` (%) | soglia di `top1_pct` (se `branch_selector=concentration`) |
+| `attention_entropy_threshold` | `0.7` | soglia su `attention_entropy_norm` (se `branch_selector=entropy`), NON validata |
 | `window_frac` | `0.3` | frazione della durata originale usata come finestra di zoom (ramo B) |
 | `phase_shift_frac` | `0.5` | frazione dell'intervallo fra frame usata come traslazione (ramo A) |
 | `sink_percentile` | `25.0` | percentile per la maschera sink |

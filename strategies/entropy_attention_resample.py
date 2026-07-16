@@ -7,10 +7,10 @@ in `README.md`.
 Logica (pass 1 sempre uniforme, budget `nframes` invariato):
 
     entropia bassa                → accetta la risposta del pass 1
-    entropia alta, conc. bassa    → ricampiona, SFASATO di fase rispetto
+    entropia alta, ramo "disperso"    → ricampiona, SFASATO di fase rispetto
                                      ai frame già visti (dispersione: non
                                      si sa dove guardare, si prova altrove)
-    entropia alta, conc. alta     → ricampiona, INFITTITO in una finestra
+    entropia alta, ramo "concentrato" → ricampiona, INFITTITO in una finestra
                                      stretta intorno al frame di picco
                                      (il modello guarda "quasi giusto" ma
                                      non abbastanza in dettaglio) — oppure,
@@ -19,6 +19,15 @@ Logica (pass 1 sempre uniforme, budget `nframes` invariato):
                                      centrate sulle celle a massa più alta
                                      (vedi `docs/piano_zoom_multiregione_
                                      disgiunto.md`, Opzione C1).
+
+Il ramo "disperso" vs "concentrato" è deciso da `branch_selector`
+(`conf/config.yaml`, preset `strategy.entropy_attention_resample`):
+`"concentration"` (default, comportamento storico) confronta `top1_pct`
+con `concentration_threshold`; `"entropy"` (`docs/piano_zoom_multiregione_
+disgiunto.md` §1.3) usa invece l'entropia di Shannon normalizzata
+`H/log(t)` sulle masse per-cella sink-filtrate — bassa (attenzione
+concentrata) → zoom, alta (dispersa) → phase_shift. Le due soglie sono
+indipendenti e NON tarate l'una sull'altra.
 
 Al massimo UN ricampionamento (non c'è un terzo pass che ri-verifica il
 segnale). La risposta FINALE — sia nei rami "accetta" sia dopo un
@@ -91,6 +100,30 @@ def _ranked_cells(visual_attention, *, percentile: float, border: int) -> list[R
     grid = GridSpec(t=visual_attention.t, grid_h=visual_attention.grid_h, grid_w=visual_attention.grid_w, double=True)
     heat_nonsink, _ = sink_view(heat, visual_attention.sink_map, view="nonsink", percentile=percentile, border=border)
     return rank_cells(heat_nonsink, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
+
+
+def _attention_entropy_norm(ranked: list[RankedCell]) -> float:
+    """Entropia di Shannon **normalizzata** `H/log(t)` sulle `t` masse
+    per-cella (sink-filtrate) di `ranked` (`docs/piano_zoom_multiregione_
+    disgiunto.md` §1.3). `H` bassa (~0) = attenzione concentrata su poche
+    celle; `H` alta (~1) = dispersa uniformemente sulle `t` celle.
+
+    Degenera a `0.0` se `t <= 1` (nessuna dispersione possibile, una sola
+    cella è per definizione "concentrata"). Degenera a `1.0` se la massa
+    non-sink totale è nulla (tutti i `pct` a zero, vedi `rank_cells`): senza
+    segnale si tratta il sample come "non concentrato", la scelta prudente
+    che instrada verso `phase_shift` invece di uno zoom su un picco
+    inesistente — coerente con `top1_pct == 0 < concentration_threshold`
+    nel selettore basato su `top1_pct`.
+    """
+    t = len(ranked)
+    if t <= 1:
+        return 0.0
+    probs = [c.pct / 100.0 for c in ranked]
+    if sum(probs) <= 0:
+        return 1.0
+    h = -sum(p * math.log(p) for p in probs if p > 0)
+    return h / math.log(t)
 
 
 def _select_region_cells(
@@ -293,6 +326,9 @@ class EntropyAttentionResampleStrategy(Strategy):
         cfg = cfg or {}
         self.entropy_threshold = float(cfg.get("entropy_threshold", 0.7))
         self.concentration_threshold = float(cfg.get("concentration_threshold", 30.0))
+        # --- selettore di ramo disperso/concentrato (docs/piano_zoom_multiregione_disgiunto.md §1.3) ---
+        self.branch_selector = str(cfg.get("branch_selector", "concentration"))
+        self.attention_entropy_threshold = float(cfg.get("attention_entropy_threshold", 0.7))
         self.window_frac = float(cfg.get("window_frac", 0.3))
         self.phase_shift_frac = float(cfg.get("phase_shift_frac", 0.5))
         self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
@@ -338,13 +374,14 @@ class EntropyAttentionResampleStrategy(Strategy):
         # anche l'intera `ranked_cells` (non solo il top1) per riuso nel ramo
         # `zoom_multi_region` più sotto — evita di richiamare `sink_view` +
         # `rank_cells` una seconda volta sullo stesso tensore.
-        top1_pct = peak_cell = None
+        top1_pct = peak_cell = attention_entropy_norm = None
         ranked_cells: list[RankedCell] | None = None
         if signal.visual_attention is not None:
             ranked_cells = _ranked_cells(
                 signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
+            attention_entropy_norm = _attention_entropy_norm(ranked_cells)
 
         final_media = media
         resampled = False
@@ -366,7 +403,16 @@ class EntropyAttentionResampleStrategy(Strategy):
             w0 = video_start if video_start is not None else 0.0
             w1 = video_end if video_end is not None else duration
 
-            if not self.force_zoom_for_debug and top1_pct < self.concentration_threshold:
+            if self.branch_selector == "entropy":
+                dispersed = attention_entropy_norm > self.attention_entropy_threshold
+            elif self.branch_selector == "concentration":
+                dispersed = top1_pct < self.concentration_threshold
+            else:
+                raise ValueError(
+                    f"branch_selector sconosciuto: {self.branch_selector!r}. Valide: 'concentration', 'entropy'"
+                )
+
+            if not self.force_zoom_for_debug and dispersed:
                 # Dispersa: sfasa la griglia uniforme di mezzo intervallo
                 # rispetto al pass 1 — nuovi frame "in mezzo" a quelli già
                 # visti, stesso budget. Clampata a [0, duration]: se il
@@ -412,6 +458,7 @@ class EntropyAttentionResampleStrategy(Strategy):
                     vlm, video_path, prompt, signal.visual_attention, budget, w0, w1,
                     extra={
                         "resampled": resampled, "resample_kind": resample_kind, "top1_pct": top1_pct,
+                        "attention_entropy_norm": attention_entropy_norm,
                         "n_regions_used": n_regions_used, "region_spans": region_spans,
                     },
                 )
@@ -427,6 +474,7 @@ class EntropyAttentionResampleStrategy(Strategy):
             "raw": raw,
             "answer_entropy": signal.answer_entropy,
             "top1_pct": top1_pct,
+            "attention_entropy_norm": attention_entropy_norm,
             "resampled": resampled,
             "resample_kind": resample_kind,
             "n_regions_used": n_regions_used,

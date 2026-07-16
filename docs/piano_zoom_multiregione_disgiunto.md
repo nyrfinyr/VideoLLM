@@ -1,17 +1,19 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
-> **Stato**: **C1 implementato + validato; routing a entropia verificato dai
-> dati e pianificato** (2026-07-16) — knob dietro flag, default OFF, code review
-> superata. Run di validazione C1 fatta (250-subset, `force_zoom_for_debug`):
-> batte uniform ma non `phase_shift` in aggregato, però recupera un pool
-> DISTINTO di ~13 sample. **La verifica pre-implementazione (in coda) conferma:
-> instradare per concentrazione sfrutta la complementarità nella direzione del
-> §1.3** (oracolo 98 vs 83/163; router a concentrazione ~68.8% vs 66.0% di
-> phase-alone). **Prossimo passo: implementare il selettore §1.3** — piano
-> staged pronto in coda ("Piano implementativo — selettore di ramo a entropia").
-> Go/no-go su C2 rimandato all'esito del router. Questo documento fissa le
-> decisioni di design e traccia percorso implementativo + protocollo di
-> validazione.
+> **Stato** (2026-07-16): **C1 implementato + validato** (codice 2026-07-15,
+> code review superata) — knob dietro flag, default OFF. Run di validazione C1
+> fatta (250-subset, `force_zoom_for_debug`): batte uniform ma non `phase_shift`
+> in aggregato, recupera un pool DISTINTO di ~13 sample. **Verifica dai dati**
+> (in coda) conferma: instradare per concentrazione sfrutta la complementarità
+> nella direzione del §1.3 (oracolo 98 vs 83/163; router a concentrazione
+> ~68.8% vs 66.0% di phase-alone). **Selettore di ramo a entropia (§1.3)
+> implementato** (codice 2026-07-16) — knob `branch_selector` dietro flag,
+> default `"concentration"` (invariato). **Non ancora validato su cluster con
+> `branch_selector=entropy`**: manca lo Stage B (calibrazione della soglia
+> `attention_entropy_threshold` sull'entropia vera loggata) e lo Stage C (run
+> del router + win/loss vs phase-alone). Go/no-go su C2 rimandato all'esito del
+> router. Questo documento fissa le decisioni di design e traccia percorso
+> implementativo + protocollo di validazione.
 >
 > **Contesto a monte**: leggere prima
 > `docs/analisi_winloss_resampling_video_mme.md` (perché il resampling attuale
@@ -331,6 +333,7 @@ ispezione che l'unica altra fonte di `reconstruct_frame_indices` (pass-1
 `zoom_peak`/`phase_shift`, via `_build_media`) resta invariata — il ramo
 multi-regione era l'unico chiamante toccato dal fix.
 
+<<<<<<< HEAD
 ## Risultati validazione empirica (2026-07-15)
 
 Run eseguita: `force_zoom_for_debug=true`, `zoom_multi_region=true`,
@@ -608,3 +611,42 @@ offline). Il più economico:
 - Soglia calibrata su `H_norm` reale (Stage B), non sul proxy `top1_pct`.
 - Run router (Stage C) con acc + win/loss loggato vs phase-alone e vs uniform.
 - Esito documentato in coda a questo file; go/no-go su C2 aggiornato.
+=======
+## Risultati selettore di ramo a entropia (§1.3)
+
+**Codice** (2026-07-16): implementato in
+`strategies/entropy_attention_resample.py` (`_attention_entropy_norm`) +
+knob `branch_selector`/`attention_entropy_threshold` nel preset
+`strategy.entropy_attention_resample` di `conf/config.yaml`.
+
+- `_attention_entropy_norm(ranked_cells)` calcola `H/log(t)` (entropia di
+  Shannon normalizzata) sulle masse `pct` per-cella già disponibili in
+  `ranked_cells` (nessuna chiamata aggiuntiva a `sink_view`/`rank_cells` —
+  costo ≈ zero come previsto in §1.3). Casi limite: `t<=1` → `0.0`
+  (nessuna dispersione possibile); massa non-sink totale nulla → `1.0`
+  (nessun segnale, si tratta prudenzialmente come "disperso" → `phase_shift`,
+  coerente con `top1_pct==0` nel selettore storico).
+- `branch_selector` (`"concentration"` default, `"entropy"` opt-in)
+  seleziona quale segnale discrimina ramo A (`phase_shift`) vs ramo B
+  (zoom): a `branch_selector="concentration"` il comportamento è
+  **bit-per-bit identico** al codice precedente (stesso confronto
+  `top1_pct < concentration_threshold`, invariato); solo la strada
+  `"entropy"` (opt-in) usa `attention_entropy_norm > attention_entropy_threshold`.
+- `attention_entropy_norm` è ora **sempre** calcolato e loggato (result dict
+  + `capture.pt` extra) quando `signal.visual_attention is not None` — anche
+  nei rami "accetta" e indipendentemente da quale `branch_selector` sia
+  attivo — così l'analisi win/loss può confrontare a posteriori i due
+  selettori sullo stesso run, come richiesto da §3.2 punto 6.
+- Verificata a mano (senza torch, non installabile in questo ambiente) la
+  formula dell'entropia su casi sintetici: distribuzione uniforme su `t`
+  celle → `H_norm≈1.0`; distribuzione one-hot (tutta la massa su una cella)
+  → `H_norm≈0.0`; massa totale nulla → `1.0`; `t=1` → `0.0`; distribuzione
+  intermedia → valore in `[0,1]` coerente con l'ordinamento atteso.
+
+**Non ancora fatto**: run di validazione reale (§4) con
+`branch_selector=entropy` per confrontare l'instradamento coi due
+selettori su Video-MME — richiede GPU e non è stata eseguita in questo
+passaggio. Nessuna ablazione su `attention_entropy_threshold` (soglia non
+validata, stesso status di `concentration_threshold` all'origine di questo
+piano — vedi §1.1).
+>>>>>>> origin/claude/project-status-visibility-6fabkq
