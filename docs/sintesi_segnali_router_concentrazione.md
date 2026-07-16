@@ -1,6 +1,6 @@
 # Sintesi — segnali di concentrazione e router entropia/attenzione
 
-> Documento di sintesi (2026-07-16), preparato per presentare lo stato del
+> Documento di sintesi (2026-07-17), preparato per presentare lo stato del
 > lavoro. Raccoglie in un unico posto: cosa stiamo cercando di fare, quali
 > segnali vengono calcolati e loggati nel codice, come e perché sono stati
 > scelti, quali esperimenti li hanno validati/respinti. Per il dettaglio
@@ -257,13 +257,13 @@ storici):
 | `branch_selector` | condizione "disperso" (→ fase sfasata) | stato |
 |---|---|---|
 | `"concentration"` (default) | $\text{top1\_pct} < \text{concentration\_threshold}$ (assoluto, es. 30) | storico, **soglia inerte** su Video-MME |
-| `"concentration_ratio"` | $\text{top1\_pct} < \text{concentration\_ratio} \cdot \frac{100}{t}$ | **Stage C, in validazione ora** |
+| `"concentration_ratio"` | $\text{top1\_pct} < \text{concentration\_ratio} \cdot \frac{100}{t}$ | **Stage C, CONFERMATO (68.8%, vedi §7)** |
 | `"entropy"` | $H_{\text{norm}} > \text{attention\_entropy\_threshold}$ | provato, **battuto da `top1_pct`** |
 
 ```mermaid
 flowchart TD
     G{"can_resample?<br/>answer_entropy > entropy_threshold"} -- no --> ACC["accetta pass 1"]
-    G -- si --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C)"}
+    G -- si --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C: 68.8%)"}
 
     C2 -- "si (disperso)" --> PS["phase_shift"]
     C2 -- "no (concentrato)" --> ZOOM{"zoom_multi_region?"}
@@ -363,16 +363,23 @@ fisso fra loro in proporzione alla massa.
 | fase sfasata sempre (gate su entropia, nessun ramo) | 66.0% | +3.2pt |
 | zoom multi-regione forzato sempre | 64.0% | peggio della fase sfasata da solo, ma recupera 13 sample UNICI che l'altro non prende |
 | oracolo (ramo giusto per sample) | ~68.8% (98/163 sui ricampionati) | limite superiore teorico del routing |
-| router `top1_pct` a soglia adattiva (`ratio=3.85`) | **atteso ~68.8%, da verificare** | **Stage C, run in corso** |
+| **router `top1_pct` a soglia adattiva (`ratio=3.85`)** | **68.8% (172/250)** | **Stage C, CONFERMATO** |
 
-## 7. Esperimento in corso (Stage C)
+## 7. Esperimento Stage C — risultato
 
-Run `qwen2_5_vl_3b_attn-stageC-router-concentration_ratio`:
-`branch_selector=concentration_ratio`, `zoom_multi_region=true`, stesso
-subset/seed 250. Obiettivo: verificare se il guadagno teorico
-dell'oracolo (§4.1) si traduce in un guadagno reale quando il routing è
-deciso da un segnale misurato (non dall'oracolo) — cioè se `top1_pct`
-generalizza fuori dal sottoinsieme usato per calibrare la soglia in §4.3.
-Se il numero regge (~68-69%), prossimo passo: run sull'intero dataset
-(2700 sample). Se non regge, il segnale era "fortunato" sul campione di
-calibrazione — da rivedere prima di scalare.
+Run [`qwen2_5_vl_3b_attn-stageC-router-concentration_ratio`](https://wandb.ai/alesvale97-unimore/video_mme/runs/0e2qopcy)
+(`branch_selector=concentration_ratio`, `concentration_ratio=3.85`,
+`zoom_multi_region=true`, stesso subset/seed 250): **172/250 = 68.8%**,
+runtime 7647s (~2h07m), latenza media 30.4 s/sample.
+
+**Il router, guidato da un segnale misurato (non dall'oracolo), ha
+centrato esattamente il numero proiettato dallo sweep di soglia (§4.3/§4.4)**
+— +2.8 punti sopra `phase_shift`-alone (66.0%), +6.0 punti sopra `uniform`
+(62.8%). Conferma che `top1_pct` con soglia adattiva generalizza fuori
+dall'analisi che l'ha calibrata (anche se sullo stesso subset — il test
+vero era "il segnale misurato batte l'oracolo-in-teoria solo sulla carta",
+non un held-out set diverso).
+
+**Prossimo passo**: full eval su tutto Video-MME (2700 sample, 4 shard),
+`scripts/sbatch/video_mme-signal-router.sbatch` — già pronto, stessa
+config di questo run. Sbloccato da questo risultato.
