@@ -1,13 +1,17 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
-> **Stato**: **C1 implementato + validato** (2026-07-15) — knob dietro flag,
-> default OFF, code review superata. Run di validazione fatta (250-subset,
-> `force_zoom_for_debug`): C1 batte uniform ma non `phase_shift` in aggregato,
-> però recupera un pool DISTINTO di ~13 sample → risultati e conclusioni in
-> "Risultati validazione empirica" in coda. **Prossimo passo: selettore di
-> ramo a entropia** (§1.3) prima di decidere su C2. Questo documento fissa le
-> decisioni prese nella discussione di design e traccia il percorso
-> implementativo + protocollo di validazione.
+> **Stato**: **C1 implementato + validato; routing a entropia verificato dai
+> dati e pianificato** (2026-07-16) — knob dietro flag, default OFF, code review
+> superata. Run di validazione C1 fatta (250-subset, `force_zoom_for_debug`):
+> batte uniform ma non `phase_shift` in aggregato, però recupera un pool
+> DISTINTO di ~13 sample. **La verifica pre-implementazione (in coda) conferma:
+> instradare per concentrazione sfrutta la complementarità nella direzione del
+> §1.3** (oracolo 98 vs 83/163; router a concentrazione ~68.8% vs 66.0% di
+> phase-alone). **Prossimo passo: implementare il selettore §1.3** — piano
+> staged pronto in coda ("Piano implementativo — selettore di ramo a entropia").
+> Go/no-go su C2 rimandato all'esito del router. Questo documento fissa le
+> decisioni di design e traccia percorso implementativo + protocollo di
+> validazione.
 >
 > **Contesto a monte**: leggere prima
 > `docs/analisi_winloss_resampling_video_mme.md` (perché il resampling attuale
@@ -409,3 +413,198 @@ di C1 evitando gran parte delle rotture. **Solo se**, con routing corretto, le
 rotture multi-regione persistono (net negativo sul sottoinsieme concentrato),
 allora la distorsione temporale di C1 è il sospetto e si affronta C2. Go/no-go
 su C2: **rimandato** al risultato del routing a entropia.
+
+## Verifica pre-implementazione: il routing sfrutta la complementarità? (2026-07-16)
+
+Prima di scrivere il selettore §1.3 si è verificato **dai dati** se instradare
+per concentrazione dell'attenzione recupera davvero la complementarità
+osservata. Join per-sample (chiave `example.id`, mappatura run→call via
+`wb_run_id` come in `docs/analisi_winloss_resampling_video_mme.md`) tra tre
+run sullo **stesso** subset 250 (`shuffle=true seed=42`):
+
+- **C1 forzato** — [`z4qx9hnb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/z4qx9hnb) (multi-regione, 160/250)
+- **phase_shift** et0.7-ct30 — [`y6u5k1pq`](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) (165/250)
+- **uniform** controllo — [`ktvjcyye`](https://wandb.ai/alesvale97-unimore/video_mme/runs/ktvjcyye) (157/250)
+
+**Setup pulito**: il gate `answer_entropy>0.7` seleziona gli **stessi identici
+163 sample** in C1 e in phase (both=163, zero disgiunti). Il routing è quindi
+pura *scelta di ramo* su un insieme fisso — confronto mele-con-mele.
+
+### La complementarità è reale e grande
+
+Sui 163 ricampionati da entrambi (corretti /163):
+
+| | corretti |
+|---|---:|
+| always-uniform (no resample) | 75 |
+| always-phase_shift | 83 |
+| always-C1 (multi-regione) | 78 |
+| **oracle (ramo giusto per-sample)** | **98** |
+| anti-oracle | 63 |
+
+L'oracolo fa **98 vs 83** del miglior ramo singolo: **+15 sample di headroom**
+puramente dal routing. Su 35 sample i rami divergono (15 pro-C1, 20 pro-phase).
+
+### Il segnale che separa è la concentrazione — nella direzione del §1.3
+
+I 15 sample pro-C1 sono **più concentrati** dei 20 pro-phase:
+
+| bucket | `top1_pct` mediana | test |
+|---|---:|---|
+| C1-favorable (c1✓ phase✗) | **7.60** | rank-sum U=233 (atteso 150) |
+| phase-favorable (phase✓ c1✗) | 4.96 | z≈2.8, p≈0.003 |
+
+Router "concentrato → multi-regione(C1), disperso → phase_shift", sweep di
+soglia su `top1_pct`:
+
+| soglia `top1_pct` | acc /163 |
+|---|---:|
+| always-phase (baseline) | 83 |
+| ≥ 5.0 | 87 |
+| **≥ 5.9 (mediana)** | **90** |
+| ≥ 7.0 | 88 |
+| oracle | 98 |
+
+Plateau **87–90 su tutto thr∈[5,7]** (non un picco fortunato). Proiettato sui
+250 pieni (gli 87 non-ricampionati sono identici tra strategie): **68.8% vs
+66.0% di phase-alone (+2.8pt)**, net **+15 vs uniform** contro **+8** di
+phase-alone — circa metà dell'headroom dell'oracolo catturato da una soglia.
+
+### Due correzioni importanti
+
+1. **La direzione del §1.3 è quella giusta, non l'opposto.** Un primo sospetto
+   (stratificando per `n_regions_used`: multi 2-3 → +4, singola → −1) sembrava
+   dire che C1 aiuta dove l'attenzione è *più sparsa*, contro il §1.3. È
+   **falso**: `top1_pct` e `n_regions_used` sono **ortogonali** (Pearson
+   r=+0.04) — "regione singola" ≠ "concentrato". Misurando la concentrazione
+   col segnale giusto (`top1_pct`, e a maggior ragione l'entropia), i
+   concentrati vanno a C1 — **esattamente il §1.3**. `n_regions_used` come
+   segnale di routing è scarso (acc 84, ambiguo).
+2. **`top1_pct` NON è inerte come informazione.** L'inerzia notata in
+   `README`/win-loss vale per la **soglia assoluta fissa** (20/30/45, sopra il
+   max ~23%); come segnale **per-sample adattivo** discrimina (p≈0.003). È
+   proprio l'argomento con cui il §1.3 chiedeva una versione
+   normalizzata/adattiva — ora confermato empiricamente.
+
+### Caveat (onesti)
+
+- `top1_pct` è un **proxy** dell'entropia `H/log t` che il §1.3 userebbe:
+  quest'ultima **non è mai stata loggata** in z4qx9hnb (le masse per-cella ci
+  sono in `_ranked_cells`, ma la loro entropia viene buttata). L'entropia è
+  misura di concentrazione più ricca e monotòna → dovrebbe fare *almeno* quanto
+  `top1_pct`, ma va confermata (per questo il piano sotto logga `H` prima di
+  fidarsi).
+- Soglia **in-sample**, niente train/test split: il picco 90 è ottimistico, il
+  claim robusto è il plateau ~88 + la separazione significativa dei bucket.
+- **n piccolo** (35 sample di routing, 15 vs 20) → direzionale, non conclusivo:
+  confermare su subset più grande / full 2700.
+- Il router **non riduce il costo** (il pass-1 di segnale si paga sempre);
+  sposta solo la latenza tra ~24s (phase) e ~40s (C1) a seconda del mix.
+
+**Verdetto**: go verde per implementare il selettore §1.3, ma prima **loggare
+l'entropia vera** e ricalibrare la soglia su di essa (non sul proxy).
+
+## Piano implementativo — selettore di ramo a entropia (§1.3)
+
+> Per l'agente che implementa. Tutto **dietro flag, default OFF** ⇒ sweep e
+> run esistenti riproducibili bit-per-bit. File toccati:
+> `strategies/entropy_attention_resample.py`, preset
+> `strategy.entropy_attention_resample` in `conf/config.yaml`. La verifica
+> empirica sopra fissa la **direzione** (concentrato→multi-regione,
+> disperso→phase) e l'ordine di grandezza atteso (~+2–3pt su phase-alone).
+
+### Stage A — logging dell'entropia + knob (nessun cambio di comportamento)
+
+1. **Helper `_attention_entropy_norm(ranked, t)`** in
+   `strategies/entropy_attention_resample.py` (vicino a `_ranked_cells`,
+   `:79`). Entropia di Shannon **normalizzata** sulle masse per-cella
+   sink-filtrate: `p_i = c.pct/100` per le `t` celle di `ranked` (che è già la
+   lista completa delle `t` celle, vedi docstring `_ranked_cells:88`);
+   `H = -Σ p_i·log p_i` con `p_i>0`, poi `H_norm = H/log t` in `[0,1]` (guardia
+   `t>1`, altrimenti `H_norm=0`). Costo ≈ zero (masse già calcolate).
+2. **Calcolarla sempre** dove oggi si calcola `top1_pct` (`answer()`, dopo
+   `_ranked_cells` a `:344-347`): `attention_entropy_norm =
+   _attention_entropy_norm(ranked_cells, t=signal.visual_attention.t)`.
+   ⚠️ `t` è disponibile solo dentro il blocco `can_resample` (`:364`); spostare
+   il calcolo di `t` (o passare `visual_attention.t`) in modo che l'entropia si
+   possa calcolare anche fuori dal gate, per loggarla su **tutti** i sample con
+   `visual_attention` (serve per l'analisi a posteriori, non solo sui
+   ricampionati).
+3. **Aggiungerla al result dict** (`:426-434`): `"attention_entropy_norm":
+   attention_entropy_norm`. Da qui finisce in Weave per il join offline.
+4. **Nuovi knob** in `__init__` (`:300-308`, accanto a quelli C1) + preset
+   `conf/config.yaml`, tutti con default che **non cambiano il ramo**:
+   - `branch_by_entropy: false` — master switch del selettore §1.3. Se `false`,
+     il ramo resta deciso da `top1_pct < concentration_threshold` (comportamento
+     attuale, `:369`).
+   - `entropy_branch_threshold: 0.85` — soglia su `H_norm`: `H_norm >= soglia`
+     ⇒ **disperso** ⇒ `phase_shift`; sotto ⇒ **concentrato** ⇒ zoom
+     (multi-regione se `zoom_multi_region`, altrimenti `zoom_peak`).
+     **Placeholder**: il valore vero esce dallo Stage B, non indovinarlo.
+
+### Stage A — punto d'innesto della decisione di ramo
+
+Sostituire la condizione a `:369` mantenendo intatti `force_zoom_for_debug` e
+il gating multi-regione:
+
+```python
+if branch_by_entropy:
+    disperse = attention_entropy_norm >= self.entropy_branch_threshold
+else:
+    disperse = top1_pct < self.concentration_threshold   # legacy, invariato
+if not self.force_zoom_for_debug and disperse:
+    ...  # phase_shift  (:370-380)
+elif self.zoom_multi_region:
+    ...  # zoom_multi_region  (:381-395)
+else:
+    ...  # zoom_peak  (:396-406)
+```
+
+Logga anche il ramo scelto e il segnale usato (`resample_kind` già c'è; il
+join userà `attention_entropy_norm`). Default `branch_by_entropy=false` ⇒
+diff a comportamento zero: verificarlo eseguendo lo sweep di controllo.
+
+### Stage B — calibrazione della soglia sull'entropia vera
+
+L'entropia non è mai stata loggata → serve **un** run per averla per-sample
+(z4qx9hnb non ha i tensori d'attenzione salvati, non si può ricalcolare
+offline). Il più economico:
+
+1. Rilanciare il **250-subset forzato** identico a z4qx9hnb
+   (`force_zoom_for_debug=true zoom_multi_region=true entropy_threshold=0.7`,
+   `scripts/sbatch/video_mme-signal-test.sbatch`, seed/shuffle invariati) ma
+   **con lo Stage A mergiato**, così ora logga `attention_entropy_norm` accanto
+   a `top1_pct`. (In alternativa, se si è già dietro `branch_by_entropy=true`
+   con soglia provvisoria, basta che il ramo concentrato sia multi-regione per
+   avere l'outcome C1; ma il forzato è il confronto più diretto con l'analisi
+   qui sopra.)
+2. **Join offline** con `y6u5k1pq` (phase, stessi 163 sample) e `ktvjcyye`
+   (uniform), **ripetendo l'analisi qui sopra con `H_norm` al posto di
+   `top1_pct`**: sweep della soglia `H_norm`, curva acc/163, confronto con
+   l'oracolo. Metodo identico (script di riferimento: join via `wb_run_id`,
+   bucket C1-fav/phase-fav, rank-sum). Uscite attese:
+   - la soglia `entropy_branch_threshold` che massimizza l'acc sul plateau;
+   - conferma che `H_norm` **separa almeno quanto** `top1_pct` (U/p sui due
+     bucket ≥ quelli del proxy) — se non lo fa, l'entropia non aggiunge nulla
+     al proxy e si può usare direttamente `top1_pct` adattivo.
+
+### Stage C — run del router + go/no-go
+
+1. `branch_by_entropy=true`, `entropy_branch_threshold=<Stage B>`,
+   `zoom_multi_region=true`, 250-subset. Confronto: acc e **net-vs-uniform**
+   contro la baseline **phase-alone** (y6u5k1pq, net +8). Target atteso dalla
+   verifica: ~+2–3pt di acc, net verso +12/+15.
+2. **Se tiene** → full run (2700, `video_mme-signal.sbatch`), poi decidere su
+   C2 (timestamp M-RoPE corretti) **solo** sui pro-C1 che il router lascia
+   ancora rotti. **Se non tiene** (il segnale non regge fuori dal subset di
+   calibrazione) → il proxy era in-sample-lucky; rivalutare prima di C2.
+
+### Definition of done (selettore §1.3)
+
+- `_attention_entropy_norm` + logging `attention_entropy_norm` su tutti i
+  sample con attenzione; knob `branch_by_entropy`/`entropy_branch_threshold`.
+- Default OFF ⇒ sweep esistente e run C1 riproducibili bit-per-bit (verificato
+  con lo sweep di controllo).
+- Soglia calibrata su `H_norm` reale (Stage B), non sul proxy `top1_pct`.
+- Run router (Stage C) con acc + win/loss loggato vs phase-alone e vs uniform.
+- Esito documentato in coda a questo file; go/no-go su C2 aggiornato.
