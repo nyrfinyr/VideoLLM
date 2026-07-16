@@ -36,10 +36,16 @@ tarate l'una sull'altra.
 
 Al massimo UN ricampionamento (non c'è un terzo pass che ri-verifica il
 segnale). La risposta FINALE — sia nei rami "accetta" sia dopo un
-ricampionamento — viene SEMPRE da una vera `vlm.generate()` (mai dal solo
-`pred_letter` della softmax ristretta): così i rami "accetta" restano
-bit-per-bit equivalenti alla baseline `uniform`, isolando l'effetto del
-resampling ai soli casi in cui avviene davvero.
+ricampionamento — viene da una vera `vlm.generate()`, MAI dal solo
+`pred_letter` della softmax ristretta del pass 1, **tranne un fallback**:
+se `generate()` non produce una lettera parseabile (`parse_mcq_letter`
+ritorna `None` — vedi nota MVBench nel README, "52/3800 senza pred
+parseabile"), si usa `signal.pred_letter` (già calcolato, nessun costo
+aggiuntivo) invece di perdere il sample (`result["pred_fallback"]` logga
+quando scatta). Questo rende i rami "accetta" NON più garantiti
+bit-per-bit identici a `uniform` sul sottoinsieme (raro) di sample
+altrimenti unparseable — un miglioramento netto (mai peggiora una
+risposta già corretta), non un confondimento nell'analisi win/loss.
 
 Soglie NON validate per MVBench (i numeri raccolti in
 `docs/entropia_confidenza_mcq.md` vengono da un campione VNBench
@@ -549,12 +555,18 @@ class EntropyAttentionResampleStrategy(Strategy):
         }
         if options is not None:
             pred = parse_mcq_letter(raw, options)
-            # TODO: se `pred` è None (generate() non ha prodotto una lettera
-            # parseabile), fare fallback a `signal.pred_letter` (argmax della
-            # softmax ristretta del pass 1, `signal.answer_probs`) invece di
-            # lasciare il sample unparseable — recupererebbe accuracy sui
-            # sample oggi persi (vedi nota MVBench nel README, "52/3800
-            # senza pred parseabile") senza costo aggiuntivo, il segnale è
-            # già calcolato.
+            pred_fallback = False
+            if pred is None and signal.pred_letter is not None:
+                # generate() (pass 2) non ha prodotto una lettera parseabile:
+                # invece di perdere il sample, fallback all'argmax della
+                # softmax ristretta del pass 1 (`signal.pred_letter`, già
+                # calcolato — nessun costo aggiuntivo). Recupera accuracy sui
+                # sample oggi persi (vedi nota MVBench nel README, "52/3800
+                # senza pred parseabile"). `letters` è lo stesso elenco
+                # passato come `answer_letters` a `generate_with_signals`
+                # sopra, quindi `signal.pred_letter` è garantito esserci.
+                pred = letters.index(signal.pred_letter)
+                pred_fallback = True
             result["pred"] = pred
+            result["pred_fallback"] = pred_fallback
         return result
