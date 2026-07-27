@@ -197,7 +197,10 @@ class VideoMME(Dataset):
         """
         from strategies.base import SamplingBudget
 
-        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
+        budget = SamplingBudget(
+            nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"),
+            double_frames=cfg.get("double_frames", False),
+        )
         use_subtitles = bool(cfg.use_subtitles)
 
         if use_subtitles:

@@ -3,42 +3,49 @@
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G"
+#SBATCH --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=10:00:00
-#SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%j.out
-#SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%j.err
+#SBATCH --array=0-2
+#SBATCH --time=14:00:00
+#SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
+#SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
 # Ablation entropy/shift/zoom (docs/future-work/output_riunione_2207.md) —
 # arm 4/5: gate di entropia invariato (entropy_threshold=0.7), ma OGNI
 # resample forzato nel ramo zoom a SINGOLO PICCO (`zoom_peak`, non
 # multi-regione): `force_zoom_for_debug=true` + `zoom_multi_region=false`.
 # Il codice bypassa `branch_selector` quando `force_zoom_for_debug=true`
-# (strategies/entropy_attention_resample.py:481-518) — il valore di
+# (strategies/entropy_attention_resample.py) — il valore di
 # `branch_selector` (lasciato al default `concentration`) non conta in
 # questo arm.
 #
-# Job SINGOLO (no array/sharding, a differenza di
-# scripts/sbatch/video_mme-signal.sbatch da cui questo deriva):
-# `nframes=24` rende l'intero dataset (2700 sample) fattibile in un solo
-# job. `--time=10:00:00` è una STIMA — nessuna misura di latenza reale a
-# 24 frame ancora raccolta. Calibrare con un probe corto
-# (scripts/sbatch/video_mme-signal-test.sbatch, `limit=40`, stesso
-# `dataset.nframes=24` + queste stesse strategy override) prima di
-# fidarsi se il job va vicino al timeout.
+# Job array a 3 shard (900 sample ciascuno). `--time=14:00:00`: stesso
+# criterio e stessa derivazione di entropy_shift_24 (~30-35 s/sample
+# stimati su RTX6000-24G → ~8h/shard). Il ramo `zoom_peak` costa come
+# `phase_shift` — è un secondo `Video()` su una finestra più stretta,
+# stesso numero di frame; i 46.5 s/sample citati in
+# video_mme-signal-router.sbatch sono dello zoom MULTI-REGIONE (che
+# estrae PNG su disco), qui disattivato.
 #
-# `--constraint` pinnato a 45G (A40/L40S): `full_visual_attention` (pass
-# 1, richiesto da `SupportsSignals`/`model=qwen2_5_vl_3b_attn`) va OOM su
-# 24G indipendentemente da `nframes` — vedi README, sezione sweep.
+# ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
+# dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle tre.
 #
-# Metriche gate d'entropia (quanti sample superano `entropy_threshold`,
-# accuracy condizionata): NON in questo output — si ricavano da una query
-# Weave per-sample sul campo `resampled` dopo che il run è finito, stesso
-# metodo di docs/analisi_winloss_resampling_video_mme.md.
+# `--constraint` aperto anche alle 24G (RTX6000/A5000) — vedi la nota
+# estesa in entropy_shift_24.sbatch, incluso l'avviso che un OOM si
+# manifesta come run `finished` senza `mcq_accuracy`, non come job fallito.
+#
+# Metriche gate d'entropia e breakdown short/medium/long: da query Weave
+# per-sample sui campi `resampled`/`resample_kind` + colonna `duration`,
+# stesso metodo di docs/analisi_winloss_resampling_video_mme.md.
+#
+# Per lanciarlo in regime frame-doubling (1 cella = 1 frame → il picco di
+# attenzione localizza UN frame, non una coppia; vedi
+# baseline_24double.sbatch): `sbatch ... entropy_zoom_24.sbatch --double-frames`
 set -euo pipefail
 
-echo "node: $(hostname)"; echo "date: $(date -Iseconds)"; echo "job_id: ${SLURM_JOB_ID}"
+echo "node: $(hostname)"; echo "date: $(date -Iseconds)"
+echo "array_job: ${SLURM_ARRAY_JOB_ID} task: ${SLURM_ARRAY_TASK_ID} job_id: ${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
@@ -51,8 +58,10 @@ uv run python main.py \
     strategy.force_zoom_for_debug=true \
     strategy.zoom_multi_region=false \
     hf_home=/work/tesi_avalenza/hf \
+    shard=${SLURM_ARRAY_TASK_ID} \
+    num_shards=${SLURM_ARRAY_TASK_COUNT} \
     wandb.group=video_mme-ablation \
-    wandb.name=qwen2_5_vl_3b_attn-entropy_zoom_24-${SLURM_JOB_ID} \
+    wandb.name=qwen2_5_vl_3b_attn-entropy_zoom_24-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     wandb.tags=[ablation,video_mme,entropy_zoom_24] \
-    wandb.notes="ablation riunione 22-07-26: gate entropia + resample sempre zoom a singolo picco, 24 frame, slurm ${SLURM_JOB_ID} on $(hostname)" \
+    wandb.notes="ablation riunione 22-07-26: gate entropia + resample sempre zoom a singolo picco, 24 frame, shard ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)" \
     "$@"

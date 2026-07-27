@@ -3,44 +3,52 @@
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G"
+#SBATCH --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=10:00:00
-#SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%j.out
-#SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%j.err
+#SBATCH --array=0-2
+#SBATCH --time=14:00:00
+#SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
+#SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
 # Ablation entropy/shift/zoom (docs/future-work/output_riunione_2207.md) —
 # arm 5/5: router a soglia adattiva (`branch_selector=concentration_ratio`,
-# `concentration_ratio=3.85`, soglia validata nello Stage C — vedi
-# docs/piano_zoom_multiregione_disgiunto.md — trasferibile fra `nframes`
-# per costruzione: `top1_pct < ratio*100/t`, si adatta da sola a `t` più
-# piccolo) che decide sample-per-sample fra `phase_shift` (disperso) e
-# zoom a SINGOLO PICCO (`zoom_multi_region=false`, coerente con
-# entropy_zoom_24.sbatch nella stessa cartella — non il
-# `zoom_multi_region=true` dello Stage C originale/README, qui si
-# confronta shift-vs-zoom-singolo-picco, non shift-vs-zoom-multiregione).
+# `concentration_ratio=3.85`) che decide sample-per-sample fra
+# `phase_shift` (disperso) e zoom a SINGOLO PICCO
+# (`zoom_multi_region=false`, coerente con entropy_zoom_24.sbatch — qui si
+# confronta shift-vs-zoom-singolo-picco, non shift-vs-zoom-multiregione
+# dello Stage C originale/README).
 #
-# Job SINGOLO (no array/sharding, a differenza di
-# scripts/sbatch/video_mme-signal-router.sbatch da cui questo deriva):
-# `nframes=24` rende l'intero dataset (2700 sample) fattibile in un solo
-# job. `--time=10:00:00` è una STIMA — nessuna misura di latenza reale a
-# 24 frame ancora raccolta. Calibrare con un probe corto
-# (scripts/sbatch/video_mme-signal-test.sbatch, `limit=40`, stesso
-# `dataset.nframes=24` + queste stesse strategy override) prima di
-# fidarsi se il job va vicino al timeout.
+# ⚠️ VERIFICARE LA SOGLIA PRIMA DI LANCIARE. `concentration_ratio=3.85` è
+# validata su Video-MME a `nframes=128` → t=64 celle → cutoff effettivo
+# `top1_pct < 3.85 * 100/64` = 6.0%. Qui `nframes=24` → t=12 → il cutoff
+# diventa 32.1%. La forma adattiva (`ratio * 100/t`) è progettata per
+# trasferirsi fra `t` diversi, ma non è MAI stata testata a 12 celle: se
+# degenera (tutti i sample su un solo ramo) questo arm diventa un
+# duplicato esatto di entropy_shift_24 o di entropy_zoom_24, e sono ~3
+# job buttati. Un probe da 40 minuti lo esclude:
+#   sbatch scripts/sbatch/video_mme-signal-test.sbatch limit=250 \
+#       dataset.nframes=24 strategy.branch_selector=concentration_ratio \
+#       strategy.concentration_ratio=3.85 strategy.zoom_multi_region=false
+# poi contare `resample_kind` su Weave: serve uno split non degenere fra
+# `phase_shift` e `zoom_peak`.
 #
-# `--constraint` pinnato a 45G (A40/L40S): `full_visual_attention` (pass
-# 1, richiesto da `SupportsSignals`/`model=qwen2_5_vl_3b_attn`) va OOM su
-# 24G indipendentemente da `nframes` — vedi README, sezione sweep.
+# Job array a 3 shard (900 sample ciascuno). `--time=14:00:00`: stesso
+# criterio e stessa derivazione di entropy_shift_24 (~30-35 s/sample
+# stimati su RTX6000-24G → ~8h/shard).
 #
-# Metriche gate d'entropia (quanti sample superano `entropy_threshold`,
-# accuracy condizionata): NON in questo output — si ricavano da una query
-# Weave per-sample sul campo `resampled` dopo che il run è finito, stesso
-# metodo di docs/analisi_winloss_resampling_video_mme.md.
+# ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
+# dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle tre.
+#
+# `--constraint` aperto anche alle 24G (RTX6000/A5000) — vedi la nota
+# estesa in entropy_shift_24.sbatch, incluso l'avviso che un OOM si
+# manifesta come run `finished` senza `mcq_accuracy`, non come job fallito.
+#
+# Per lanciarlo in regime frame-doubling: `sbatch ... --double-frames`
 set -euo pipefail
 
-echo "node: $(hostname)"; echo "date: $(date -Iseconds)"; echo "job_id: ${SLURM_JOB_ID}"
+echo "node: $(hostname)"; echo "date: $(date -Iseconds)"
+echo "array_job: ${SLURM_ARRAY_JOB_ID} task: ${SLURM_ARRAY_TASK_ID} job_id: ${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
@@ -54,8 +62,10 @@ uv run python main.py \
     strategy.concentration_ratio=3.85 \
     strategy.zoom_multi_region=false \
     hf_home=/work/tesi_avalenza/hf \
+    shard=${SLURM_ARRAY_TASK_ID} \
+    num_shards=${SLURM_ARRAY_TASK_COUNT} \
     wandb.group=video_mme-ablation \
-    wandb.name=qwen2_5_vl_3b_attn-shift_zoom_router_24-${SLURM_JOB_ID} \
+    wandb.name=qwen2_5_vl_3b_attn-shift_zoom_router_24-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     wandb.tags=[ablation,video_mme,shift_zoom_router_24] \
-    wandb.notes="ablation riunione 22-07-26: router soglia adattiva 3.85 (shift vs zoom singolo picco), 24 frame, slurm ${SLURM_JOB_ID} on $(hostname)" \
+    wandb.notes="ablation riunione 22-07-26: router soglia adattiva 3.85 (shift vs zoom singolo picco), 24 frame, shard ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)" \
     "$@"

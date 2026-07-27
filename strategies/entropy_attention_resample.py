@@ -345,6 +345,14 @@ def _build_multi_region_media(
     all_indices.sort()
     total_span = sum(b - a for a, b in used_spans)
     sample_fps = len(all_indices) / total_span if total_span > 0 else 2.0
+    if budget.double_frames:
+        # Coerenza col regime scelto: se il pass 1 ha visto i frame
+        # raddoppiati (1 cella = 1 frame), anche il pass 2 deve, altrimenti
+        # le celle cambiano significato fra i due pass e questo ramo costa
+        # metà degli altri. `sample_fps` raddoppia con la stessa regola di
+        # `Strategy._sample_doubled_frames` (la cella copre un frame invece
+        # di due).
+        sample_fps *= 2.0
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="zoom_multi_region_"))
     try:
@@ -362,6 +370,8 @@ def _build_multi_region_media(
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
 
+    if budget.double_frames:
+        frame_paths = [p for p in frame_paths for _ in range(2)]
     media = VideoFrames(frame_paths, max_pixels=budget.max_pixels, min_pixels=budget.min_pixels, sample_fps=sample_fps)
     return media, used_spans, tmp_dir
 
@@ -417,7 +427,15 @@ class EntropyAttentionResampleStrategy(Strategy):
                 "o un'altra strategy."
             )
 
-        media = self._build_media(video_path, frames, video_start, video_end, budget)
+        # `tmp_dirs`: directory di PNG estratti da ripulire DOPO la generate()
+        # finale — mai prima, perché `final_media` può essere ancora la `media`
+        # del pass 1 (rami "accetta"). Ci finiscono sia le tmpdir del regime
+        # frame-doubling (`Strategy._build_media`) sia quella dello zoom
+        # multi-regione (`_build_multi_region_media`).
+        tmp_dirs: list[Path] = []
+        media, media_tmp_dir = self._build_media(video_path, frames, video_start, video_end, budget)
+        if media_tmp_dir is not None:
+            tmp_dirs.append(media_tmp_dir)
         letters = [chr(ord("A") + i) for i in range(len(options))] if options is not None else None
         signal: SignalAnswer = vlm.generate_with_signals(media, Text(prompt), gen_cfg, answer_letters=letters)
 
@@ -450,7 +468,6 @@ class EntropyAttentionResampleStrategy(Strategy):
         resample_kind: str | None = None
         n_regions_used: int | None = None
         region_spans: list[tuple[float, float]] | None = None
-        tmp_dir_to_cleanup: Path | None = None
 
         can_resample = (
             frames is None
@@ -488,7 +505,9 @@ class EntropyAttentionResampleStrategy(Strategy):
                 shift = interval * self.phase_shift_frac
                 new_start = min(w0 + shift, duration)
                 new_end = min(w1 + shift, duration)
-                final_media = self._build_media(video_path, None, new_start, new_end, budget)
+                final_media, shift_tmp_dir = self._build_media(video_path, None, new_start, new_end, budget)
+                if shift_tmp_dir is not None:
+                    tmp_dirs.append(shift_tmp_dir)
                 resample_kind = "phase_shift"
             elif self.zoom_multi_region:
                 # Concentrata (o `force_zoom_for_debug`): fino a `n_regions`
@@ -502,7 +521,8 @@ class EntropyAttentionResampleStrategy(Strategy):
                     region_merge_gap_frac=self.region_merge_gap_frac, region_window_frac=self.region_window_frac,
                 )
                 counts = _allocate_region_budget([mass for _, _, mass in spans], budget.nframes, allocation=self.budget_allocation)
-                final_media, region_spans, tmp_dir_to_cleanup = _build_multi_region_media(video_path, spans, counts, budget)
+                final_media, region_spans, region_tmp_dir = _build_multi_region_media(video_path, spans, counts, budget)
+                tmp_dirs.append(region_tmp_dir)
                 n_regions_used = len(region_spans)
                 resample_kind = "zoom_multi_region"
             else:
@@ -514,7 +534,9 @@ class EntropyAttentionResampleStrategy(Strategy):
                 half_w = self.window_frac * (w1 - w0) / 2
                 new_start = max(0.0, peak_time - half_w)
                 new_end = min(duration, peak_time + half_w)
-                final_media = self._build_media(video_path, None, new_start, new_end, budget)
+                final_media, zoom_tmp_dir = self._build_media(video_path, None, new_start, new_end, budget)
+                if zoom_tmp_dir is not None:
+                    tmp_dirs.append(zoom_tmp_dir)
                 resample_kind = "zoom_peak"
 
             resampled = True
@@ -535,8 +557,8 @@ class EntropyAttentionResampleStrategy(Strategy):
             messages = vlm.build_messages(final_media, Text(prompt))
             raw = vlm.generate(messages, generation_config=gen_cfg)
         finally:
-            if tmp_dir_to_cleanup is not None:
-                shutil.rmtree(tmp_dir_to_cleanup, ignore_errors=True)
+            for tmp_dir in tmp_dirs:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         result: dict = {
             "raw": raw,

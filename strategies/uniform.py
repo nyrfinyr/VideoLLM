@@ -11,6 +11,7 @@ Riferimento per confrontare le strategy signal-driven future (es.
 """
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
 from models.media import Text
@@ -40,9 +41,16 @@ class UniformStrategy(Strategy):
         video_end: float | None = None,
         frames: list[str] | None = None,
     ) -> dict:
-        media = self._build_media(video_path, frames, video_start, video_end, budget)
-        messages = vlm.build_messages(media, Text(prompt))
-        raw = vlm.generate(messages, generation_config=gen_cfg)
+        media, tmp_dir = self._build_media(video_path, frames, video_start, video_end, budget)
+        try:
+            messages = vlm.build_messages(media, Text(prompt))
+            raw = vlm.generate(messages, generation_config=gen_cfg)
+        finally:
+            # Non-None solo nel regime frame-doubling (PNG estratti su disco,
+            # vedi `Strategy._build_media`): senza questo, 2700 sample × N
+            # frame di PNG restano in /tmp fino a fine job.
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
         result: dict = {"raw": raw}
         if options is not None:
             result["pred"] = parse_mcq_letter(raw, options)
