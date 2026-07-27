@@ -44,10 +44,17 @@
 # `n_samples_duration_long`) sia come tabella nel log SLURM. I conteggi
 # sono lì apposta: per il pooling fra shard si sommano.
 #
-# Metriche del gate d'entropia (quanti sample superano
-# `entropy_threshold`, accuracy condizionata) restano invece una query
-# Weave per-sample sui campi `resampled`/`resample_kind`, stesso metodo di
-# docs/analisi_winloss_resampling_video_mme.md.
+# GATE D'ENTROPIA: anche i suoi numeri sono nel summary, dalla stessa
+# meccanica — `resampled`/`resample_kind`/`pred_fallback` sono già nel dict
+# che la strategy ritorna e sono in `BREAKDOWN_KEYS`:
+#   n_samples_resampled_true    quanti sample superano entropy_threshold
+#   mcq_accuracy_resampled_true accuracy CONDIZIONATA al superamento
+#   mcq_accuracy_resampled_false accuracy sui sample accettati al pass 1
+#   n_samples_resample_kind_*   split fra i rami (phase_shift/zoom_peak)
+# Su Video-MME `resampled=True` equivale a `answer_entropy >
+# entropy_threshold` (le altre condizioni di `can_resample` sono sempre
+# vere qui). Resta una query Weave solo l'analisi win/loss sample-per-
+# sample (docs/analisi_winloss_resampling_video_mme.md).
 #
 # Per lanciarlo in regime frame-doubling (1 cella = 1 frame → il picco di
 # attenzione localizza UN frame, non una coppia; vedi

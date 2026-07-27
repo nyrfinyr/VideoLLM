@@ -83,12 +83,26 @@ def extract_mcq_letters(prompt: str) -> list[str]:
 
 # Chiavi che, se presenti nel dict ritornato da `predict`, fanno emettere a
 # `mcq_accuracy` un breakdown aggregato per il loro valore (oltre
-# all'accuracy complessiva). Un dataset ci si aggancia semplicemente
-# ri-emettendo la colonna nel proprio output — vedi
-# `VideoMME.predict_factory`, che passa `duration`/`task_type`. I dataset
-# che non le emettono non sono toccati: la chiave manca, `output.get`
-# ritorna None e non viene prodotto nessuno score extra.
-BREAKDOWN_KEYS = ("duration", "task_type")
+# all'accuracy complessiva). Chi non le emette non è toccato: la chiave
+# manca, `output.get` ritorna None e non viene prodotto nessuno score extra.
+#
+# Due sorgenti, entrambe già esistenti, nessun campo nuovo da inventare:
+# - dal DATASET, ri-emesso da `predict` (`VideoMME.predict_factory` passa
+#   `duration`/`task_type`);
+# - dalla STRATEGY, già nel dict che `answer()` ritorna
+#   (`entropy_attention_resample` mette `resampled`/`resample_kind`/
+#   `pred_fallback`).
+#
+# `resampled` è quello che dà le due metriche del gate d'entropia:
+# `seen_resampled_true` = quanti sample lo superano, `correct_resampled_true`
+# = accuracy CONDIZIONATA al superamento (e `*_false` il complemento, cioè
+# i sample accettati al pass 1). Su Video-MME `resampled=True` coincide con
+# `answer_entropy > entropy_threshold`, perché le altre condizioni di
+# `can_resample` sono sempre vere lì (frame non fissati dal dataset, MCQ,
+# segnali presenti) — NON è così su dataset con `frames` pre-estratti, es.
+# MVBench `episodic_reasoning`, dove `resampled=False` mescola "gate non
+# superato" e "resample impossibile".
+BREAKDOWN_KEYS = ("duration", "task_type", "resampled", "resample_kind", "pred_fallback")
 
 _SLUG_RE = re.compile(r"\W+")
 
@@ -111,6 +125,10 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
         correct_duration_long  bool  → true_count = risposte giuste fra i
                                        long, true_fraction = accuracy sui long
         seen_duration_long     True  → true_count = quanti sample sono long
+
+    Lo stesso vale per i campi della strategy: `seen_resampled_true` è il
+    numero di sample che superano il gate d'entropia e
+    `correct_resampled_true.true_fraction` la loro accuracy condizionata.
 
     Funziona perché `weave.flow.scorer.auto_summarize` scarta i None prima
     di aggregare (`data = [x for x in data if x is not None]`) e unisce le

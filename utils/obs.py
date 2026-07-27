@@ -85,25 +85,29 @@ def log_eval_summary(summary: dict | None, n_samples: int) -> None:
     su ogni esempio) — in quel caso logga solo n_samples per documentare
     il fallimento. No-op se wandb non è attivo (mode=disabled).
 
-    Il breakdown per categoria (`mcq_accuracy_duration_long`,
-    `n_samples_duration_long`, ...) va sia in wandb.summary sia — come
-    tabella leggibile — nel log del job, così è visibile nel `.out` SLURM
-    anche senza aprire wandb. I CONTEGGI ci sono accanto alle frazioni
-    perché sono l'unica forma che si può sommare fra shard di un array.
+    Il breakdown (`mcq_accuracy_duration_long`, `n_samples_resampled_true`,
+    ...) va sia in wandb.summary sia — come tabella leggibile — nel log del
+    job, così è visibile nel `.out` SLURM anche senza aprire wandb. I
+    CONTEGGI ci sono accanto alle frazioni perché sono l'unica forma che si
+    può sommare fra shard di un array. Quali categorie compaiono dipende da
+    cosa `predict` ha emesso: vedi `evals.base.BREAKDOWN_KEYS` (fasce del
+    dataset + gate/ramo di resample della strategy).
     """
     import wandb
 
+    mcq = (summary or {}).get("mcq_accuracy") or {}
+    correct = mcq.get("correct") or {}
+
     rows = breakdown_rows(summary)
     if rows:
+        table = [("TOTALE", correct.get("true_count") or 0, n_samples, correct.get("true_fraction") or 0.0), *rows]
         logger.info(
             "Breakdown per categoria:\n%s",
-            "\n".join(f"  {slug:32s} {c:5d}/{n:<5d} = {acc:.4f}" for slug, c, n, acc in rows),
+            "\n".join(f"  {slug:32s} {c:5d}/{n:<5d} = {acc:.4f}" for slug, c, n, acc in table),
         )
 
     if wandb.run is None:
         return
-    mcq = (summary or {}).get("mcq_accuracy") or {}
-    correct = mcq.get("correct") or {}
     wandb.run.summary["n_samples"] = n_samples
     if "true_fraction" in correct:
         wandb.run.summary["mcq_accuracy"] = correct["true_fraction"]
