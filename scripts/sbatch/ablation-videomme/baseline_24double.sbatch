@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=10:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -49,12 +49,11 @@
 # `generate()`. Costo trascurabile rispetto alla decodifica video, ma
 # richiede che /tmp del nodo sia scrivibile.
 #
-# Job array a 3 shard (900 sample ciascuno). `--time=10:00:00`: stesso
-# criterio di baseline_24 (900 × 12.4 s/sample misurati a 128 frame ×
-# 2.7 di penalità RTX6000-24G ≈ 8.4h). Il doubling raddoppia i token
-# visivi rispetto a baseline_24 — ma resta comunque a t=24 celle contro
-# le 64 del run da cui viene la misura, quindi il limite superiore tiene.
-# Stima realistica ~4h su 24G. Accuracy POOLED sui 3 shard.
+# Job array a 3 shard (900 sample ciascuno). `--time=06:00:00`: stesso
+# criterio di baseline_24. Il doubling raddoppia i token visivi rispetto
+# a quello (t=24 celle invece di 12), ma resta ben sotto le 64 celle del
+# run da cui viene la misura di riferimento → stima ~4.5h/shard nel caso
+# peggiore (RTX6000-24G), ~2h su L40S. Accuracy POOLED sui 3 shard.
 set -euo pipefail
 
 echo "node: $(hostname)"; echo "date: $(date -Iseconds)"

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=14:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -33,9 +33,10 @@
 # poi contare `resample_kind` su Weave: serve uno split non degenere fra
 # `phase_shift` e `zoom_peak`.
 #
-# Job array a 3 shard (900 sample ciascuno). `--time=14:00:00`: stesso
+# Job array a 3 shard (900 sample ciascuno). `--time=10:00:00`: stesso
 # criterio e stessa derivazione di entropy_shift_24 (~30-35 s/sample
-# stimati su RTX6000-24G → ~8h/shard).
+# stimati su RTX6000-24G → ~8h/shard, budget reale 40 s/sample) —
+# incluso il probe di 40 minuti da fare prima, documentato lì.
 #
 # ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
 # dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle tre.
@@ -43,6 +44,19 @@
 # `--constraint` aperto anche alle 24G (RTX6000/A5000) — vedi la nota
 # estesa in entropy_shift_24.sbatch, incluso l'avviso che un OOM si
 # manifesta come run `finished` senza `mcq_accuracy`, non come job fallito.
+#
+# BREAKDOWN short/medium/long: ora è nel summary di fine eval, non serve
+# più una query post-hoc — `evals.base.mcq_accuracy` emette
+# `correct_duration_*`/`seen_duration_*` per fascia (e per `task_type`), e
+# `utils.obs.log_eval_summary` li scrive sia in wandb.summary
+# (`mcq_accuracy_duration_long`, `n_correct_duration_long`,
+# `n_samples_duration_long`) sia come tabella nel log SLURM. I conteggi
+# sono lì apposta: per il pooling fra shard si sommano.
+#
+# Metriche del gate d'entropia (quanti sample superano
+# `entropy_threshold`, accuracy condizionata) restano invece una query
+# Weave per-sample sui campi `resampled`/`resample_kind`, stesso metodo di
+# docs/analisi_winloss_resampling_video_mme.md.
 #
 # Per lanciarlo in regime frame-doubling: `sbatch ... --double-frames`
 set -euo pipefail

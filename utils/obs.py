@@ -52,6 +52,30 @@ def init_observability(cfg, *, with_weave: bool = True) -> None:
         weave.init(f"{wcfg.entity}/{wcfg.project}")
 
 
+def breakdown_rows(summary: dict | None) -> list[tuple[str, int, int, float]]:
+    """Estrae dal summary Weave le righe `(categoria, n_correct, n_sample,
+    accuracy)` prodotte dal breakdown di `evals.base.mcq_accuracy`.
+
+    Cerca le coppie `correct_<slug>` / `seen_<slug>` (vedi lo scorer per
+    come sono costruite). `seen_*` senza `correct_*` non può succedere —
+    li emette lo stesso sample — ma se succedesse la riga verrebbe saltata
+    invece di rompere il logging di fine eval.
+    """
+    mcq = (summary or {}).get("mcq_accuracy") or {}
+    rows = []
+    for key, stats in mcq.items():
+        if not key.startswith("seen_") or not isinstance(stats, dict):
+            continue
+        slug = key[len("seen_"):]
+        got = mcq.get(f"correct_{slug}")
+        if not isinstance(got, dict):
+            continue
+        n = stats.get("true_count") or 0
+        n_correct = got.get("true_count") or 0
+        rows.append((slug, n_correct, n, n_correct / n if n else 0.0))
+    return sorted(rows)
+
+
 def log_eval_summary(summary: dict | None, n_samples: int) -> None:
     """Flush in wandb.summary i numeri chiave dell'eval.
 
@@ -60,8 +84,21 @@ def log_eval_summary(summary: dict | None, n_samples: int) -> None:
     `mcq_accuracy` può essere None se TUTTI i sample sono falliti (es. OOM
     su ogni esempio) — in quel caso logga solo n_samples per documentare
     il fallimento. No-op se wandb non è attivo (mode=disabled).
+
+    Il breakdown per categoria (`mcq_accuracy_duration_long`,
+    `n_samples_duration_long`, ...) va sia in wandb.summary sia — come
+    tabella leggibile — nel log del job, così è visibile nel `.out` SLURM
+    anche senza aprire wandb. I CONTEGGI ci sono accanto alle frazioni
+    perché sono l'unica forma che si può sommare fra shard di un array.
     """
     import wandb
+
+    rows = breakdown_rows(summary)
+    if rows:
+        logger.info(
+            "Breakdown per categoria:\n%s",
+            "\n".join(f"  {slug:32s} {c:5d}/{n:<5d} = {acc:.4f}" for slug, c, n, acc in rows),
+        )
 
     if wandb.run is None:
         return
@@ -71,6 +108,10 @@ def log_eval_summary(summary: dict | None, n_samples: int) -> None:
     if "true_fraction" in correct:
         wandb.run.summary["mcq_accuracy"] = correct["true_fraction"]
         wandb.run.summary["n_correct"] = correct.get("true_count")
+    for slug, n_correct, n, acc in rows:
+        wandb.run.summary[f"mcq_accuracy_{slug}"] = acc
+        wandb.run.summary[f"n_correct_{slug}"] = n_correct
+        wandb.run.summary[f"n_samples_{slug}"] = n
     latency = (summary or {}).get("model_latency") or {}
     if "mean" in latency:
         wandb.run.summary["model_latency_mean"] = latency["mean"]

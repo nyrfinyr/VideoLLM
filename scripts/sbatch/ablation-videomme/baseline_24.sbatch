@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=10:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -32,13 +32,14 @@
 # Job array a 3 shard (900 sample ciascuno, `samples[shard::num_shards]`
 # in utils/samples.py).
 #
-# `--time=10:00:00`, derivato dal caso PEGGIORE (RTX6000-24G, la card più
-# lenta del constraint): 900 × 12.4 s/sample × 2.7 ≈ 8.4h. I 12.4 s/sample
-# sono la latenza misurata a 128 FRAME su L40S (docs/probe_throughput.md)
-# e il 2.7 la penalità RTX6000 documentata lì — quindi è un limite
-# superiore doppiamente prudente: a 24 frame i token visivi sono ~5× meno
-# (t=12 celle contro 64) e il prefill crolla. Stima realistica ~3-4h su
-# 24G, ~1.5h su L40S.
+# `--time=06:00:00`, tenuto basso perché il backfill di SLURM schedula
+# prima i job corti e qui ne vanno in coda 15 (5 arm × 3 shard). Stima:
+# 12.4 s/sample è la latenza misurata a 128 FRAME su L40S
+# (docs/probe_throughput.md); a 24 frame i token visivi sono ~5× meno
+# (t=12 celle contro 64) → ~5-6 s/sample su L40S, ~15 s/sample su
+# RTX6000-24G (penalità 2.7× documentata lì) ≈ 3.8h/shard. Budget reale:
+# 24 s/sample. Se uno shard va in timeout si rilancia solo quello
+# (`sbatch --array=<i> --time=10:00:00 ...`), non l'arm intero.
 #
 # ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
 # dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle

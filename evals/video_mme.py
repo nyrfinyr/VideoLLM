@@ -186,14 +186,21 @@ class VideoMME(Dataset):
         """Costruisce la closure `@weave.op predict(...)`.
 
         La signature di predict cambia in base a `cfg.use_subtitles`:
-        - False (default): `predict(video_path, question, options)`.
-        - True: `predict(video_path, question, options, subtitle_path)` —
-          legge il .srt, estrae le linee di dialogo, le prepend al prompt
-          MCQ con la formulazione standard "This video's subtitles are
-          listed below:" (allineata a lmms-eval/videomme). Il prompt
-          (con o senza sottotitoli) è l'unica parte dataset-specifica:
-          la selezione frame e la chiamata al modello sono delegate a
-          `strategy.answer`.
+        - False (default): `predict(video_path, question, options, duration, task_type)`.
+        - True: aggiunge `subtitle_path` — legge il .srt, estrae le linee
+          di dialogo, le prepend al prompt MCQ con la formulazione
+          standard "This video's subtitles are listed below:" (allineata a
+          lmms-eval/videomme). Il prompt (con o senza sottotitoli) è
+          l'unica parte dataset-specifica: la selezione frame e la
+          chiamata al modello sono delegate a `strategy.answer`.
+
+        `duration`/`task_type` NON servono alla predizione: sono richiesti
+        a Weave (che passa a `predict` le colonne del dataset che matchano
+        per nome) solo per RI-EMETTERLI nel dict di output, dove
+        `evals.base.mcq_accuracy` li legge e ne fa il breakdown aggregato
+        — vedi `BREAKDOWN_KEYS` lì. Senza questo giro l'accuracy per
+        fascia short/medium/long esisterebbe solo come query Weave
+        post-hoc, non nel summary di fine eval.
         """
         from strategies.base import SamplingBudget
 
@@ -209,6 +216,8 @@ class VideoMME(Dataset):
                 video_path: str,
                 question: str,
                 options: list[str],
+                duration: str,
+                task_type: str,
                 subtitle_path: str,
             ) -> dict:
                 sub_text = _read_srt_text(Path(subtitle_path))
@@ -217,11 +226,19 @@ class VideoMME(Dataset):
                     f"{sub_text}\n\n"
                     + format_mcq_prompt(question, options)
                 )
-                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                out = strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                return {**out, "duration": duration, "task_type": task_type}
         else:
             @weave.op
-            def predict(video_path: str, question: str, options: list[str]) -> dict:
+            def predict(
+                video_path: str,
+                question: str,
+                options: list[str],
+                duration: str,
+                task_type: str,
+            ) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                out = strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                return {**out, "duration": duration, "task_type": task_type}
 
         return predict

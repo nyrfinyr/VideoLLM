@@ -81,20 +81,64 @@ def extract_mcq_letters(prompt: str) -> list[str]:
     return MCQ_OPTION_LINE_RE.findall(prompt)
 
 
+# Chiavi che, se presenti nel dict ritornato da `predict`, fanno emettere a
+# `mcq_accuracy` un breakdown aggregato per il loro valore (oltre
+# all'accuracy complessiva). Un dataset ci si aggancia semplicemente
+# ri-emettendo la colonna nel proprio output — vedi
+# `VideoMME.predict_factory`, che passa `duration`/`task_type`. I dataset
+# che non le emettono non sono toccati: la chiave manca, `output.get`
+# ritorna None e non viene prodotto nessuno score extra.
+BREAKDOWN_KEYS = ("duration", "task_type")
+
+_SLUG_RE = re.compile(r"\W+")
+
+
+def _slug(value: object) -> str:
+    """`"Temporal Reasoning"` → `"temporal_reasoning"`: i valori finiscono
+    dentro nomi di metrica (Weave summary → wandb.run.summary), che devono
+    restare chiavi piatte e senza spazi."""
+    return _SLUG_RE.sub("_", str(value)).strip("_").lower()
+
+
 @weave.op
 def mcq_accuracy(answer: int, output: dict) -> dict:
     """Scorer Weave condiviso: confronta `output['pred']` con `answer`.
 
-    Breakdown per categoria (task_type, duration, ...) avviene in UI
-    Weave via le colonne del dataset, non serve uno scorer per benchmark.
+    Oltre a `correct` (accuracy complessiva) emette, per ogni chiave di
+    `BREAKDOWN_KEYS` presente in `output`, una coppia di score che dà il
+    breakdown AGGREGATO a fine eval senza query post-hoc:
+
+        correct_duration_long  bool  → true_count = risposte giuste fra i
+                                       long, true_fraction = accuracy sui long
+        seen_duration_long     True  → true_count = quanti sample sono long
+
+    Funziona perché `weave.flow.scorer.auto_summarize` scarta i None prima
+    di aggregare (`data = [x for x in data if x is not None]`) e unisce le
+    chiavi di TUTTI i sample: ogni sample emette solo le chiavi della
+    PROPRIA fascia, quindi il denominatore di `true_fraction` è già la
+    dimensione della fascia. `seen_*` sembra ridondante ma non lo è: senza
+    di esso la numerosità si potrebbe solo ricavare per divisione, e
+    dividerebbe per zero su una fascia con zero risposte giuste.
+
+    I conteggi (non solo le frazioni) rendono anche banale il POOLING fra
+    shard di un job array: si sommano `true_count` dei tre run.
     """
     pred = output["pred"]
+    correct = pred == answer
     logger.info(
         "mcq_accuracy: answer=%r (%s) pred=%r (%s)",
         answer, type(answer).__name__,
         pred, type(pred).__name__,
     )
-    return {"correct": pred == answer}
+    scores: dict = {"correct": correct}
+    for key in BREAKDOWN_KEYS:
+        value = output.get(key)
+        if value is None:
+            continue
+        slug = f"{key}_{_slug(value)}"
+        scores[f"correct_{slug}"] = correct
+        scores[f"seen_{slug}"] = True
+    return scores
 
 
 class Dataset(ABC):
