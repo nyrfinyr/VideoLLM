@@ -110,6 +110,15 @@ def main(argv: list[str] | None = None) -> None:
     if print_config:
         argv.remove("--print-config")
 
+    # Alias di comodo per l'unico knob che si attiva/disattiva e basta, con lo
+    # STESSO nome del flag di `attn_explorer/capture.py` (che implementa lo
+    # stesso regime): `--double-frames` ≡ `dataset.double_frames=true`. Il
+    # resto della CLI resta `chiave=valore` (vedi `utils.config.parse_overrides`,
+    # che rifiuta i token senza `=`).
+    if "--double-frames" in argv:
+        argv = [a for a in argv if a != "--double-frames"]
+        argv.append("dataset.double_frames=true")
+
     cfg = load_config(argv)
     if print_config:
         print(yaml.safe_dump(dict(cfg), sort_keys=False))

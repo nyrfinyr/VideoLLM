@@ -195,7 +195,10 @@ class LVBench(Dataset):
         """
         from strategies.base import SamplingBudget
 
-        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
+        budget = SamplingBudget(
+            nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"),
+            double_frames=cfg.get("double_frames", False),
+        )
         use_tr = bool(cfg.get("use_time_reference", False))
 
         if use_tr:

@@ -17,6 +17,7 @@ per `use_subtitles` senza campo `subtitle`.
 """
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
 from models.media import Text
@@ -53,9 +54,14 @@ class EntropyShortcutStrategy(Strategy):
                 f"{type(vlm).__name__} non lo fa — usa model=qwen2_5_vl_3b_attn "
                 "o un'altra strategy."
             )
-        media = self._build_media(video_path, frames, video_start, video_end, budget)
+        media, tmp_dir = self._build_media(video_path, frames, video_start, video_end, budget)
         letters = [chr(ord("A") + i) for i in range(len(options))] if options is not None else None
-        signal = vlm.generate_with_signals(media, Text(prompt), gen_cfg, answer_letters=letters)
+        try:
+            signal = vlm.generate_with_signals(media, Text(prompt), gen_cfg, answer_letters=letters)
+        finally:
+            # Non-None solo nel regime frame-doubling — vedi `Strategy._build_media`.
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         if self.capture_dir is not None and frames is None and signal.visual_attention is not None:
             self._save_attention_capture(vlm, video_path, prompt, signal.visual_attention, budget, video_start, video_end)

@@ -60,7 +60,10 @@ class EgoSchema(Dataset):
     ) -> Callable:
         from strategies.base import SamplingBudget
 
-        budget = SamplingBudget(nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"))
+        budget = SamplingBudget(
+            nframes=cfg.nframes, max_pixels=cfg.max_pixels, min_pixels=cfg.get("min_pixels"),
+            double_frames=cfg.get("double_frames", False),
+        )
 
         @weave.op
         def predict(video_path: str, question: str, options: list[str]) -> dict:

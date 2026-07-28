@@ -81,20 +81,82 @@ def extract_mcq_letters(prompt: str) -> list[str]:
     return MCQ_OPTION_LINE_RE.findall(prompt)
 
 
+# Chiavi che, se presenti nel dict ritornato da `predict`, fanno emettere a
+# `mcq_accuracy` un breakdown aggregato per il loro valore (oltre
+# all'accuracy complessiva). Chi non le emette non è toccato: la chiave
+# manca, `output.get` ritorna None e non viene prodotto nessuno score extra.
+#
+# Due sorgenti, entrambe già esistenti, nessun campo nuovo da inventare:
+# - dal DATASET, ri-emesso da `predict` (`VideoMME.predict_factory` passa
+#   `duration`/`task_type`);
+# - dalla STRATEGY, già nel dict che `answer()` ritorna
+#   (`entropy_attention_resample` mette `resampled`/`resample_kind`/
+#   `pred_fallback`).
+#
+# `resampled` è quello che dà le due metriche del gate d'entropia:
+# `seen_resampled_true` = quanti sample lo superano, `correct_resampled_true`
+# = accuracy CONDIZIONATA al superamento (e `*_false` il complemento, cioè
+# i sample accettati al pass 1). Su Video-MME `resampled=True` coincide con
+# `answer_entropy > entropy_threshold`, perché le altre condizioni di
+# `can_resample` sono sempre vere lì (frame non fissati dal dataset, MCQ,
+# segnali presenti) — NON è così su dataset con `frames` pre-estratti, es.
+# MVBench `episodic_reasoning`, dove `resampled=False` mescola "gate non
+# superato" e "resample impossibile".
+BREAKDOWN_KEYS = ("duration", "task_type", "resampled", "resample_kind", "pred_fallback")
+
+_SLUG_RE = re.compile(r"\W+")
+
+
+def _slug(value: object) -> str:
+    """`"Temporal Reasoning"` → `"temporal_reasoning"`: i valori finiscono
+    dentro nomi di metrica (Weave summary → wandb.run.summary), che devono
+    restare chiavi piatte e senza spazi."""
+    return _SLUG_RE.sub("_", str(value)).strip("_").lower()
+
+
 @weave.op
 def mcq_accuracy(answer: int, output: dict) -> dict:
     """Scorer Weave condiviso: confronta `output['pred']` con `answer`.
 
-    Breakdown per categoria (task_type, duration, ...) avviene in UI
-    Weave via le colonne del dataset, non serve uno scorer per benchmark.
+    Oltre a `correct` (accuracy complessiva) emette, per ogni chiave di
+    `BREAKDOWN_KEYS` presente in `output`, una coppia di score che dà il
+    breakdown AGGREGATO a fine eval senza query post-hoc:
+
+        correct_duration_long  bool  → true_count = risposte giuste fra i
+                                       long, true_fraction = accuracy sui long
+        seen_duration_long     True  → true_count = quanti sample sono long
+
+    Lo stesso vale per i campi della strategy: `seen_resampled_true` è il
+    numero di sample che superano il gate d'entropia e
+    `correct_resampled_true.true_fraction` la loro accuracy condizionata.
+
+    Funziona perché `weave.flow.scorer.auto_summarize` scarta i None prima
+    di aggregare (`data = [x for x in data if x is not None]`) e unisce le
+    chiavi di TUTTI i sample: ogni sample emette solo le chiavi della
+    PROPRIA fascia, quindi il denominatore di `true_fraction` è già la
+    dimensione della fascia. `seen_*` sembra ridondante ma non lo è: senza
+    di esso la numerosità si potrebbe solo ricavare per divisione, e
+    dividerebbe per zero su una fascia con zero risposte giuste.
+
+    I conteggi (non solo le frazioni) rendono anche banale il POOLING fra
+    shard di un job array: si sommano `true_count` dei tre run.
     """
     pred = output["pred"]
+    correct = pred == answer
     logger.info(
         "mcq_accuracy: answer=%r (%s) pred=%r (%s)",
         answer, type(answer).__name__,
         pred, type(pred).__name__,
     )
-    return {"correct": pred == answer}
+    scores: dict = {"correct": correct}
+    for key in BREAKDOWN_KEYS:
+        value = output.get(key)
+        if value is None:
+            continue
+        slug = f"{key}_{_slug(value)}"
+        scores[f"correct_{slug}"] = correct
+        scores[f"seen_{slug}"] = True
+    return scores
 
 
 class Dataset(ABC):

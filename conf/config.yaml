@@ -69,12 +69,14 @@ dataset:
     name: egoschema
     root: /work/tesi_avalenza/datasets/egoschema
     nframes: 64
+    double_frames: false   # (true | false) frame-doubling: ogni frame passato 2 volte → 1 cella = 1 frame (token visivi ×2). CLI: --double-frames
     max_pixels: 151200
 
   mvbench:
     name: mvbench
     root: /work/tesi_avalenza/datasets/mvbench
     nframes: 32
+    double_frames: false   # (true | false) frame-doubling: ogni frame passato 2 volte → 1 cella = 1 frame (token visivi ×2). CLI: --double-frames
     max_pixels: 151200
     tasks: null      # (null | [action_sequence | action_prediction | action_antonym | fine_grained_action | unexpected_action | object_existence | object_interaction | object_shuffle | moving_direction | action_localization | scene_transition | action_count | moving_count | moving_attribute | state_change | character_order | egocentric_navigation | episodic_reasoning | counterfactual_inference])
 
@@ -82,6 +84,7 @@ dataset:
     name: video_mme
     root: /work/tesi_avalenza/datasets/video_mme
     nframes: 128
+    double_frames: false   # (true | false) frame-doubling: ogni frame passato 2 volte → 1 cella = 1 frame (token visivi ×2). CLI: --double-frames
     max_pixels: 151200
     duration: all          # (short | medium | long | all)
     use_subtitles: false   # (true | false)
@@ -90,6 +93,7 @@ dataset:
     name: lvbench
     root: /work/tesi_avalenza/datasets/lvbench
     nframes: 768
+    double_frames: false   # (true | false) frame-doubling: ogni frame passato 2 volte → 1 cella = 1 frame (token visivi ×2). CLI: --double-frames
     max_pixels: 50176
     min_pixels: 3136
     use_time_reference: false   # (true | false)
@@ -98,6 +102,7 @@ dataset:
     name: causal2needles
     root: /work/tesi_avalenza/datasets/causal2needles
     nframes: 128
+    double_frames: false   # (true | false) frame-doubling: ogni frame passato 2 volte → 1 cella = 1 frame (token visivi ×2). CLI: --double-frames
     max_pixels: 151200
 
 strategy:
