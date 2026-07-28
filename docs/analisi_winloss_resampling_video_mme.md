@@ -145,3 +145,61 @@ soglia.
   `top1_pct`, README) — non vale la pena includerlo nel full eval come
   variabile, è fissato a 30 solo perché non fa differenza rispetto a
   20/45 in questo dataset.
+
+## Dati reali del full eval 2700 (2026-07-17) — win/loss misurato per ramo × durata
+
+> ⚠️ **Supera l'estrapolazione qui sopra** (~140 fixed / ~54 broken, net
+> ~+86): era ottimistica. Il rapporto win/loss del subset (13:5 ≈ 2.6:1)
+> NON scala — sul full è **144:136 ≈ 1.06:1**, praticamente in pareggio.
+
+Join per-sample tra il run **router** (array `67691`, config
+`concentration_ratio=3.85` + `zoom_multi_region`, 4 shard) e il run
+**uniform** full di controllo
+([`p7srmrkl`](https://wandb.ai/alesvale97-unimore/video_mme/runs/p7srmrkl),
+2700), sulla chiave `example.id`. `win` = uniform sbaglia & router corregge
+(❌→✅); `loss` = uniform corretto & router rovina (✅→❌). Nota: qui il
+ramo dei gated è misto phase/zoom (non phase-alone) — è il run che
+esisteva; il confronto phase-alone sul full resta da fare (vedi §8 della
+sintesi, esperimento A).
+
+**Gate-fire rate per durata** — il gate scatta di più sui video lunghi
+(più incertezza dove la copertura temporale a 128 frame è più sparsa):
+
+| durata | gated / tot | % |
+|---|---:|---:|
+| short | 465/900 | 51.7% |
+| medium | 617/900 | 68.6% |
+| long | 677/900 | 75.2% |
+
+**Win/loss del ricampionamento vs uniform pass-1 (solo sui sample gated):**
+
+| durata | ramo | n | uni acc | router acc | win | loss | net |
+|---|---|---:|---:|---:|---:|---:|---:|
+| short | phase_shift | 333 | .456 | .486 | 20 | 10 | **+10** |
+| short | zoom | 132 | .561 | .523 | 12 | 17 | −5 |
+| medium | phase_shift | 292 | .486 | .469 | 16 | 21 | −5 |
+| medium | zoom | 325 | .452 | .443 | 34 | 37 | −3 |
+| long | phase_shift | 266 | .425 | **.462** | 29 | 19 | **+10** |
+| long | zoom | 411 | .399 | .401 | 33 | 32 | +1 |
+| **ALL** | **phase_shift** | 891 | .457 | .474 | 65 | 50 | **+15** |
+| **ALL** | **zoom** | 868 | .444 | .435 | 79 | 86 | **−7** |
+| ALL | tutto | 1759 | .450 | .455 | 144 | 136 | **+8** |
+
+**Due conclusioni:**
+
+1. **`phase_shift` è debolmente positivo, `zoom` è morto.** phase net +15
+   (positivo su short +10 e long +10, negativo su medium −5); zoom net −7,
+   negativo/neutro ovunque. **La massa di attenzione usata come finestra
+   temporale (Opzione C1/zoom multi-regione) non recupera nulla — anzi
+   distrugge valore.** Filone chiuso.
+2. **Niente è statisticamente significativo.** phase ALL net +15 su 115
+   coppie discordanti → z≈1.4 (p≈0.16); phase long +10 → z≈1.4; il netto
+   globale +8/1759 → z≈0.5, puro rumore. Il tetto del ricampionamento
+   temporale è ~+1-2pt e solo per `phase_shift`, da confermare con un run
+   phase-alone dedicato (con `pred_pass1` loggato — vedi sotto).
+
+**Instrumentation aggiunta**: la strategy ora logga `pred_pass1` (argmax
+softmax ristretta del pass 1) accanto al `pred` finale
+(`strategies/entropy_attention_resample.py`) — ogni run futuro auto-riporta
+il win/loss per-sample sul proprio dataset senza bisogno del join con un
+run uniform di controllo separato.

@@ -144,15 +144,19 @@ eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
   `H/log(t)` (85-87/163) sia lo z-score del picco vs le altre celle
   (87/163, il più debole dei tre). Nessuno dei due segnali "più
   sofisticati" ha battuto il proxy semplice — dettagli in
-  `docs/piano_zoom_multiregione_disgiunto.md`. **Stage C CONFERMATO**:
-  router `top1_pct` a soglia adattiva (`concentration_ratio=3.85 × 100/t`,
-  non le soglie assolute fisse 20/30/45 già note come inerti su Video-MME)
-  + `zoom_multi_region` —
+  `docs/piano_zoom_multiregione_disgiunto.md`. **Stage C (subset di
+  calibrazione)**: router `top1_pct` a soglia adattiva
+  (`concentration_ratio=3.85 × 100/t`, non le soglie assolute fisse 20/30/45
+  già note come inerti su Video-MME) + `zoom_multi_region` —
   [`0e2qopcy`](https://wandb.ai/alesvale97-unimore/video_mme/runs/0e2qopcy),
-  subset 250: **68.8% (172/250)**, centra esattamente la proiezione
-  dell'analisi (+2.8pt su `phase_shift`-alone, +6.0pt su uniform). Dettagli
-  in `docs/sintesi_segnali_router_concentrazione.md`. Prossimo passo: full
-  eval (2700 sample, 4 shard) con `scripts/sbatch/video_mme-signal-router.sbatch`
-  — già pronto, sbloccato da questo risultato.
+  subset 250: **68.8% (172/250)**, +6.0pt su uniform — ma **sullo stesso
+  subset su cui la soglia era calibrata** (non held-out). **Full eval 2700
+  (array `67691`, 4 shard): 60.22% (1626/2700), che eguaglia la baseline
+  uniform sul full (59.93%, `p7srmrkl`) — edge +0.29pt, statisticamente
+  nullo.** Il router `concentration_ratio` NON generalizza: l'edge era
+  in-sample-lucky (soglia scelta come argmax su curva piatta 88-90/163). Il
+  filone `top1_pct` è chiuso come miglioramento su Video-MME — decomposizione
+  del gap (~2.9pt subset più facile + ~5.7pt edge in-sample) e conseguenze
+  in `docs/sintesi_segnali_router_concentrazione.md` §8.
 - Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
   altre due colonne della tabella baseline.

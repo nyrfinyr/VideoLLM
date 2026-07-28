@@ -1,6 +1,15 @@
 # Piano — zoom multi-regione disgiunto (Opzione C) per `entropy_attention_resample`
 
-> **Stato** (2026-07-16): **C1 implementato + validato** (codice 2026-07-15,
+> **ESITO FINALE (2026-07-17): filone chiuso.** Lo Stage C (68.8% subset)
+> era in-sample-lucky. Full eval Video-MME 2700 (array `67691`): **60.22%
+> (1626/2700), = baseline uniform sul full (59.93%), edge +0.29pt nullo**.
+> Il router `concentration_ratio` su `top1_pct` NON generalizza oltre il
+> subset di calibrazione. Decomposizione del gap 68.8→60.22 (~2.9pt subset
+> più facile + ~5.7pt edge in-sample) e numeri in
+> `docs/sintesi_segnali_router_concentrazione.md` §8. Lo "Stato" storico
+> qui sotto è pre-full-eval.
+>
+> **Stato** (2026-07-16, pre-full-eval): **C1 implementato + validato** (codice 2026-07-15,
 > code review superata) — knob dietro flag, default OFF. Run di validazione C1
 > fatta (250-subset, `force_zoom_for_debug`): batte uniform ma non `phase_shift`
 > in aggregato, recupera un pool DISTINTO di ~13 sample. **Verifica dai dati**

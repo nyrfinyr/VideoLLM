@@ -257,13 +257,13 @@ storici):
 | `branch_selector` | condizione "disperso" (→ fase sfasata) | stato |
 |---|---|---|
 | `"concentration"` (default) | $\text{top1\_pct} < \text{concentration\_threshold}$ (assoluto, es. 30) | storico, **soglia inerte** su Video-MME |
-| `"concentration_ratio"` | $\text{top1\_pct} < \text{concentration\_ratio} \cdot \frac{100}{t}$ | **Stage C, CONFERMATO (68.8%, vedi §7)** |
+| `"concentration_ratio"` | $\text{top1\_pct} < \text{concentration\_ratio} \cdot \frac{100}{t}$ | **NON generalizza al full (68.8% subset → 60.2% full ≈ uniform, vedi §7/§8)** |
 | `"entropy"` | $H_{\text{norm}} > \text{attention\_entropy\_threshold}$ | provato, **battuto da `top1_pct`** |
 
 ```mermaid
 flowchart TD
     G{"can_resample?<br/>answer_entropy > entropy_threshold"} -- no --> ACC["accetta pass 1"]
-    G -- si --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — Stage C: 68.8%)"}
+    G -- si --> C2{"top1_pct <<br/>concentration_ratio × 100/t?<br/>(adattivo, 3.85 — subset: 68.8%, full: 60.2% ≈ uniform)"}
 
     C2 -- "si (disperso)" --> PS["phase_shift"]
     C2 -- "no (concentrato)" --> ZOOM{"zoom_multi_region?"}
@@ -363,23 +363,125 @@ fisso fra loro in proporzione alla massa.
 | fase sfasata sempre (gate su entropia, nessun ramo) | 66.0% | +3.2pt |
 | zoom multi-regione forzato sempre | 64.0% | peggio della fase sfasata da solo, ma recupera 13 sample UNICI che l'altro non prende |
 | oracolo (ramo giusto per sample) | ~68.8% (98/163 sui ricampionati) | limite superiore teorico del routing |
-| **router `top1_pct` a soglia adattiva (`ratio=3.85`)** | **68.8% (172/250)** | **Stage C, CONFERMATO** |
+| **router `top1_pct` a soglia adattiva (`ratio=3.85`)** | **68.8% (172/250)** | **solo sul subset di calibrazione — non regge sul full (§8)** |
 
-## 7. Esperimento Stage C — risultato
+> ⚠️ **Questi numeri valgono sul subset 250 seed 42, che è anche il subset
+> su cui la soglia 3.85 è stata calibrata.** Il full eval 2700 (§8) mostra
+> che l'edge del router su uniform (+6.0pt qui) è in-sample-lucky: sul full
+> collassa a +0.3pt. Uniform sullo stesso subset era 62.8% ma sul full 2700
+> è 59.93% → il subset era di suo ~2.9pt più facile della media.
+
+## 7. Esperimento Stage C — risultato (sul subset di calibrazione)
 
 Run [`qwen2_5_vl_3b_attn-stageC-router-concentration_ratio`](https://wandb.ai/alesvale97-unimore/video_mme/runs/0e2qopcy)
 (`branch_selector=concentration_ratio`, `concentration_ratio=3.85`,
 `zoom_multi_region=true`, stesso subset/seed 250): **172/250 = 68.8%**,
 runtime 7647s (~2h07m), latenza media 30.4 s/sample.
 
-**Il router, guidato da un segnale misurato (non dall'oracolo), ha
-centrato esattamente il numero proiettato dallo sweep di soglia (§4.3/§4.4)**
-— +2.8 punti sopra `phase_shift`-alone (66.0%), +6.0 punti sopra `uniform`
-(62.8%). Conferma che `top1_pct` con soglia adattiva generalizza fuori
-dall'analisi che l'ha calibrata (anche se sullo stesso subset — il test
-vero era "il segnale misurato batte l'oracolo-in-teoria solo sulla carta",
-non un held-out set diverso).
+Sul subset il router ha centrato esattamente il numero proiettato dallo
+sweep di soglia (§4.3/§4.4) — +2.8 punti sopra `phase_shift`-alone (66.0%),
++6.0 punti sopra `uniform` (62.8%). **Ma questo NON era un test held-out**:
+lo Stage C gira sullo *stesso* subset 250 seed-42 su cui la soglia 3.85 è
+stata calibrata (scelta come "picco" — argmax — di una curva accuracy-vs-
+soglia piatta e rumorosa: `88 → 90 → 88` su 163 sample, `piano_...:750-754`).
+Un router *misurato* che eguaglia esattamente il proprio oracolo *teorico*
+(68.8% == ceiling §6) sulla stessa data è la firma di decisioni di routing
+fittate su quei sample. Il test vero della generalizzazione è il full eval
+2700 — vedi §8.
 
-**Prossimo passo**: full eval su tutto Video-MME (2700 sample, 4 shard),
-`scripts/sbatch/video_mme-signal-router.sbatch` — già pronto, stessa
-config di questo run. Sbloccato da questo risultato.
+## 8. Full eval Video-MME (2700) — il router NON generalizza
+
+Array SLURM `67691`, 4 shard × 675, `scripts/sbatch/video_mme-signal-router.sbatch`,
+config bit-per-bit identica allo Stage C (unica differenza: `shard`/
+`num_shards` invece di `limit=250 shuffle=true`):
+
+| shard | run | n | correct | accuracy | latenza media | runtime |
+|---|---|---:|---:|---:|---:|---:|
+| 0 | [`osx3ygxh`](https://wandb.ai/alesvale97-unimore/video_mme/runs/osx3ygxh) | 675 | 390 | 57.78% | 36.27 s | 6h49m |
+| 1 | [`fc476a4d`](https://wandb.ai/alesvale97-unimore/video_mme/runs/fc476a4d) | 675 | 415 | 61.48% | 31.58 s | 5h56m |
+| 2 | [`3xw4rrhb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/3xw4rrhb) | 675 | 416 | 61.63% | 32.11 s | 6h02m |
+| 3 | [`1swviavk`](https://wandb.ai/alesvale97-unimore/video_mme/runs/1swviavk) | 675 | 405 | 60.00% | 31.12 s | 5h50m |
+| **tot** | | **2700** | **1626** | **60.22%** | | |
+
+**Confronto con la baseline uniform sul full 2700** (run
+[`p7srmrkl`](https://wandb.ai/alesvale97-unimore/video_mme/runs/p7srmrkl),
+`nframes=128`, `max_pixels=151200` — identici al router): **59.93%**.
+
+| | subset 250 (seed 42) | full 2700 |
+|---|---:|---:|
+| uniform | 62.8% | **59.93%** |
+| router (ratio 3.85) | 68.8% | **60.22%** |
+| **edge router − uniform** | **+6.0pt** | **+0.29pt** (`z=0.22`, nullo) |
+
+**Il router eguaglia la baseline uniform sul full.** Differenza +0.29pt,
+`z=0.22` → statisticamente indistinguibile da zero. Il segnale `top1_pct`
+non porta informazione di routing trasferibile oltre il subset di
+calibrazione.
+
+**Decomposizione degli 8.6pt di gap (68.8% → 60.22%):**
+
+1. **Subset più facile (~2.9pt)** — uniform 62.8% sul subset vs 59.93% sul
+   full: il draw 250 seed-42 era di suo più facile della media. Offset che
+   gonfiava *tutte* le strategie su quel subset.
+2. **Edge del router in-sample-lucky (~5.7pt)** — il +6.0pt su uniform
+   crolla a +0.29pt fuori dal subset di calibrazione.
+
+`2.9 + 5.7 ≈ 8.6pt`, ricostruisce esattamente il gap. Era il rischio
+esplicito in `piano_zoom_multiregione_disgiunto.md:609-610` ("se il segnale
+non regge fuori dal subset di calibrazione → il proxy era in-sample-lucky").
+
+*Nota shard 0*: 57.78% con latenza 36.3s (vs 31-32s) → più campioni sul
+ramo zoom (costoso, meno accurato); con `t=64` costante a nframes=128 il
+branch-split dipende solo dalla distribuzione di `top1_pct`, shard 0 ha
+pescato più video ad attenzione dispersa. Spread ~2 SE (borderline rumore),
+non è il cuore del problema.
+
+**Conseguenza operativa**: il filone `concentration_ratio` su `top1_pct` è
+chiuso come miglioramento su Video-MME. Prima di spendere altre GPU-h: (a)
+ricalibrare su uno split e validare su uno **disgiunto** (held-out vero),
+non più sullo stesso 250; (b) dato il plateau piatto 88-90/163, è dubbio
+che *qualsiasi* soglia su `top1_pct` dia un edge reale.
+
+## 9. Diagnosi fine sul full: perché il subset ingannava, e cosa resta vivo
+
+Analisi per-sample sul full 2700 (dati e tabelle complete in
+`docs/analisi_winloss_resampling_video_mme.md`, sezione "Dati reali del
+full eval 2700").
+
+**Il gate `answer_entropy` è l'asset che generalizza.** Split per-ramo sul
+full: `accepted` (gate NON scatta) **87.8%** vs sample gated **~45%** — il
+gate separa nettamente facile-confidente da difficile-incerto, e scala con
+la difficoltà (gate-fire 51.7% short → 68.6% medium → 75.2% long). È il
+segnale robusto; `top1_pct` no.
+
+**Perché il subset 250 ingannava.** Decomposizione del gap 68.8→60.2
+(accuracy × durata, esatta su 2700):
+- effetto **mix** (subset sbilanciato verso short, 39.6% vs 33.3%): solo
+  **+0.9pt**;
+- effetto **within-bucket** (subset più facile *dentro* ogni durata,
+  soprattutto long +12.4pt): **+7.7pt**, tutto entro ~1σ di rumore small-n.
+
+Cioè: i 250 erano un **draw fortunato in ogni bucket**, e la soglia era
+tarata su quei sample fortunati (overfit e fortuna sovrapposti, non
+separabili a questi n). Non è "soglia mal tunata" — è che *qualunque*
+soglia calibrata su 250 avrebbe finto di funzionare.
+
+**Cosa resta vivo (e cosa è morto).** Win/loss del ricampionamento vs
+uniform pass-1 sugli stessi id gated (controfattuale reale):
+- **`zoom_multi_region` (massa di attenzione come finestra temporale):
+  MORTO.** Net −7 sul full, negativo/neutro in ogni durata. L'Opzione C1 è
+  chiusa: la massa di attenzione, usata per ritagliare finestre *temporali*,
+  non recupera nulla.
+- **`phase_shift`: debolmente vivo.** Net +15 (positivo su short +10 e long
+  +10), ma solo ~1.4σ — non significativo. Tetto ~+1-2pt.
+
+**Prossimi esperimenti** (entrambi con `pred_pass1` ora loggato →
+win/loss auto-riportato, niente run di controllo appaiato):
+- **A — confermare/uccidere `phase_shift`**: run phase-alone (no branch
+  selector, no zoom) sul full. Economico, chiude il capitolo temporale con
+  un numero.
+- **B — cambiare leva (scommessa principale)**: il *dove* temporale è saturo
+  a 128 frame; la massa serve nello **spazio**, non nel tempo. Sui gated:
+  2× `max_pixels` e/o **zoom spaziale** (crop della regione `grid_h×grid_w`
+  a massa più alta → più risoluzione effettiva sull'oggetto). Design da
+  approfondire prima di implementare.
