@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=10:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -20,10 +20,15 @@
 # `branch_selector` (lasciato al default `concentration`) non conta in
 # questo arm.
 #
-# Job array a 3 shard (900 sample ciascuno). `--time=10:00:00`: stesso
-# criterio e stessa derivazione di entropy_shift_24 (~30-35 s/sample
-# stimati su RTX6000-24G → ~8h/shard, budget reale 40 s/sample) —
-# incluso il probe di 40 minuti da fare prima, documentato lì. Il ramo `zoom_peak` costa come
+# Job array a 3 shard (900 sample ciascuno). `--time=05:00:00`: stesso
+# criterio e stessa ricalibrazione di entropy_shift_24, che resta il caso
+# peggiore misurato dei tre arm signal-driven (3h23 su RTX6000-24G).
+# **Misurato sull'array 74428**: shard 0 su `dracula` (L40S 45G) in
+# 5481s = 1h31, 6.09 s/sample — contro i 6.04 s/sample di
+# shift_zoom_router_24 sulla stessa card, cioè i due arm costano uguale.
+# Proiettato sulla card più lenta del constraint (penalità RTX6000/L40S
+# = 1.9×, misurata su baseline_24 shard 0 vs 1-2): ~11.6 s/sample ≈ 2h54,
+# quindi 5h danno ~1.7× di margine. Il ramo `zoom_peak` costa come
 # `phase_shift` — è un secondo `Video()` su una finestra più stretta,
 # stesso numero di frame; i 46.5 s/sample citati in
 # video_mme-signal-router.sbatch sono dello zoom MULTI-REGIONE (che

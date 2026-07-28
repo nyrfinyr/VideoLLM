@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight)
 
 model:
   qwen2_5_vl_3b:
@@ -135,6 +135,21 @@ strategy:
     region_window_frac: 0.1     # semi-larghezza di ogni regione (frazione della finestra pass-1)
     budget_allocation: proportional  # (equal | proportional) come spartire budget.nframes fra le regioni
     force_zoom_for_debug: false  # instrada TUTTI i sample ricampionati nel ramo zoom, bypassando concentration_threshold
+
+  # Evidence highlighting (Look Twice, arXiv:2604.01280) invece di resampling:
+  # stessi frame del pass 1, cambia solo il prompt. Vedi
+  # `strategies/attention_highlight.py` per il razionale e le differenze dal paper.
+  attention_highlight:
+    name: attention_highlight
+    entropy_threshold: 0.7      # stesso gate (e stesso default) di entropy_attention_resample: gli arm devono essere confrontabili
+    always_highlight: false     # true = regime LoT (nessun gate, evidenzia sempre); false = confrontabile con gli arm di resampling
+    top_k: 3                    # quante celle (istanti) evidenziare, le top-k per massa di attenzione sink-filtrata.
+                                # top_k=1 = la stessa cella su cui zooma il ramo zoom_peak di entropy_attention_resample
+    pointer_units: seconds      # (seconds | fraction) come il puntatore riferisce il tempo; con `frames` fissati dal dataset è sempre fraction
+    pointer_position: prepend   # (prepend | append) puntatore prima della domanda (adiacente al video) o dopo
+    sink_percentile: 25.0       # filtro sink identico a entropy_attention_resample (= tau del paper, 25° percentile)
+    sink_border: 0
+    capture_attention: false    # opt-in: dump capture.pt/frames SOLO per i sample con gate aperto
 
 wandb:
   default:

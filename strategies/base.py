@@ -63,6 +63,18 @@ class SamplingBudget:
     double_frames: bool = False
 
 
+def video_duration_sec(video_path: str) -> float:
+    """Durata video in secondi via decord (solo metadata, non decodifica i
+    frame) — serve alle strategy che devono mappare posizioni relative (celle
+    di attenzione, finestre di resample) su tempi assoluti quando
+    `video_start`/`video_end` non sono già noti dal dataset (caso comune su
+    MVBench, `bound=False`)."""
+    import decord
+
+    vr = decord.VideoReader(video_path)
+    return len(vr) / vr.get_avg_fps()
+
+
 def _sample_doubled_frames(
     video_path: str,
     nframes: int,

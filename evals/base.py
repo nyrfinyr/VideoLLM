@@ -102,7 +102,17 @@ def extract_mcq_letters(prompt: str) -> list[str]:
 # segnali presenti) — NON è così su dataset con `frames` pre-estratti, es.
 # MVBench `episodic_reasoning`, dove `resampled=False` mescola "gate non
 # superato" e "resample impossibile".
-BREAKDOWN_KEYS = ("duration", "task_type", "resampled", "resample_kind", "pred_fallback")
+#
+# `highlighted` è l'omologo per `attention_highlight` (stesso gate,
+# intervento diverso: puntatore testuale invece di ricampionamento).
+# Attenzione: `highlighted=False` mescola "gate chiuso" e "gate aperto ma
+# nessun puntatore emesso" (segnale di attenzione nullo) — il motivo sta in
+# `highlight_skip_reason`, che NON è una chiave di breakdown perché le sue
+# fasce non partizionano i sample.
+BREAKDOWN_KEYS = (
+    "duration", "task_type", "resampled", "resample_kind", "pred_fallback",
+    "highlighted",
+)
 
 _SLUG_RE = re.compile(r"\W+")
 

@@ -568,6 +568,42 @@ def attention_concentration(
     }
 
 
+def ranked_cells_from_attention(
+    visual_attention: VisualAttention,
+    *,
+    percentile: float = 25.0,
+    border: int = 0,
+) -> list[RankedCell]:
+    """Classifica TUTTE le celle temporali di un `VisualAttention` per massa
+    di attenzione (sink-filtrata).
+
+    Variante di `attention_concentration` che opera direttamente sui segnali
+    "in volo" di `SupportsSignals.generate_with_signals`, invece che su un
+    `AttentionCapture` già materializzato: non essendoci `frame_indices`/`fps`
+    reali si passano dei dummy (`range(t)`, `fps=1.0`, `double=True`), perché
+    al chiamante servono solo `cell`/`pct` — la posizione temporale si ricava
+    per via frazionaria dalla finestra vista dal pass 1. `rank_cells` non
+    tronca a `topk` (marca solo `is_top`), quindi ritorna sempre le `t` celle
+    ordinate per massa decrescente.
+
+    Condivisa fra le strategy signal-driven (`entropy_attention_resample`,
+    `attention_highlight`): il ranking DEVE essere calcolato allo stesso modo
+    in tutte, altrimenti un confronto win/loss per-sample fra arm diversi
+    misurerebbe anche la differenza di segnale, non solo quella di intervento.
+    """
+    heat = visual_attention.attn.float().mean(dim=0)  # [t, grid_h, grid_w]
+    grid = GridSpec(
+        t=visual_attention.t,
+        grid_h=visual_attention.grid_h,
+        grid_w=visual_attention.grid_w,
+        double=True,
+    )
+    heat_nonsink, _ = sink_view(
+        heat, visual_attention.sink_map, view="nonsink", percentile=percentile, border=border,
+    )
+    return rank_cells(heat_nonsink, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Persistenza dell'AttentionCapture (torch.save/load)
 # ─────────────────────────────────────────────────────────────────────────────

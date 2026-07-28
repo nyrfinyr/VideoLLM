@@ -73,44 +73,16 @@ from PIL import Image
 
 from models.media import Text, VideoFrames
 from models.signals import SupportsSignals
-from utils.attn_core import GridSpec, RankedCell, rank_cells, sink_view
+from utils.attn_core import RankedCell, ranked_cells_from_attention
 from utils.mcq import parse_mcq_letter
 
-from .base import SamplingBudget, Strategy
+from .base import SamplingBudget, Strategy, video_duration_sec
 
 if TYPE_CHECKING:
     from transformers import GenerationConfig
 
     from models.base import BaseVLM
     from models.signals import SignalAnswer
-
-
-def _video_duration_sec(video_path: str) -> float:
-    """Durata video in secondi via decord (solo metadata, non decodifica
-    i frame) — serve per clampare le finestre di resample ai bordi reali
-    del video quando `video_start`/`video_end` non sono già noti dal
-    dataset (caso comune su MVBench, `bound=False`)."""
-    import decord
-
-    vr = decord.VideoReader(video_path)
-    return len(vr) / vr.get_avg_fps()
-
-
-def _ranked_cells(visual_attention, *, percentile: float, border: int) -> list[RankedCell]:
-    """Classifica TUTTE le celle temporali di `visual_attention` per massa
-    di attenzione (sink-filtrata), stessa logica di
-    `utils.attn_core.attention_concentration` operante direttamente su
-    `VisualAttention` (niente `AttentionCapture`/fps/frame_indices reali:
-    qui serve solo l'indice di cella, la posizione temporale si ricava per
-    via frazionaria in `answer()`). `frame_indices` dummy (`range(t)`,
-    `double=True`) perché `cell_to_frames` non viene mai ispezionato per
-    `frames`/`rep_frame`/`t_sec`. `rank_cells` non limita la lista con
-    `topk` (marca solo `is_top`), quindi ritorna sempre le `t` celle.
-    """
-    heat = visual_attention.attn.float().mean(dim=0)  # [t, grid_h, grid_w]
-    grid = GridSpec(t=visual_attention.t, grid_h=visual_attention.grid_h, grid_w=visual_attention.grid_w, double=True)
-    heat_nonsink, _ = sink_view(heat, visual_attention.sink_map, view="nonsink", percentile=percentile, border=border)
-    return rank_cells(heat_nonsink, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
 
 
 def _attention_entropy_norm(ranked: list[RankedCell]) -> float:
@@ -449,7 +421,7 @@ class EntropyAttentionResampleStrategy(Strategy):
         t_cells = cell_mass_mean = cell_mass_std = None
         ranked_cells: list[RankedCell] | None = None
         if signal.visual_attention is not None:
-            ranked_cells = _ranked_cells(
+            ranked_cells = ranked_cells_from_attention(
                 signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
@@ -478,7 +450,7 @@ class EntropyAttentionResampleStrategy(Strategy):
         )
         if can_resample:
             t = signal.visual_attention.t
-            duration = _video_duration_sec(video_path)
+            duration = video_duration_sec(video_path)
             w0 = video_start if video_start is not None else 0.0
             w1 = video_end if video_end is not None else duration
 

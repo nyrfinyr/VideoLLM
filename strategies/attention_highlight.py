@@ -1,0 +1,410 @@
+"""`AttentionHighlightStrategy` — evidence highlighting invece di
+ricampionamento: al pass 2 il modello vede ESATTAMENTE gli stessi frame del
+pass 1, cambia solo il prompt, che ora gli dice DOVE guardare.
+
+Adattamento al video di Look Twice (LoT, Morini et al. 2026,
+arXiv:2604.01280 — `lot/` in questo repo). LoT, sul lato visivo, fa: (i)
+attenzione domanda→token visivi aggregata su layer intermedi e teste, (ii)
+filtro dei token-sink, (iii) bbox dalla distribuzione risultante come
+centroide ± β·σ (Eq. 4-6, β=2), (iv) evidenziazione dell'evidenza così
+localizzata nel prompt.
+
+Tre differenze rispetto al paper, tutte volute:
+
+1. **Si evidenziano le `top_k` CELLE (una per una), non una regione ricavata
+   dalla dispersione.** LoT deriva dal centroide ± β·σ un bbox, cioè una
+   regione connessa la cui ampiezza dipende da quanto è dispersa
+   l'attenzione. La trasposizione 1D diretta è stata implementata e poi
+   rimossa: su un profilo di sole `t` celle il pavimento quasi uniforme
+   dell'attenzione gonfia σ, e anche sottraendo il livello di caso
+   l'intervallo degenera a tutto il video appena l'attenzione è bimodale
+   (due picchi lontani) — che nel video è il caso NORMALE, non l'eccezione:
+   l'evidenza per una domanda può stare in due momenti scollegati, mentre un
+   oggetto in un'immagine sta in un posto solo.
+
+   Ogni cella scelta viene comunque comunicata come INTERVALLO, ma la sua
+   ampiezza è quella della cella stessa (`durata/t`), cioè la risoluzione
+   reale del segnale, non una stima di dispersione — vedi `_cell_span_frac`.
+   Celle adiacenti vengono fuse in un tratto solo (`_merge_spans`).
+
+2. **L'attenzione è mediata su TUTTI i token della domanda**, non sui soli
+   token dell'oggetto target (`T_obj`, Eq. 1-2 del paper). Su KB-VQA
+   l'entità è isolabile ("female butterfly"); in un MCQ video non c'è un
+   oggetto target estraibile senza parsing della domanda. `question_rows`
+   in `utils/attn_core.py` è il punto da cui partire se si volesse
+   restringere.
+
+3. **L'evidenziazione è un PUNTATORE TESTUALE, non un marker attorno ai
+   token visivi.** È la variante "A" discussa in sede di design, ed è anche
+   ciò che il codice di LoT fa davvero: i marker
+   `<START_IMPORTANT_IMG>`/`<END_IMPORTANT_IMG>` di `lot/retrieval.py:394-396`
+   avvolgono l'INTERA immagine (due item di testo inseriti prima e dopo
+   l'item immagine nella `content` list), non un sottoinsieme di token; la
+   selettività spaziale, lì, viene dal crop o dal bbox disegnato, con il
+   prompt `SELF_ELICIT_IMAGE_BBOX_SYSTEM_PROMPT_VQA` ("Focus on the {entity}
+   in the image highlighted by the {color} bbox") a spiegarlo al modello. Il
+   puntatore testuale è l'analogo diretto di quest'ultimo.
+
+   La variante alternativa — marker inseriti DENTRO il blocco visivo, attorno
+   alle celle scelte — non è implementata qui: su Qwen2.5-VL richiede
+   `position_ids` espliciti, perché `get_rope_index`
+   (`modeling_qwen2_5_vl.py:1096-1121`) raggruppa i token per modalità
+   leggendo `mm_token_type_ids` e consuma un `grid_thw` per gruppo, quindi il
+   testo inserito in mezzo spezza il gruppo video in due. Su Qwen3-VL sarebbe
+   invece nativo (il formato è già `<t seconds><|vision_start|>cella<|vision_end|>`
+   per cella, e `get_rope_index` splitta apposta `video_grid_thw`), ma il
+   wiring dei segnali per quella famiglia non esiste ancora.
+
+Perché è interessante confrontarla con `entropy_attention_resample`: a
+parità di gate e di segnale, il resampling dà al modello frame NUOVI (nuova
+informazione), l'highlighting no — riusa gli stessi frame e cambia solo il
+peso che il modello dovrebbe dargli. Se il picco di attenzione del pass 1
+era sbagliato, il resampling può comunque correggersi (vede altro),
+l'highlighting rischia di amplificare l'errore. È esattamente ciò che le
+colonne `fixed`/`broken` dell'analisi win/loss misurano
+(`docs/analisi_winloss_resampling_video_mme.md`).
+
+Costo: il pass 2 NON ridecodifica il video (nessun `Video()`/`VideoFrames`
+nuovo, nessun PNG estratto) — è un solo forward in più sugli stessi token
+visivi, quindi questa strategy è più economica degli arm di resampling a
+parità di gate.
+
+Richiede un modello che implementa `SupportsSignals` (oggi solo
+`model=qwen2_5_vl_3b_attn`) — fail-fast altrimenti, stesso pattern di
+`entropy_shortcut`/`entropy_attention_resample`. A differenza del
+resampling, funziona anche quando `frames` è fissato dal dataset (es.
+MVBench `data_type="frame"`): non serve poter riselezionare i frame, basta
+poterli commentare — in quel caso il puntatore è però necessariamente in
+unità frazionarie, non in secondi (vedi `pointer_units`).
+"""
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from models.media import Text
+from models.signals import SupportsSignals
+from utils.attn_core import RankedCell, ranked_cells_from_attention
+from utils.mcq import parse_mcq_letter
+
+from .base import SamplingBudget, Strategy, video_duration_sec
+
+if TYPE_CHECKING:
+    from transformers import GenerationConfig
+
+    from models.base import BaseVLM
+    from models.signals import SignalAnswer
+
+
+# Formulazione del puntatore. Imperativa e breve, modellata su
+# `SELF_ELICIT_IMAGE_BBOX_SYSTEM_PROMPT_VQA` di `lot/prompts.py` ("Focus on
+# the {entity} in the image highlighted by the {color} bbox") — che è la
+# forma con cui LoT comunica al modello una regione localizzata. Costanti di
+# modulo e non knob di config: sono il testo dell'intervento, cambiarle
+# cambia l'esperimento, non la sua configurazione.
+POINTER_SPAN_SEC = (
+    "Focus on the part of the video between {a:.0f} and {b:.0f} seconds: "
+    "that is where the visual evidence relevant to the question is."
+)
+POINTER_SPAN_FRAC = (
+    "Focus on the part of the video between {a:.0f}% and {b:.0f}% of its duration: "
+    "that is where the visual evidence relevant to the question is."
+)
+POINTER_SPANS = (
+    "Focus on these parts of the video, where the visual evidence relevant "
+    "to the question is: {spans}."
+)
+
+
+def _cell_span_frac(cell: int, t: int) -> tuple[float, float]:
+    """Estensione della cella `cell` come frazioni [0,1] della finestra vista
+    dal pass 1: `(cell/t, (cell+1)/t)`.
+
+    **Si indica l'intervallo della cella, non il suo centro, perché quella è
+    la risoluzione VERA del segnale.** Una cella copre `durata/t` secondi —
+    a `nframes=24` (t=12) sono 220 s su un video Video-MME long: dire "990.0
+    secondi" comunicherebbe una precisione al decimo che non esiste, su un
+    bucket largo quasi quattro minuti. L'intervallo dice al modello ciò che
+    davvero si sa.
+
+    L'intervallo risolve anche uno sfasamento: la M-RoPE colloca la cella
+    `i` a `i * second_per_grid_ts`, cioè all'ESTREMO SINISTRO
+    (`modeling_qwen2_5_vl.py:1012`, `position_temporal = arange(t) *
+    time_interval`), mentre i due frame che la compongono cadono nella prima
+    metà dell'intervallo. Centro, ancora posizionale e contenuto reale
+    differiscono fino a mezza cella (~110 s su un long); `[cell/t,
+    (cell+1)/t]` li contiene tutti e tre, quindi è vero comunque li si
+    guardi. Il centro `(cell+0.5)/t` resta la convenzione di
+    `entropy_attention_resample` per `peak_time` — lì serve a costruire una
+    finestra di decodifica, non a parlare al modello, e cade dentro questo
+    intervallo.
+    """
+    if t <= 0:
+        return 0.0, 1.0
+    return cell / t, (cell + 1) / t
+
+
+def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Fonde gli intervalli contigui o sovrapposti, ordinati per tempo. Celle
+    adiacenti scelte entrambe (es. 4 e 5) descrivono un unico tratto di
+    video: elencarle separate ("40-50 s and 50-60 s") leggerebbe come due
+    posti diversi."""
+    out: list[list[float]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _fmt_spans(spans: list[tuple[float, float]], *, units: str) -> str:
+    """`[(880, 1100), (1540, 1760)]` → `"880-1100 s and 1540-1760 s"` /
+    `"33-42% and 58-67%"`. Congiunzione in inglese perché il puntatore è
+    inglese come il resto del prompt MCQ."""
+    suffix = " s" if units == "seconds" else "%"
+    parts = [f"{a:.0f}-{b:.0f}{suffix}" for a, b in spans]
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+class AttentionHighlightStrategy(Strategy):
+    name = "attention_highlight"
+
+    def __init__(self, cfg: dict | None = None) -> None:
+        cfg = cfg or {}
+        # Gate identico a `entropy_attention_resample`: stesso default, stessa
+        # condizione (`answer_entropy > soglia`). È ciò che rende i due arm
+        # confrontabili sample-per-sample — cambiando solo l'intervento.
+        self.entropy_threshold = float(cfg.get("entropy_threshold", 0.7))
+        # LoT non ha gate: evidenzia sempre. `true` riproduce quel regime
+        # (ablation "serve il gate?"), `false` (default) resta confrontabile
+        # con gli arm di resampling esistenti.
+        self.always_highlight = bool(cfg.get("always_highlight", False))
+        # Numero di istanti evidenziati: le `top_k` celle a massa più alta.
+        # `top_k=1` = solo la cella di picco, cioè la stessa su cui il ramo
+        # `zoom_peak` di `entropy_attention_resample` zooma — è il confronto
+        # più pulito fra i due interventi (stessa cella, uno la isola e
+        # l'altro la segnala).
+        self.top_k = max(1, int(cfg.get("top_k", 3)))
+        self.pointer_units = str(cfg.get("pointer_units", "seconds"))
+        self.pointer_position = str(cfg.get("pointer_position", "prepend"))
+        self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
+        self.sink_border = int(cfg.get("sink_border", 0))
+
+        # Knob rimossi (modalità `peak`/`window`, vedi docstring del modulo):
+        # senza questo check una CLI o uno sbatch che li passa ancora
+        # verrebbe accettato in silenzio e girerebbe con una configurazione
+        # diversa da quella intesa — su un job array sono ore buttate.
+        removed = {"highlight_select", "beta", "max_span_frac"} & set(cfg)
+        if removed:
+            raise ValueError(
+                f"knob rimossi da {self.name!r}: {sorted(removed)}. Le modalità "
+                "'peak'/'window' non esistono più — si evidenziano sempre le "
+                "`top_k` celle a massa più alta ('peak' era `top_k=1`)."
+            )
+        if self.pointer_units not in ("seconds", "fraction"):
+            raise ValueError(
+                f"pointer_units sconosciuto: {self.pointer_units!r}. Valide: 'seconds', 'fraction'"
+            )
+        if self.pointer_position not in ("prepend", "append"):
+            raise ValueError(
+                f"pointer_position sconosciuto: {self.pointer_position!r}. Valide: 'prepend', 'append'"
+            )
+
+    def _build_pointer(
+        self,
+        ranked: list[RankedCell],
+        *,
+        t: int,
+        units: str,
+        window_sec: float,
+    ) -> tuple[str | None, list[float] | None, str | None]:
+        """`(frase, posizioni_evidenziate, motivo_skip)`.
+
+        `window_sec` è la DURATA della clip che il modello vede, non gli
+        estremi nel video sorgente: con un trim (`video_start`/`video_end`,
+        es. LVBench `use_time_reference`) qwen-vl-utils decodifica solo quella
+        finestra e il modello la percepisce come se iniziasse a 0 — nulla nel
+        prompt gli dice a che punto del video originale si trovi. Il puntatore
+        deve quindi parlare in secondi RELATIVI alla clip. È la differenza col
+        `peak_time = w0 + frac*(w1-w0)` di `entropy_attention_resample`: là il
+        valore serve a costruire un nuovo `Video(video_start=...)`, quindi va
+        in coordinate assolute del sorgente perché lo consuma il DECODER; qui
+        lo consuma il MODELLO, che vive in coordinate della clip.
+
+        `intervalli_evidenziati` è nelle unità del puntatore (secondi nella
+        clip o percentuali della sua durata) ed è esattamente ciò che è stato
+        detto al modello, loggato per l'analisi offline: una coppia `[a, b]`
+        per ogni tratto evidenziato, dopo la fusione dei contigui.
+        `motivo_skip` è valorizzato solo quando non si evidenzia nulla, così
+        il caso "gate aperto ma nessun puntatore" resta distinguibile nel log
+        dal caso "gate chiuso".
+        """
+        def to_units(frac: float) -> float:
+            return frac * window_sec if units == "seconds" else 100.0 * frac
+
+        # `ranked` è ordinata per massa decrescente: le prime `top_k` celle
+        # sono quelle da evidenziare, ma si emettono ordinate per TEMPO — una
+        # lista in ordine di rilevanza leggerebbe come una classifica, mentre
+        # qui conta la posizione nel video.
+        if all(c.pct <= 0 for c in ranked):
+            return None, None, "no_signal"
+        cells = [c.cell for c in ranked[:self.top_k]]
+        spans_frac = _merge_spans([_cell_span_frac(cell, t) for cell in cells])
+        spans = [(to_units(a), to_units(b)) for a, b in spans_frac]
+
+        # Accordo singolare/plurale: con `top_k=1` (o con celle tutte
+        # contigue, fuse in un tratto solo) si evidenzia un intervallo unico,
+        # e "these parts: 880-1100 s" sarebbe sgrammaticato. Qui la frase È
+        # l'intervento sperimentale, quindi la forma conta quanto il contenuto.
+        if len(spans) == 1:
+            tmpl = POINTER_SPAN_SEC if units == "seconds" else POINTER_SPAN_FRAC
+            a, b = spans[0]
+            pointer = tmpl.format(a=a, b=b)
+        else:
+            pointer = POINTER_SPANS.format(spans=_fmt_spans(spans, units=units))
+        return pointer, [[a, b] for a, b in spans], None
+
+    def answer(
+        self,
+        vlm: BaseVLM,
+        *,
+        video_path: str,
+        prompt: str,
+        options: list[str] | None,
+        gen_cfg: GenerationConfig,
+        budget: SamplingBudget,
+        video_start: float | None = None,
+        video_end: float | None = None,
+        frames: list[str] | None = None,
+    ) -> dict:
+        if not isinstance(vlm, SupportsSignals):
+            raise RuntimeError(
+                f"strategy {self.name!r} richiede un modello che implementa "
+                f"SupportsSignals (segnali di confidenza/attenzione), ma "
+                f"{type(vlm).__name__} non lo fa — usa model=qwen2_5_vl_3b_attn "
+                "o un'altra strategy."
+            )
+
+        tmp_dirs: list[Path] = []
+        media, media_tmp_dir = self._build_media(video_path, frames, video_start, video_end, budget)
+        if media_tmp_dir is not None:
+            tmp_dirs.append(media_tmp_dir)
+        letters = [chr(ord("A") + i) for i in range(len(options))] if options is not None else None
+        signal: SignalAnswer = vlm.generate_with_signals(media, Text(prompt), gen_cfg, answer_letters=letters)
+
+        # Ranking celle: calcolato e loggato SEMPRE (anche quando il gate non
+        # scatta), stessa policy di `entropy_attention_resample` — serve a
+        # confrontare a posteriori come si distribuiscono i segnali rispetto
+        # alla decisione di evidenziare.
+        top1_pct = peak_cell = t_cells = None
+        ranked_cells: list[RankedCell] | None = None
+        if signal.visual_attention is not None:
+            ranked_cells = ranked_cells_from_attention(
+                signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
+            )
+            top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
+            t_cells = signal.visual_attention.t
+
+        gate_open = self.always_highlight or (
+            signal.answer_entropy is not None and signal.answer_entropy > self.entropy_threshold
+        )
+
+        highlighted = False
+        highlight_spans: list[list[float]] | None = None
+        highlight_skip_reason: str | None = None
+        highlight_units: str | None = None
+        pointer: str | None = None
+        final_prompt = prompt
+
+        if ranked_cells is not None and gate_open:
+            # Con `frames` fissati dal dataset non c'è una finestra temporale
+            # nota su cui mappare le celle (i frame sono già estratti, la loro
+            # spaziatura reale non è ricostruibile qui): il puntatore può solo
+            # essere relativo alla sequenza mostrata, mai in secondi assoluti.
+            units = "fraction" if frames is not None else self.pointer_units
+            window_sec = 0.0
+            if units == "seconds":
+                w0 = video_start if video_start is not None else 0.0
+                w1 = video_end if video_end is not None else video_duration_sec(video_path)
+                window_sec = max(0.0, w1 - w0)
+                # Collasso dell'orologio del modello. La M-RoPE spazia le celle
+                # di `tokens_per_second * int(second_per_grid_ts)`
+                # (`modeling_qwen2_5_vl.py:1125`) e quel troncamento a INTERO
+                # azzera l'intervallo quando una cella dura meno di un secondo,
+                # cioè quando `window_sec/t < 1`: tutte le celle finiscono alla
+                # stessa posizione temporale e il modello perde ogni nozione di
+                # ordine, figurarsi di istante. Parlargli in secondi lì non
+                # significa nulla, mentre una posizione relativa resta leggibile
+                # dall'ordine in cui i frame compaiono nella sequenza. A
+                # `nframes=24` scatta sotto i 12 s di durata (~1% della fascia
+                # short di Video-MME; in regime frame-doubling la soglia
+                # raddoppia a 24 s e la quota sale a ~12%, vedi
+                # `docs/` e la nota in highlight_top1_24.sbatch).
+                if t_cells and window_sec < t_cells:
+                    units = "fraction"
+            pointer, highlight_spans, highlight_skip_reason = self._build_pointer(
+                ranked_cells, t=t_cells, units=units, window_sec=window_sec,
+            )
+            if pointer is not None:
+                highlight_units = units
+                highlighted = True
+                final_prompt = (
+                    f"{pointer}\n\n{prompt}"
+                    if self.pointer_position == "prepend"
+                    else f"{prompt}\n\n{pointer}"
+                )
+
+            if self.capture_dir is not None:
+                self._save_attention_capture(
+                    vlm, video_path, prompt, signal.visual_attention, budget, video_start, video_end,
+                    extra={
+                        "highlighted": highlighted,
+                        "highlight_skip_reason": highlight_skip_reason,
+                        "highlight_spans": highlight_spans,
+                        "highlight_units": highlight_units,
+                        "top1_pct": top1_pct, "peak_cell": peak_cell, "t_cells": t_cells,
+                    },
+                )
+
+        try:
+            # `media` è quella del pass 1, invariata: è il punto di questa
+            # strategy — stessi frame, solo il prompt cambia. Nessuna
+            # ridecodifica del video, nessuna tmpdir nuova.
+            messages = vlm.build_messages(media, Text(final_prompt))
+            raw = vlm.generate(messages, generation_config=gen_cfg)
+        finally:
+            for tmp_dir in tmp_dirs:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        result: dict = {
+            "raw": raw,
+            "answer_entropy": signal.answer_entropy,
+            "top1_pct": top1_pct,
+            "peak_cell": peak_cell,
+            "t_cells": t_cells,
+            # `highlighted` è la chiave da cui `mcq_accuracy` ricava le due
+            # metriche del gate (BREAKDOWN_KEYS in evals/base.py):
+            # `seen_highlighted_true` e l'accuracy condizionata.
+            "highlighted": highlighted,
+            "highlight_skip_reason": highlight_skip_reason,
+            "highlight_spans": highlight_spans,
+            "highlight_units": highlight_units,
+            "pointer": pointer,
+        }
+        if options is not None:
+            pred = parse_mcq_letter(raw, options)
+            pred_fallback = False
+            if pred is None and signal.pred_letter is not None:
+                # Stesso fallback di `entropy_attention_resample`: se il pass 2
+                # non produce una lettera parseabile si usa l'argmax della
+                # softmax ristretta del pass 1 invece di perdere il sample
+                # (README, "52/3800 senza pred parseabile").
+                pred = letters.index(signal.pred_letter)
+                pred_fallback = True
+            result["pred"] = pred
+            result["pred_fallback"] = pred_fallback
+        return result

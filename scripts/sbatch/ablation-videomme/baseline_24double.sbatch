@@ -50,10 +50,17 @@
 # richiede che /tmp del nodo sia scrivibile.
 #
 # Job array a 3 shard (900 sample ciascuno). `--time=06:00:00`: stesso
-# criterio di baseline_24. Il doubling raddoppia i token visivi rispetto
-# a quello (t=24 celle invece di 12), ma resta ben sotto le 64 celle del
-# run da cui viene la misura di riferimento → stima ~4.5h/shard nel caso
-# peggiore (RTX6000-24G), ~2h su L40S. Accuracy POOLED sui 3 shard.
+# criterio di baseline_24, ma qui il valore ORIGINALE resta — è l'unico
+# arm della cartella la cui stima iniziale era corretta.
+# **Misurato sull'array 74426**:
+#   shard 0  bimbogigi NVIDIA L40S 45G        8834s = 2h27   9.82 s/sample
+#   shard 1  nullazzo  Quadro RTX 6000 24G   15055s = 4h11  16.73 s/sample
+#   shard 2  huber     NVIDIA RTX A5000 24G   9428s = 2h37  10.48 s/sample
+# È l'arm PIÙ COSTOSO dei cinque (~2.3× baseline_24): il doubling paga i
+# token visivi doppi su TUTTI i 2700 sample, mentre gli arm signal-driven
+# fanno il secondo pass solo sul ~72% che supera il gate. 4h11 contro 6h
+# di budget = 1.43× di margine, il più stretto della cartella: non
+# abbassare sotto le 6h. Accuracy POOLED sui 3 shard.
 set -euo pipefail
 
 echo "node: $(hostname)"; echo "date: $(date -Iseconds)"

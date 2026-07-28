@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=10:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -36,10 +36,17 @@
 # entrambi non trascurabili; se uno dei due è ~0 la soglia va ritarata
 # prima di spendere i 3 shard.
 #
-# Job array a 3 shard (900 sample ciascuno). `--time=10:00:00`: stesso
-# criterio e stessa derivazione di entropy_shift_24 (~30-35 s/sample
-# stimati su RTX6000-24G → ~8h/shard, budget reale 40 s/sample) —
-# incluso il probe di 40 minuti da fare prima, documentato lì.
+# Job array a 3 shard (900 sample ciascuno). `--time=05:00:00`: stesso
+# criterio e stessa ricalibrazione di entropy_shift_24, che resta il caso
+# peggiore misurato dei tre arm signal-driven (3h23 su RTX6000-24G).
+# **Misurato sull'array 74429**: shard 0 e 1, entrambi su `dracula`
+# (L40S 45G), in 5548s = 1h32 e 5364s = 1h29 → 6.16 e 5.93 s/sample.
+# Proiettato sulla card più lenta del constraint (penalità RTX6000/L40S
+# = 1.9×, misurata su baseline_24 shard 0 vs 1-2): ~11.6 s/sample ≈ 2h53,
+# quindi 5h danno ~1.7× di margine. Nota: il router costa come
+# entropy_zoom_24 (6.09 s/sample sulla stessa card) — coerente col fatto
+# che manda il 97% dei resample sul ramo `phase_shift`, quindi in pratica
+# NON è più caro degli arm a ramo fisso.
 #
 # ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
 # dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle tre.

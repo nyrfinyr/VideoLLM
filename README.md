@@ -68,23 +68,34 @@ Subset comune a tutte le righe: `limit=250`, `shuffle=true`, `seed=42`
 stesso subset. `Δ vs uniform` = accuracy − accuracy del controllo uniform
 **su questo stesso subset** (non il 59.93% della tabella Baseline sopra,
 che è sull'intero set da 2700 sample — varianza campionaria diversa, non
-confrontabile direttamente). `—` = 0 predizioni valide per OOM, vedi nota.
+confrontabile direttamente). `resampled` = % sample che hanno superato il
+gate d'entropia (`answer_entropy > entropy_threshold`); `fixed`/`broken` =
+sample ricampionati che il resampling ha rispettivamente corretto
+(❌→✅) o rovinato (✅→❌) rispetto al pass 1, dal join per-sample in
+`docs/analisi_winloss_resampling_video_mme.md`. `—` = 0 predizioni valide
+per OOM, vedi nota.
 
-| strategy                   | entropy_threshold | concentration_threshold | accuracy         | Δ vs uniform | run |
-|-----------------------------|-------------------:|--------------------------:|------------------:|-------------:|-----|
-| uniform (controllo)         |                   — |                          — | [62.80](https://wandb.ai/alesvale97-unimore/video_mme/runs/ktvjcyye) (157/250) |            — | [`ktvjcyye`](https://wandb.ai/alesvale97-unimore/video_mme/runs/ktvjcyye) |
-| entropy_attention_resample  |                 0.3 |                         20 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/r6khe103) (164/250) |        +2.80 | [`r6khe103`](https://wandb.ai/alesvale97-unimore/video_mme/runs/r6khe103) |
-| entropy_attention_resample  |                 0.3 |                         30 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/rsw3fq7d) (164/250) |        +2.80 | [`rsw3fq7d`](https://wandb.ai/alesvale97-unimore/video_mme/runs/rsw3fq7d) |
-| entropy_attention_resample  |                 0.3 |                         45 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/em2fzfr1) (164/250) |        +2.80 | [`em2fzfr1`](https://wandb.ai/alesvale97-unimore/video_mme/runs/em2fzfr1) |
-| entropy_attention_resample  |                 0.5 |                         20 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) (164/250) |        +2.80 | [`86jyn8n7`](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) |
-| entropy_attention_resample  |                 0.5 |                         30 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) (164/250) |        +2.80 | [`yp7r9ziy`](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) |
-| entropy_attention_resample  |                 0.5 |                         45 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) (164/250) |        +2.80 | [`mb7cgbq5`](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) |
-| entropy_attention_resample  |                 0.7 |                         20 | — (0/250, OOM — vedi nota) |            — | [`lgs1jrxb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/lgs1jrxb) |
-| entropy_attention_resample  |                 0.7 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) (165/250) |        +3.20 | [`y6u5k1pq`](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) |
-| entropy_attention_resample  |                 0.7 |                         45 | — (0/250, OOM — vedi nota) |            — | [`tzhm99kn`](https://wandb.ai/alesvale97-unimore/video_mme/runs/tzhm99kn) |
-| entropy_attention_resample  |                 1.0 |                         20 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) (165/250) |        +3.20 | [`hmpib0w2`](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) |
-| entropy_attention_resample  |                 1.0 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/igbsy8cp) (165/250) |        +3.20 | [`igbsy8cp`](https://wandb.ai/alesvale97-unimore/video_mme/runs/igbsy8cp) |
-| entropy_attention_resample  |                 1.0 |                         45 | — (0/250, OOM — vedi nota) |            — | [`enb7u9ui`](https://wandb.ai/alesvale97-unimore/video_mme/runs/enb7u9ui) |
+| strategy                   | entropy_threshold | concentration_threshold | accuracy         | Δ vs uniform | resampled | fixed | broken | net | run |
+|-----------------------------|-------------------:|--------------------------:|------------------:|-------------:|-----------:|------:|-------:|----:|-----|
+| uniform (controllo)         |                   — |                          — | [62.80](https://wandb.ai/alesvale97-unimore/video_mme/runs/ktvjcyye) (157/250) |            — | — | — | — | — | [`ktvjcyye`](https://wandb.ai/alesvale97-unimore/video_mme/runs/ktvjcyye) |
+| entropy_attention_resample  |                 0.3 |                         20 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/r6khe103) (164/250) |        +2.80 | 77.6% (194/250) | 13 | 6 | +7 | [`r6khe103`](https://wandb.ai/alesvale97-unimore/video_mme/runs/r6khe103) |
+| entropy_attention_resample  |                 0.3 |                         30 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/rsw3fq7d) (164/250) |        +2.80 | 77.6% (194/250) | 13 | 6 | +7 | [`rsw3fq7d`](https://wandb.ai/alesvale97-unimore/video_mme/runs/rsw3fq7d) |
+| entropy_attention_resample  |                 0.3 |                         45 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/em2fzfr1) (164/250) |        +2.80 | 77.6% (194/250) | 13 | 6 | +7 | [`em2fzfr1`](https://wandb.ai/alesvale97-unimore/video_mme/runs/em2fzfr1) |
+| entropy_attention_resample  |                 0.5 |                         20 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) (164/250) |        +2.80 | 71.2% (178/250) | 13 | 6 | +7 | [`86jyn8n7`](https://wandb.ai/alesvale97-unimore/video_mme/runs/86jyn8n7) |
+| entropy_attention_resample  |                 0.5 |                         30 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) (164/250) |        +2.80 | 71.2% (178/250) | 13 | 6 | +7 | [`yp7r9ziy`](https://wandb.ai/alesvale97-unimore/video_mme/runs/yp7r9ziy) |
+| entropy_attention_resample  |                 0.5 |                         45 | [65.60](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) (164/250) |        +2.80 | 71.2% (178/250) | 13 | 6 | +7 | [`mb7cgbq5`](https://wandb.ai/alesvale97-unimore/video_mme/runs/mb7cgbq5) |
+| entropy_attention_resample  |                 0.7 |                         20 | — (0/250, OOM — vedi nota) |            — | — | — | — | — | [`lgs1jrxb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/lgs1jrxb) |
+| entropy_attention_resample  |                 0.7 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) (165/250) |        +3.20 | 65.2% (163/250) | 13 | 5 | +8 | [`y6u5k1pq`](https://wandb.ai/alesvale97-unimore/video_mme/runs/y6u5k1pq) |
+| entropy_attention_resample  |                 0.7 |                         45 | — (0/250, OOM — vedi nota) |            — | — | — | — | — | [`tzhm99kn`](https://wandb.ai/alesvale97-unimore/video_mme/runs/tzhm99kn) |
+| entropy_attention_resample  |                 1.0 |                         20 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) (165/250) |        +3.20 | 59.2% (148/250) | 13 | 5 | +8 | [`hmpib0w2`](https://wandb.ai/alesvale97-unimore/video_mme/runs/hmpib0w2) |
+| entropy_attention_resample  |                 1.0 |                         30 | [66.00](https://wandb.ai/alesvale97-unimore/video_mme/runs/igbsy8cp) (165/250) |        +3.20 | 59.2% (148/250) | 13 | 5 | +8 | [`igbsy8cp`](https://wandb.ai/alesvale97-unimore/video_mme/runs/igbsy8cp) |
+| entropy_attention_resample  |                 1.0 |                         45 | — (0/250, OOM — vedi nota) |            — | — | — | — | — | [`enb7u9ui`](https://wandb.ai/alesvale97-unimore/video_mme/runs/enb7u9ui) |
+
+Le tre combinazioni con lo stesso `entropy_threshold` sono byte-per-byte
+identiche (stesso set di sample fixed/broken, non solo lo stesso
+conteggio) — `concentration_threshold` non misura alcun effetto in
+{20,30,45} su questo dataset (dettagli in
+`docs/analisi_winloss_resampling_video_mme.md`).
 
 La riga et0.7/ct30 è la run di verifica pre-sweep (post-fix OOM
 `empty_cache`, vedi `models/qwen_attn.py`) — non fa parte dello sweep group
@@ -116,47 +127,127 @@ sono girate **tutte e sole** su `nullazzo` (Quadro RTX 6000 24G); `huber`
 eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
 45G (A40/L40S), quindi esclude comunque `nullazzo`.
 
-## In corso
+## Ablation entropy/shift/zoom (Video-MME)
 
-- Sweep soglie `entropy_attention_resample` su Video-MME (tabella sopra) —
-  9/12 combinazioni completate con score (65.6-66.0%, tutte sopra il
-  controllo uniform 62.8%). Analisi win/loss sample-per-sample in
-  `docs/analisi_winloss_resampling_video_mme.md`: il beneficio netto
-  nasconde un turnover di 12-13 sample recuperati contro 5-6 rovinati,
-  **sempre gli stessi id** in tutte le combinazioni — `ct` non ha alcun
-  effetto misurabile in {20,30,45} su Video-MME (dominio diverso da dove
-  le soglie erano state tarate, VNBench). Mancano `et0.7-ct20`/
-  `et0.7-ct45`/`et1.0-ct45`: OOM totale, tutte e sole sull'host `nullazzo`
-  (vedi nota sopra), da rilanciare escludendo quel nodo. Poi si sceglie la
-  coppia (entropy_threshold, concentration_threshold) migliore contro il
-  controllo uniform, e si confronta Qwen2.5-VL-7B contro AdaptToken (vedi
-  `docs/diario/riunione_07-07-26.md`).
-- **Zoom multi-regione disgiunto (Opzione C1)** — implementato e validato
-  ([`z4qx9hnb`](https://wandb.ai/alesvale97-unimore/video_mme/runs/z4qx9hnb),
-  subset 250, `force_zoom_for_debug`): 64.0%, batte uniform (62.8%) ma non
-  `phase_shift` (66.0%) in aggregato, però recupera un pool DISTINTO di ~13
-  sample che `phase_shift` non prende (win/loss + stratificazione per n.
-  regioni in `docs/piano_zoom_multiregione_disgiunto.md`, "Risultati
-  validazione empirica"). **Selettore di ramo (§1.3)**: tre segnali di
-  concentrazione confrontati come router concentrato→C1/disperso→phase_shift
-  (join a tre vie sui 163 sample ricampionati, stesso subset) — `top1_pct`
-  grezzo (plateau 88-90/163) batte sia l'entropia di Shannon normalizzata
-  `H/log(t)` (85-87/163) sia lo z-score del picco vs le altre celle
-  (87/163, il più debole dei tre). Nessuno dei due segnali "più
-  sofisticati" ha battuto il proxy semplice — dettagli in
-  `docs/piano_zoom_multiregione_disgiunto.md`. **Stage C (subset di
-  calibrazione)**: router `top1_pct` a soglia adattiva
-  (`concentration_ratio=3.85 × 100/t`, non le soglie assolute fisse 20/30/45
-  già note come inerti su Video-MME) + `zoom_multi_region` —
-  [`0e2qopcy`](https://wandb.ai/alesvale97-unimore/video_mme/runs/0e2qopcy),
-  subset 250: **68.8% (172/250)**, +6.0pt su uniform — ma **sullo stesso
-  subset su cui la soglia era calibrata** (non held-out). **Full eval 2700
-  (array `67691`, 4 shard): 60.22% (1626/2700), che eguaglia la baseline
-  uniform sul full (59.93%, `p7srmrkl`) — edge +0.29pt, statisticamente
-  nullo.** Il router `concentration_ratio` NON generalizza: l'edge era
-  in-sample-lucky (soglia scelta come argmax su curva piatta 88-90/163). Il
-  filone `top1_pct` è chiuso come miglioramento su Video-MME — decomposizione
-  del gap (~2.9pt subset più facile + ~5.7pt edge in-sample) e conseguenze
-  in `docs/sintesi_segnali_router_concentrazione.md` §8.
-- Wiring di Qwen3-VL-2B/4B (stub in `models/qwen3_vl.py`) per popolare le
-  altre due colonne della tabella baseline.
+6 arm su Video-MME intero (2700 sample, `model=qwen2_5_vl_3b_attn`,
+`dataset.nframes=24`, job array a 3 shard SLURM,
+`scripts/sbatch/ablation-videomme/`, gruppo wandb
+[`video_mme-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-ablation),
+vedi `docs/future-work/output_riunione_2207.md`). `baseline_24` è il
+riferimento `uniform` (regime normale, merge a coppie); `baseline_24double`
+è lo stesso `uniform` ma con timestamp raddoppiati (24 celle da 1 frame
+invece di 12 da 2). Gli altri quattro arm sono signal-driven e condividono
+lo stesso gate d'entropia: tre ricampionano i frame
+(`entropy_attention_resample`, strategie `phase_shift`/`zoom_peak`/router),
+il quarto no — `highlight_top1_24` lascia i frame invariati e agisce solo
+sul prompt (`attention_highlight`, vedi sotto).
+Tutti e 15 i run dei primi 5 arm (5 × 3 shard) sono `finished`;
+`highlight_top1_24` è in coda. Accuracy *pooled* sull'intero arm
+(Σ corretti / Σ campioni, non media degli shard — stesso metodo di
+LVBench sopra).
+
+Colonne: accuracy pooled complessiva, `Δ` contro il riferimento
+`baseline_24` (tutti gli arm si confrontano con quello, non con
+`baseline_24double`), per tipologia video (short/medium/long,
+breakdown emesso da `evals/base.py` via `BREAKDOWN_KEYS`), `% resampling`
+(quota di sample su cui è scattato il secondo passaggio, cioè
+`answer_entropy > entropy_threshold` al pass 1 — per `highlight_top1_24`
+il secondo passaggio c'è comunque ma non ricampiona nulla, cambia solo il
+prompt), e accuracy condizionata al gate d'entropia
+(`acc | high_ans_entropy` = sample su cui il gate è scattato,
+`acc | low_ans_entropy` = sample accettati al pass 1 — vedi nota in
+`evals/base.py:96-104`), e — solo per
+`shift_zoom_router_24`, l'unico arm dove il ramo è deciso sample-per-
+sample invece che fissato per costruzione — lo split fra i due rami di
+resampling (`ramo phase_shift`/`ramo zoom_peak`: quota sul totale
+ricampionato e accuracy condizionata). `baseline_24`/`baseline_24double`
+sono `uniform`: non hanno gate, colonne assenti (`—`).
+
+| arm                  | pooled | Δ vs baseline_24 | short | medium | long | % resampling | acc \| high_ans_entropy | acc \| low_ans_entropy | ramo phase_shift | ramo zoom_peak |
+|-----------------------|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline_24           | **55.04%** (1486/2700) | — (riferimento) | 64.33% (579/900) | 52.00% (468/900) | 48.78% (439/900) | — | — | — | — | — |
+| baseline_24double     | **56.93%** (1537/2700) | +1.89 | 68.22% (614/900) | 55.22% (497/900) | 47.33% (426/900) | — | — | — | — | — |
+| entropy_shift_24      | 55.63% (1502/2700) | +0.59 | 66.11% (595/900) | 53.00% (477/900) | 47.78% (430/900) | 73.15% (1975/2700) | 43.59% (861/1975) | 88.41% (641/725) | 100% (forzato) | — |
+| entropy_zoom_24       | 54.59% (1474/2700) | −0.44 | 63.33% (570/900) | 52.44% (472/900) | 48.00% (432/900) | 72.93% (1969/2700) | 42.10% (829/1969) | 88.24% (645/731) | — | 100% (forzato) |
+| shift_zoom_router_24  | 55.81% (1507/2700) | +0.78 | 66.00% (594/900) | 53.33% (480/900) | 48.11% (433/900) | 72.93% (1969/2700) | 43.93% (865/1969) | 87.82% (642/731) | 96.95% (1909/1969), acc 43.74% | 3.05% (60/1969), acc 50.00%\* |
+| highlight_top1_24     | — (in coda) | — | — | — | — | — | — | — | — | — |
+
+\* N piccola (60 sample) — indicativo, non conclusivo. Il salto
+~42-44% → ~88% sul gate non è il gate che "funziona meglio quando non
+scatta": è un effetto di selezione — il gate manda a ricampionamento i
+sample con attenzione dispersa (entropia alta), che nel dataset sono
+anche quelli con domande intrinsecamente più difficili (video
+lunghi/complessi); i sample accettati al pass 1 sono i più facili per
+costruzione. Non è quindi un confronto valido tra "il gate aiuta" vs "il
+gate non aiuta" — servirebbe un controllo uniform ristretto allo stesso
+sottoinsieme di sample (`high_ans_entropy`) per isolare l'effetto del
+ricampionamento dalla difficoltà intrinseca del sample.
+
+Sul full dataset: `entropy_shift_24` (+0.59) e `shift_zoom_router_24`
+(+0.78) sono debolmente sopra `baseline_24`; `entropy_zoom_24` è
+**sotto** (−0.44) — lo zoom a singolo picco forzato, da solo, non recupera
+sample rispetto a non ricampionare affatto. Nessuno dei tre batte
+`baseline_24double` (56.93%), il controllo compute-matched.
+
+`highlight_top1_24` è l'arm successivo, ancora da lanciare
+(`scripts/sbatch/ablation-videomme/highlight_top1_24.sbatch`). Attesa sul
+gate: la quota di sample evidenziati deve cadere sullo stesso ~73% degli
+altri arm signal-driven, che condividono gate e pass 1 — non
+necessariamente identica al sample, perché il non-determinismo numerico
+fra GPU diverse fa oscillare i sample al bordo della soglia (fra
+`entropy_shift_24` e `entropy_zoom_24`, che hanno pass 1 identico, il
+conteggio già differisce di 6 su 2700).
+
+**Cosa rappresenta ogni `arm` (colonna della tabella):**
+
+- **`baseline_24`** — riferimento: 24 frame campionati uniformemente
+  lungo tutto il video, nessuna logica adattiva, un solo passaggio del
+  modello per sample. È il punto zero rispetto a cui si misura ogni
+  altro arm (colonna `Δ vs baseline_24`).
+- **`baseline_24double`** — stesso campionamento uniforme di
+  `baseline_24`, ma ogni frame viene mostrato al modello due volte
+  invece di una. Non è una strategia adattiva: serve a isolare l'effetto
+  di "più token visivi a parità di frame osservati" da quello degli arm
+  successivi, che di fatto raddoppiano i token visivi solo sui sample
+  ricampionati — un confronto a compute comparabile.
+- **`entropy_shift_24`** — a partire da `baseline_24`, il modello fa un
+  primo passaggio (pass 1) e si misura quanto è incerta la sua risposta
+  (entropia della risposta). Se l'incertezza supera una soglia, si rifà
+  la domanda un secondo passaggio (pass 2) dopo aver **spostato** la
+  finestra temporale di frame osservata (stessa ampiezza, punto di
+  osservazione diverso). In questo arm il secondo passaggio, quando
+  scatta, è sempre di questo tipo (shift).
+- **`entropy_zoom_24`** — stesso meccanismo di gate (pass 1 + soglia
+  sull'incertezza), ma quando scatta il secondo passaggio **restringe**
+  la finestra temporale ("zoom") attorno al singolo istante del video su
+  cui il modello aveva concentrato l'attenzione al pass 1, invece di
+  spostarla.
+- **`shift_zoom_router_24`** — stesso gate d'incertezza, ma la scelta fra
+  "shift" e "zoom" non è fissata a priori: viene decisa automaticamente,
+  sample per sample, in base a quanto è concentrata l'attenzione del
+  modello al pass 1 — molto concentrata su un istante → zoom, dispersa su
+  più istanti → shift.
+- **`highlight_top1_24`** — stesso gate d'incertezza dei tre precedenti,
+  ma il secondo passaggio **non cambia i frame**: il modello rivede
+  esattamente gli stessi 24, e l'unica differenza è una frase aggiunta in
+  testa al prompt che gli dice dove guardare, del tipo *"Focus on the part
+  of the video between 880 and 1100 seconds: that is where the visual
+  evidence relevant to the question is"*. L'intervallo è quello della
+  cella su cui l'attenzione del pass 1 si era concentrata di più (una
+  sola, `top_k=1`), tolti prima i token-sink.
+
+  Serve a separare due cose che negli arm precedenti sono confuse: quando
+  shift o zoom migliorano una risposta, è perché il modello ha visto
+  **frame nuovi** o perché è stato **ridiretto** su quelli che già aveva?
+  Qui informazione visiva nuova non ce n'è per costruzione, quindi
+  qualunque guadagno viene solo dal secondo. Il rovescio è che se il picco
+  d'attenzione del pass 1 era sbagliato, shift e zoom possono comunque
+  correggersi guardando altrove, mentre qui il puntatore rinforza
+  l'errore: il confronto interessante è quanti sample recupera contro
+  quanti ne rompe rispetto a `entropy_zoom_24`, che sui sample gated
+  seleziona la stessa identica cella — uno la isola, l'altro la segnala.
+
+  È l'adattamento al video di Look Twice (arXiv:2604.01280, codice in
+  `lot/`), che sul lato immagine localizza l'evidenza con l'attenzione e
+  poi la evidenzia nel prompt invece di ricampionare. Dettagli e
+  divergenze dal paper in `strategies/attention_highlight.py`.

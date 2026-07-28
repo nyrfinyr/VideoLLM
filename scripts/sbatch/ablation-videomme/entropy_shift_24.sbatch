@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=10:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -23,26 +23,24 @@
 # in utils/samples.py). Un job singolo da 2700 sample non ha checkpoint:
 # un timeout butterebbe via l'intero arm.
 #
-# `--time=10:00:00`, tenuto BASSO di proposito: il backfill di SLURM
+# `--time=05:00:00`, tenuto BASSO di proposito: il backfill di SLURM
 # schedula prima i job corti e qui ne vanno in coda 15 (5 arm × 3 shard),
-# quindi un --time gonfiato ritarda tutto l'esperimento. Riferimento
-# misurato: 24.6 s/sample a 128 FRAME su L40S (run y6u5k1pq, 250 sample
-# in 6152s = 1h42); a 24 frame i token visivi sono ~5× meno (t=12 celle
-# contro 64) su ENTRAMBI i pass → stima ~30-35 s/sample su RTX6000-24G
-# (la card più lenta del constraint) ≈ 8h/shard, ~1.25× di margine, e
-# ~3h su L40S.
+# quindi un --time gonfiato ritarda tutto l'esperimento.
 #
-# ⚠️ È l'unico --time della cartella che dipende da una stima di speedup
-# invece che da un limite superiore misurato. Budget reale: **40 s/sample**
-# (900 × 40 = 10h). Sopra quella soglia lo shard va in timeout — costo: si
-# rilancia QUEL solo shard (`sbatch --array=<i> --time=16:00:00 ...`),
-# non l'arm intero. Per non scoprirlo dopo 10h basta un probe da 40
-# minuti prima di lanciare tutto:
-#   sbatch --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G" \
-#       scripts/sbatch/video_mme-signal-test.sbatch limit=40 \
-#       dataset.nframes=24 strategy.branch_selector=concentration \
-#       strategy.concentration_threshold=101
-# e leggere `model_latency.mean` (log: `grep -A6 'Evaluation summary'`).
+# **Ricalibrato sull'array 74427 (misurato)**: shard 0 su `nullazzo`
+# (Quadro RTX 6000 24G, la card più lenta del constraint) ha chiuso in
+# 12208s = 3h23, 13.53 s/sample. 5h di budget = 1.48× di margine sul caso
+# peggiore reale. La vecchia stima (30-35 s/sample su RTX6000 → 8h/shard,
+# --time=10:00:00) era pessimistica di 2.5×: derivava dalla latenza a 128
+# frame (24.6 s/sample, run y6u5k1pq) scalata a occhio, e sovrastimava sia
+# il costo per frame sia la penalità della card. Il probe da 40 minuti che
+# stava qui non serve più — il limite superiore ora è misurato su 900
+# sample veri. Confronto con l'arm senza gate, stessa card: baseline_24
+# shard 0, sempre su `nullazzo`, 7.24 s/sample → il gate + secondo pass
+# sul ~72% dei sample costa 1.87×.
+#
+# Se uno shard va comunque in timeout si rilancia QUEL solo shard
+# (`sbatch --array=<i> --time=08:00:00 ...`), non l'arm intero.
 #
 # ACCURACY: i 3 shard producono 3 run wandb separate — l'accuracy
 # dell'arm è quella POOLED (Σ corretti / Σ sample), non la media delle
