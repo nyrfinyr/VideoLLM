@@ -35,5 +35,4 @@ uv run python main.py \
     num_shards=${SLURM_ARRAY_TASK_COUNT} \
     wandb.tags=[eval,lvbench,sbatch,array] \
     wandb.group=${MODEL}-lvbench \
-    wandb.name=${MODEL}-lvbench-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
-    wandb.notes="slurm array ${SLURM_ARRAY_JOB_ID} task ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)"
+    wandb.name=${MODEL}-lvbench-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}

@@ -80,5 +80,4 @@ uv run python main.py \
     wandb.group=video_mme-ablation \
     wandb.name=qwen2_5_vl_3b_attn-entropy_zoom_24-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     wandb.tags=[ablation,video_mme,entropy_zoom_24] \
-    wandb.notes="ablation riunione 22-07-26: gate entropia + resample sempre zoom a singolo picco, 24 frame, shard ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)" \
     "$@"

@@ -75,5 +75,4 @@ uv run python main.py \
     wandb.tags=[eval,video_mme,sbatch,array,${STRATEGY},router] \
     wandb.group=${MODEL}-${STRATEGY}-router-video_mme \
     wandb.name=${MODEL}-${STRATEGY}-router-video_mme-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
-    wandb.notes="slurm array ${SLURM_ARRAY_JOB_ID} task ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname) — router concentration_ratio, full eval" \
     "$@"

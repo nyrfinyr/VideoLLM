@@ -82,13 +82,27 @@ def parse_overrides(argv: list[str]) -> list[tuple[str, Any]]:
     Il RHS passa da `yaml.safe_load` per la type coercion (liste `[a,b]`,
     bool, `null`, numeri, stringhe nude) — stessa sintassi CLI già in uso
     negli sbatch/fetch script di questo repo.
+
+    Eccezione: una stringa libera che contiene `chiave: valore` è un MAPPING
+    valido per YAML, quindi `wandb.notes="ablation 22-07-26: baseline ..."`
+    veniva silenziosamente convertito in dict e faceva esplodere `wandb.init`
+    (`run_notes` vuole una `str`) — ha ucciso tutti i 15 job dell'ablation
+    Video-MME del 28-07-26. Un mapping è accettato solo se scritto in forma
+    flow esplicita (`{a: 1}`); altrimenti si tiene il testo grezzo. Stesso
+    trattamento per il RHS che YAML non riesce proprio a parsare.
     """
     overrides = []
     for token in argv:
         if "=" not in token:
             raise ValueError(f"override non valido (atteso key=value): {token!r}")
         path, _, raw_value = token.partition("=")
-        overrides.append((path, yaml.safe_load(raw_value)))
+        try:
+            value = yaml.safe_load(raw_value)
+        except yaml.YAMLError:
+            value = raw_value
+        if isinstance(value, dict) and not raw_value.lstrip().startswith("{"):
+            value = raw_value
+        overrides.append((path, value))
     return overrides
 
 

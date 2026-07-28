@@ -91,5 +91,4 @@ uv run python main.py \
     wandb.group=video_mme-ablation \
     wandb.name=qwen2_5_vl_3b_attn-shift_zoom_router_24-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     wandb.tags=[ablation,video_mme,shift_zoom_router_24] \
-    wandb.notes="ablation riunione 22-07-26: router soglia adattiva 3.85 (shift vs zoom singolo picco), 24 frame, shard ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)" \
     "$@"

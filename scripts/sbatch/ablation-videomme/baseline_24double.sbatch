@@ -74,5 +74,4 @@ uv run python main.py \
     wandb.group=video_mme-ablation \
     wandb.name=qwen2_5_vl_3b_attn-baseline_24double-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     wandb.tags=[ablation,video_mme,baseline_24double] \
-    wandb.notes="ablation riunione 22-07-26: baseline uniform 24 frame RADDOPPIATI (t=24, 1 cella = 1 frame), shard ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT} on $(hostname)" \
     "$@"

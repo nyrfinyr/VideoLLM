@@ -34,5 +34,4 @@ uv run python main.py \
     limit=40 \
     wandb.group=${MODEL}-egoschema-test \
     wandb.tags=[probe,egoschema,test] \
-    wandb.name=${MODEL}-egoschema-test-${SLURM_JOB_ID} \
-    wandb.notes="throughput probe slurm ${SLURM_JOB_ID} on $(hostname)"
+    wandb.name=${MODEL}-egoschema-test-${SLURM_JOB_ID}

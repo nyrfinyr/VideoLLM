@@ -27,5 +27,4 @@ uv run python main.py \
     hf_home=/work/tesi_avalenza/hf \
     wandb.tags=[eval,egoschema,sbatch] \
     wandb.group=${MODEL}-egoschema \
-    wandb.name=${MODEL}-egoschema-${SLURM_JOB_ID} \
-    wandb.notes="slurm ${SLURM_JOB_ID} on $(hostname)"
+    wandb.name=${MODEL}-egoschema-${SLURM_JOB_ID}
