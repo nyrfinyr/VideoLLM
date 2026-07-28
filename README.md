@@ -129,7 +129,7 @@ eval (`scripts/sbatch/video_mme-signal.sbatch`) è già pinnato a sole GPU
 
 ## Ablation entropy/shift/zoom (Video-MME)
 
-6 arm su Video-MME intero (2700 sample, `model=qwen2_5_vl_3b_attn`,
+7 arm su Video-MME intero (2700 sample, `model=qwen2_5_vl_3b_attn`,
 `dataset.nframes=24`, job array a 3 shard SLURM,
 `scripts/sbatch/ablation-videomme/`, gruppo wandb
 [`video_mme-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-ablation),
@@ -140,7 +140,8 @@ invece di 12 da 2). Gli altri quattro arm sono signal-driven e condividono
 lo stesso gate d'entropia: tre ricampionano i frame
 (`entropy_attention_resample`, strategie `phase_shift`/`zoom_peak`/router),
 il quarto no — `highlight_top1_24` lascia i frame invariati e agisce solo
-sul prompt (`attention_highlight`, vedi sotto).
+sul prompt (`attention_highlight`, vedi sotto). `random_top1_24` è il suo
+controllo: identico in tutto tranne che indica una cella a caso.
 Tutti e 15 i run dei primi 5 arm (5 × 3 shard) sono `finished`;
 `highlight_top1_24` è in coda. Accuracy *pooled* sull'intero arm
 (Σ corretti / Σ campioni, non media degli shard — stesso metodo di
@@ -171,6 +172,7 @@ sono `uniform`: non hanno gate, colonne assenti (`—`).
 | entropy_zoom_24       | 54.59% (1474/2700) | −0.44 | 63.33% (570/900) | 52.44% (472/900) | 48.00% (432/900) | 72.93% (1969/2700) | 42.10% (829/1969) | 88.24% (645/731) | — | 100% (forzato) |
 | shift_zoom_router_24  | 55.81% (1507/2700) | +0.78 | 66.00% (594/900) | 53.33% (480/900) | 48.11% (433/900) | 72.93% (1969/2700) | 43.93% (865/1969) | 87.82% (642/731) | 96.95% (1909/1969), acc 43.74% | 3.05% (60/1969), acc 50.00%\* |
 | highlight_top1_24     | — (in coda) | — | — | — | — | — | — | — | — | — |
+| random_top1_24        | — (in coda) | — | — | — | — | — | — | — | — | — |
 
 \* N piccola (60 sample) — indicativo, non conclusivo. Il salto
 ~42-44% → ~88% sul gate non è il gate che "funziona meglio quando non
@@ -251,3 +253,23 @@ conteggio già differisce di 6 su 2700).
   `lot/`), che sul lato immagine localizza l'evidenza con l'attenzione e
   poi la evidenzia nel prompt invece di ricampionare. Dettagli e
   divergenze dal paper in `strategies/attention_highlight.py`.
+- **`random_top1_24`** — controllo di `highlight_top1_24`: identico in
+  tutto (stesso gate, stessa frase, stesso costo) tranne che la parte di
+  video indicata è **estratta a sorte** invece di venire dal picco di
+  attenzione. Serve ad attribuire l'eventuale guadagno: se indicare un
+  pezzo a caso rende quanto indicare quello scelto dall'attenzione, allora
+  l'attenzione non sta contribuendo e si sta misurando solo l'effetto di
+  dare al modello un'istruzione di focalizzazione, qualunque essa sia.
+
+  Non è uno scrupolo formale. Un probe da 40 sample
+  ([`2dodrndg`](https://wandb.ai/alesvale97-unimore/video_mme/runs/2dodrndg))
+  mostra che il picco di attenzione è in buona parte **posizionale**: cade
+  sull'ultima delle 12 celle nel 28% dei casi (3.4× il livello di caso) e
+  su una delle due celle estreme nel 40% (atteso 17%), con `top1_pct`
+  mediano al 15.7% contro un livello di caso dell'8.3%. Il meccanismo
+  plausibile è la recency causale — le righe-query sono i token della
+  domanda, che stanno dopo il blocco visivo, quindi l'ultima cella è la
+  più vicina e riceve più attenzione a prescindere dal contenuto; il
+  filtro sink non lo corregge, perché agisce su un effetto diverso. È
+  anche una spiegazione candidata per `entropy_zoom_24`, che usa la stessa
+  `peak_cell` per zoomare ed è l'unico arm sotto la baseline.

@@ -79,6 +79,8 @@ unità frazionarie, non in secondi (vedi `pointer_units`).
 """
 from __future__ import annotations
 
+import hashlib
+import random
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -145,6 +147,23 @@ def _cell_span_frac(cell: int, t: int) -> tuple[float, float]:
     return cell / t, (cell + 1) / t
 
 
+def _sample_rng(seed: int, video_path: str, prompt: str) -> random.Random:
+    """RNG deterministico PER SAMPLE, non per processo.
+
+    Un `random.Random` globale darebbe celle diverse a seconda dell'ordine
+    di esecuzione — che con `Evaluation` concorrente non è garantito, e che
+    fra i 3 shard di un job array è per costruzione diverso: lo stesso
+    sample estrarrebbe celle diverse a ogni rilancio, rendendo il controllo
+    non riproducibile e non joinabile per-sample con gli altri arm.
+    Derivando il seed da `(seed, video_path, prompt)` la cella estratta è
+    una funzione pura del sample: stabile fra shard, fra rilanci e fra
+    macchine. `random_seed` permette di ripetere il controllo con un'altra
+    estrazione senza toccare il codice.
+    """
+    key = f"{seed}|{video_path}|{prompt}".encode()
+    return random.Random(int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big"))
+
+
 def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Fonde gli intervalli contigui o sovrapposti, ordinati per tempo. Celle
     adiacenti scelte entrambe (es. 4 e 5) descrivono un unico tratto di
@@ -189,6 +208,21 @@ class AttentionHighlightStrategy(Strategy):
         # più pulito fra i due interventi (stessa cella, uno la isola e
         # l'altro la segnala).
         self.top_k = max(1, int(cfg.get("top_k", 3)))
+        # `random` = controllo: stesso gate, stesso formato di puntatore,
+        # stesso costo, ma le celle sono estratte a sorte invece che dalle
+        # masse di attenzione. Serve ad attribuire l'eventuale guadagno: se
+        # indicare una cella a caso rende quanto indicare il picco, il
+        # contributo dell'attenzione è nullo e si sta misurando solo
+        # l'effetto del prompt. Non è un'ipotesi di scuola — il probe
+        # `2dodrndg` (40 sample) ha mostrato che il picco cade sull'ULTIMA
+        # cella nel 28% dei casi (3.4× il livello di caso) e sulle due celle
+        # estreme nel 40% (atteso 17%), con `top1_pct` mediano 15.7% contro
+        # un livello di caso dell'8.3%: il segnale è concentrato debolmente
+        # e in buona parte posizionale, plausibilmente per recency causale
+        # (le righe-query sono i token della domanda, che stanno DOPO il
+        # blocco visivo, quindi l'ultima cella è la più vicina).
+        self.cell_select = str(cfg.get("cell_select", "attention"))
+        self.random_seed = int(cfg.get("random_seed", 0))
         self.pointer_units = str(cfg.get("pointer_units", "seconds"))
         self.pointer_position = str(cfg.get("pointer_position", "prepend"))
         self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
@@ -205,6 +239,10 @@ class AttentionHighlightStrategy(Strategy):
                 "'peak'/'window' non esistono più — si evidenziano sempre le "
                 "`top_k` celle a massa più alta ('peak' era `top_k=1`)."
             )
+        if self.cell_select not in ("attention", "random"):
+            raise ValueError(
+                f"cell_select sconosciuto: {self.cell_select!r}. Valide: 'attention', 'random'"
+            )
         if self.pointer_units not in ("seconds", "fraction"):
             raise ValueError(
                 f"pointer_units sconosciuto: {self.pointer_units!r}. Valide: 'seconds', 'fraction'"
@@ -214,6 +252,24 @@ class AttentionHighlightStrategy(Strategy):
                 f"pointer_position sconosciuto: {self.pointer_position!r}. Valide: 'prepend', 'append'"
             )
 
+    def _select_cells(self, ranked: list[RankedCell], *, t: int, rng: random.Random) -> list[int] | None:
+        """Le `top_k` celle da evidenziare, o `None` se non c'è nulla da dire.
+
+        `attention`: le prime `top_k` di `ranked` (già ordinata per massa
+        decrescente). `None` quando la massa non-sink totale è zero — senza
+        segnale non si inventa un puntatore.
+
+        `random`: `top_k` celle distinte estratte a sorte fra le `t`. Qui il
+        caso "massa nulla" NON è una ragione per astenersi: la cella non
+        dipende dall'attenzione, e far saltare il controllo dove salta l'arm
+        vero restringerebbe il suo campione senza motivo.
+        """
+        if self.cell_select == "random":
+            return rng.sample(range(t), k=min(self.top_k, t))
+        if all(c.pct <= 0 for c in ranked):
+            return None
+        return [c.cell for c in ranked[:self.top_k]]
+
     def _build_pointer(
         self,
         ranked: list[RankedCell],
@@ -221,8 +277,9 @@ class AttentionHighlightStrategy(Strategy):
         t: int,
         units: str,
         window_sec: float,
-    ) -> tuple[str | None, list[float] | None, str | None]:
-        """`(frase, posizioni_evidenziate, motivo_skip)`.
+        rng: random.Random,
+    ) -> tuple[str | None, list[float] | None, list[int] | None, str | None]:
+        """`(frase, intervalli_evidenziati, celle_evidenziate, motivo_skip)`.
 
         `window_sec` è la DURATA della clip che il modello vede, non gli
         estremi nel video sorgente: con un trim (`video_start`/`video_end`,
@@ -239,20 +296,26 @@ class AttentionHighlightStrategy(Strategy):
         clip o percentuali della sua durata) ed è esattamente ciò che è stato
         detto al modello, loggato per l'analisi offline: una coppia `[a, b]`
         per ogni tratto evidenziato, dopo la fusione dei contigui.
-        `motivo_skip` è valorizzato solo quando non si evidenzia nulla, così
-        il caso "gate aperto ma nessun puntatore" resta distinguibile nel log
-        dal caso "gate chiuso".
+        `celle_evidenziate` sono gli indici di cella corrispondenti, PRIMA
+        della fusione: con `cell_select=random` sono l'unico modo di sapere
+        a posteriori quale estrazione è uscita, e affiancati a `peak_cell`
+        (loggato sempre, anche in modalità random) dicono su quanti sample
+        il caso ha pescato proprio la cella dell'attenzione — il tasso di
+        coincidenza va tolto dal confronto fra i due arm, perché lì i due
+        interventi sono identici. `motivo_skip` è valorizzato solo quando
+        non si evidenzia nulla, così il caso "gate aperto ma nessun
+        puntatore" resta distinguibile nel log dal caso "gate chiuso".
         """
         def to_units(frac: float) -> float:
             return frac * window_sec if units == "seconds" else 100.0 * frac
 
-        # `ranked` è ordinata per massa decrescente: le prime `top_k` celle
-        # sono quelle da evidenziare, ma si emettono ordinate per TEMPO — una
-        # lista in ordine di rilevanza leggerebbe come una classifica, mentre
-        # qui conta la posizione nel video.
-        if all(c.pct <= 0 for c in ranked):
-            return None, None, "no_signal"
-        cells = [c.cell for c in ranked[:self.top_k]]
+        cells = self._select_cells(ranked, t=t, rng=rng)
+        if cells is None:
+            return None, None, None, "no_signal"
+        # Gli intervalli si emettono ordinati per TEMPO (`_merge_spans`
+        # ordina), non per rilevanza: una lista in ordine di massa
+        # leggerebbe come una classifica, mentre qui conta la posizione nel
+        # video.
         spans_frac = _merge_spans([_cell_span_frac(cell, t) for cell in cells])
         spans = [(to_units(a), to_units(b)) for a, b in spans_frac]
 
@@ -266,7 +329,7 @@ class AttentionHighlightStrategy(Strategy):
             pointer = tmpl.format(a=a, b=b)
         else:
             pointer = POINTER_SPANS.format(spans=_fmt_spans(spans, units=units))
-        return pointer, [[a, b] for a, b in spans], None
+        return pointer, [[a, b] for a, b in spans], sorted(cells), None
 
     def answer(
         self,
@@ -315,6 +378,7 @@ class AttentionHighlightStrategy(Strategy):
 
         highlighted = False
         highlight_spans: list[list[float]] | None = None
+        highlight_cells: list[int] | None = None
         highlight_skip_reason: str | None = None
         highlight_units: str | None = None
         pointer: str | None = None
@@ -346,8 +410,9 @@ class AttentionHighlightStrategy(Strategy):
                 # `docs/` e la nota in highlight_top1_24.sbatch).
                 if t_cells and window_sec < t_cells:
                     units = "fraction"
-            pointer, highlight_spans, highlight_skip_reason = self._build_pointer(
+            pointer, highlight_spans, highlight_cells, highlight_skip_reason = self._build_pointer(
                 ranked_cells, t=t_cells, units=units, window_sec=window_sec,
+                rng=_sample_rng(self.random_seed, video_path, prompt),
             )
             if pointer is not None:
                 highlight_units = units
@@ -365,6 +430,8 @@ class AttentionHighlightStrategy(Strategy):
                         "highlighted": highlighted,
                         "highlight_skip_reason": highlight_skip_reason,
                         "highlight_spans": highlight_spans,
+                        "highlight_cells": highlight_cells,
+                        "cell_select": self.cell_select,
                         "highlight_units": highlight_units,
                         "top1_pct": top1_pct, "peak_cell": peak_cell, "t_cells": t_cells,
                     },
@@ -392,6 +459,11 @@ class AttentionHighlightStrategy(Strategy):
             "highlighted": highlighted,
             "highlight_skip_reason": highlight_skip_reason,
             "highlight_spans": highlight_spans,
+            # Celle effettivamente indicate. Con `cell_select=random` sono
+            # l'unico modo di sapere quale estrazione è uscita; affiancate a
+            # `peak_cell` danno il tasso di coincidenza fra caso e attenzione.
+            "highlight_cells": highlight_cells,
+            "cell_select": self.cell_select,
             "highlight_units": highlight_units,
             "pointer": pointer,
         }
