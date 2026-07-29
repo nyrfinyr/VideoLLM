@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --array=0-8
+#SBATCH --array=0-5
 #SBATCH --time=06:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
@@ -56,30 +56,43 @@
 # torna 1486/2700 sul suo shard, tutto il confronto qui sotto salta.
 #     META=false sbatch --array=0 scripts/sbatch/ablation-videomme/mrope_clock_control.sbatch
 #
-# DISEGNO: 3 arm x 3 shard = 9 task. `arm = task / 3`, `shard = task % 3`,
-# stessa strided-slice degli altri arm dell'ablation (`samples[shard::3]`).
+# DISEGNO: 3 arm x 3 shard. `arm = task / 3`, `shard = task % 3`, stessa
+# strided-slice degli altri arm dell'ablation (`samples[shard::3]`).
 #
 #   task 0-2  baseline_24_meta   (uniform, nessun puntatore)
 #   task 3-5  highlight_top1_24_meta
-#   task 6-8  random_top1_24_meta
+#   task 6-8  random_top1_24_meta   <- NON nell'`--array` di default
+#
+# LANCIO IN DUE TEMPI. `--array=0-5` di default: partono solo baseline e
+# highlight, perché se l'orologio riparato non muove highlight rispetto a
+# baseline non c'è niente da attribuire e il terzo arm sarebbe sprecato. Il
+# ramo `random` resta definito qui sotto (stessi seed e override degli altri,
+# così un rilancio successivo è appaiato per costruzione) e si lancia con:
+#
+#     sbatch --array=6-8 scripts/sbatch/ablation-videomme/mrope_clock_control.sbatch
 #
 # COME SI LEGGE (accuracy POOLED per arm, Σ corretti / Σ sample sui 3 shard):
 #
-#   costo del collasso  = baseline_meta      - 55.04
-#   il puntatore aiuta? = highlight_meta     - baseline_meta
-#   È L'ATTENZIONE?     = highlight_meta     - random_meta
+#   costo del collasso  = baseline_meta   - 55.04
+#   il puntatore aiuta? = highlight_meta  - baseline_meta      <- TRIGGER
+#   È L'ATTENZIONE?     = highlight_meta  - random_meta        <- secondo tempo
 #                         da confrontare con lo -0.15 attuale (54.63-54.78)
 #
-# L'ultima riga è quella che decide il futuro del filone. Se con l'orologio
-# riparato highlight stacca random, il segnale c'era e non poteva
-# esprimersi: tutto il filone va rimisurato in regime `true` e le leve
-# (double-frame, entity rows) tornano sensate. Se resta ≈ 0, il picco
-# d'attenzione è davvero poco informativo e il collasso non c'entrava.
+# QUANDO LANCIARE random. La seconda riga è il trigger: solo se highlight
+# stacca baseline in modo credibile vale la pena del terzo arm. "Credibile"
+# ha una soglia misurata, non a occhio — rieseguire la STESSA config dà ±3
+# sample su 900 (run dt1phfs5 vs fud7a4os, 490 vs 493), cioè un pavimento di
+# rumore di ~0.33 pp per shard: sotto ~1 pp di delta non c'è segnale da
+# attribuire.
 #
-# `random_top1_24_meta` NON è opzionale: senza, un eventuale guadagno di
-# highlight sarebbe ambiguo fra "il puntatore d'attenzione ora funziona" e
+# E se il trigger scatta, random NON è opzionale: senza, un guadagno di
+# highlight resta ambiguo fra "il puntatore d'attenzione ora funziona" e
 # "qualunque puntatore ora funziona" — esattamente l'ambiguità per cui
-# random_top1_24 era stato creato.
+# random_top1_24 era stato creato. La terza riga è quella che decide il
+# futuro del filone: se highlight stacca random, il segnale c'era e non
+# poteva esprimersi (tutto il filone va rimisurato in regime `true`, e
+# double-frame ed entity-rows tornano sensate); se resta ≈ 0, il picco
+# d'attenzione è davvero poco informativo e il collasso non c'entrava.
 #
 # Guardare anche `mcq_accuracy_highlight_units_seconds` vs `..._fraction`
 # (breakdown in `evals/base.py`): a `meta=false` il fallback a unità
