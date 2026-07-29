@@ -1,87 +1,96 @@
 #!/bin/bash
-#SBATCH --job-name=mrope-clock-control
+#SBATCH --job-name=mrope-clock-fix
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
 #SBATCH --constraint="gpu_RTX6000_24G|gpu_RTX_A5000_24G|gpu_A40_45G|gpu_L40S_45G"
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --array=0-5
-#SBATCH --time=04:00:00
+#SBATCH --array=0-8
+#SBATCH --time=06:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
-# CONTROLLO DELL'OROLOGIO M-RoPE — quanto è costato, e cosa cambia a
-# ripararlo, il collasso della posizione temporale dei token visivi.
+# OROLOGIO M-RoPE RIPARATO — i tre arm chiave rilanciati con
+# `model.pass_video_metadata=true`, su Video-MME INTERO (2700 sample).
 #
 # IL DIFETTO. `Qwen._prepare_inputs` non passava al processor i
 # `video_metadata` reali, quindi `second_per_grid_ts` vale
 # `temporal_patch_size / sampled_fps = 2/24 = 0.083` per QUALUNQUE video, e
 # `get_rope_index` (`modeling_qwen2_5_vl.py:1125`) fa
 # `time_interval = tokens_per_second * int(0.083) = 0`. In
-# `get_vision_position_ids` questo diventa `position_temporal =
-# arange(t) * 0`: TUTTE le celle video finiscono sulla stessa posizione
-# temporale M-RoPE. Misurato su Video-MME nframes=24:
+# `get_vision_position_ids` diventa `position_temporal = arange(t) * 0`:
+# TUTTE le celle video finiscono sulla stessa posizione temporale M-RoPE.
+# Misurato su Video-MME nframes=24:
 #     pass_video_metadata=false → second_per_grid_ts=0.0833 → time_interval=0
 #     pass_video_metadata=true  → second_per_grid_ts=6.1923 → time_interval=12
-# Non è condizionale alla durata del video (l'ipotesi precedente, "solo sotto
-# 12 s"): 2/24 è una costante, quindi il collasso è UNIVERSALE. Vale per
-# tutte le run del README, baseline comprese.
+# Non è condizionale alla durata del video: 2/24 è una costante, quindi il
+# collasso è UNIVERSALE e vale per ogni run del README, baseline comprese.
 #
-# PERCHÉ È GRAVE PROPRIO QUI. `attention_highlight` dice al modello "Focus on
-# the part of the video between X and Y seconds": comunica ISTANTI a un
-# modello le cui celle video non hanno coordinate temporali distinte. Tutti
-# gli arm del filone (highlight_top1_24, random_top1_24, la sonda antipeak)
-# sono girati così.
+# PERCHÉ PROPRIO QUESTI TRE ARM. `attention_highlight` dice al modello
+# "Focus on the part of the video between X and Y seconds": comunica ISTANTI
+# a un modello le cui celle video non hanno coordinate temporali distinte.
+# Il filone è girato tutto così, e il suo risultato — highlight ≈ random ≈
+# baseline — potrebbe essere l'artefatto di un canale che non poteva
+# funzionare, non la prova che il segnale d'attenzione sia inutile.
 #
-# LE DUE DOMANDE, e perché servono sei run e non due:
-#   1. Quanto costa il collasso in accuracy pura?   → righe baseline
-#   2. Riparandolo, il puntatore guidato dall'attenzione inizia a battere
-#      quello casuale?                              → righe highlight/random
-# La (2) è quella che decide il futuro del filone: oggi highlight ≈ random ≈
-# baseline, ed è possibile che l'attenzione non abbia mai potuto esprimersi
-# perché il canale su cui parla (i secondi) non era leggibile dal modello.
+# NIENTE CELLE `meta=false`: ci sono GIÀ, sull'intero set, dallo stesso
+# codice e stessa config (gruppo wandb `video_mme-ablation`):
+#     baseline_24        55.04%  (1486/2700)
+#     highlight_top1_24  54.63%  (1475/2700)
+#     random_top1_24     54.78%  (1479/2700)
+# È il motivo per cui questo job gira sui 2700 e non su un subset: il
+# controllo appaiato è gratis solo a parità di set. Su un subset da 500 le
+# celle `meta=false` andrebbero rifatte (6 run invece di 3) E la potenza
+# statistica non basterebbe comunque — gli scarti in gioco in questa tabella
+# sono 0.4-1.9 pp, mentre 500 sample danno ~2.2 pp di errore standard su una
+# singola proporzione: si misurerebbe rumore.
 #
-# DISEGNO 2x3, tutte e sei le celle sullo STESSO subset da 500 sample
-# (`shuffle=true seed=42 limit=500`, nessuno `shard`: `limit` prende un
-# prefisso dell'ordine mescolato, quindi il subset è identico fra i task ed è
-# lo stesso della sonda antipeak — i risultati si joinano per-sample).
+# La validità di quel confronto poggia su un fatto verificato: il refactor
+# di `models/qwen_attn.py` (span contiguo → `index_select`, cambio di import
+# di `repeat_kv`, `image_patch_size` esplicito) NON cambia la numerica su
+# Qwen2.5 — indici visivi identici (2160 e 4320 token), `query_span`
+# identico, `repeat_kv` stesso bytecode, `image_patch_size=14` già il
+# default di `process_vision_info`. Per prudenza vale comunque un solo shard
+# di `baseline_24` con `meta=false` come check di riproducibilità: se non
+# torna 1486/2700 sul suo shard, tutto il confronto qui sotto salta.
+#     META=false sbatch --array=0 scripts/sbatch/ablation-videomme/mrope_clock_control.sbatch
 #
-#   task  arm        pass_video_metadata
-#     0   baseline   false   (regime storico, riferimento)
-#     1   baseline   true
-#     2   highlight  false
-#     3   highlight  true
-#     4   random     false
-#     5   random     true
+# DISEGNO: 3 arm x 3 shard = 9 task. `arm = task / 3`, `shard = task % 3`,
+# stessa strided-slice degli altri arm dell'ablation (`samples[shard::3]`).
 #
-# Le righe `false` NON sono ridondanti con i numeri del README: quelli sono
-# sull'intero set da 2700, questi su 500 — servono le celle `false` su QUESTO
-# subset perché il confronto sia appaiato.
+#   task 0-2  baseline_24_meta   (uniform, nessun puntatore)
+#   task 3-5  highlight_top1_24_meta
+#   task 6-8  random_top1_24_meta
 #
-# COME SI LEGGE.
-#   costo del collasso   = mcq_accuracy[1] - mcq_accuracy[0]
-#   effetto sul filone   = (mcq_accuracy[3] - mcq_accuracy[5])      <- knob ON
-#                          vs
-#                          (mcq_accuracy[2] - mcq_accuracy[4])      <- knob OFF
-# cioè: il vantaggio di highlight su random cresce quando l'orologio
-# funziona? Se sì, il segnale d'attenzione c'era e non poteva esprimersi, e
-# tutto il filone va rimisurato in regime ON. Se no, il picco è davvero poco
-# informativo e il collasso non c'entrava.
+# COME SI LEGGE (accuracy POOLED per arm, Σ corretti / Σ sample sui 3 shard):
+#
+#   costo del collasso  = baseline_meta      - 55.04
+#   il puntatore aiuta? = highlight_meta     - baseline_meta
+#   È L'ATTENZIONE?     = highlight_meta     - random_meta
+#                         da confrontare con lo -0.15 attuale (54.63-54.78)
+#
+# L'ultima riga è quella che decide il futuro del filone. Se con l'orologio
+# riparato highlight stacca random, il segnale c'era e non poteva
+# esprimersi: tutto il filone va rimisurato in regime `true` e le leve
+# (double-frame, entity rows) tornano sensate. Se resta ≈ 0, il picco
+# d'attenzione è davvero poco informativo e il collasso non c'entrava.
+#
+# `random_top1_24_meta` NON è opzionale: senza, un eventuale guadagno di
+# highlight sarebbe ambiguo fra "il puntatore d'attenzione ora funziona" e
+# "qualunque puntatore ora funziona" — esattamente l'ambiguità per cui
+# random_top1_24 era stato creato.
 #
 # Guardare anche `mcq_accuracy_highlight_units_seconds` vs `..._fraction`
-# (breakdown in evals/base.py): a knob OFF il fallback a unità frazionarie
-# scatta per la ragione sbagliata, e i due gruppi possono comportarsi in modo
-# diverso.
+# (breakdown in `evals/base.py`): a `meta=false` il fallback a unità
+# frazionarie scattava per la ragione sbagliata, a `meta=true` scatta per
+# quella giusta, quindi i due gruppi non sono più la stessa popolazione.
 #
-# ⚠️ I risultati di questo job NON vanno messi nella tabella ablation del
-# README: subset da 500 e non 2700, quindi non confrontabili con `Δ vs
-# baseline_24`. È un controllo, come la sonda antipeak.
-#
-# COSTO. Sulla card più lenta del constraint (Quadro RTX 6000): baseline
-# ~7 s/sample → ~1h, highlight/random ~13.5 s/sample → ~1h53. `--time=04:00:00`
-# copre il caso peggiore con ~2x di margine. Il knob non cambia il costo
-# (passa metadata, non ricalcola nulla).
+# COSTO, dalle latenze misurate sulla card più lenta del constraint (Quadro
+# RTX 6000) nelle run originali di questi stessi arm:
+#     baseline_24        7.19 s/sample → ~1h48 per shard da 900 (misurato 6517 s)
+#     highlight/random  13.09 s/sample → ~3h17 per shard da 900 (misurato 11821 s)
+# `--time=06:00:00` copre il caso peggiore con ~1.8x di margine.
 set -euo pipefail
 
 echo "node: $(hostname)"; echo "date: $(date -Iseconds)"
@@ -91,36 +100,48 @@ nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || tr
 cd /homes/avalenza/video-language-model-playground
 export PYTHONUNBUFFERED=1
 
-case "${SLURM_ARRAY_TASK_ID}" in
-  0) ARM=baseline;  META=false ;;
-  1) ARM=baseline;  META=true  ;;
-  2) ARM=highlight; META=false ;;
-  3) ARM=highlight; META=true  ;;
-  4) ARM=random;    META=false ;;
-  5) ARM=random;    META=true  ;;
-  *) echo "SLURM_ARRAY_TASK_ID inatteso: ${SLURM_ARRAY_TASK_ID}" >&2; exit 1 ;;
-esac
+# `META=false` da ambiente per il check di riproducibilità descritto sopra;
+# il regime di questo job è `true`.
+META="${META:-true}"
 
-case "${ARM}" in
-  baseline)
-    # `uniform` sul modello *_attn, esattamente come baseline_24 dell'ablation:
-    # nessun gate, nessun puntatore, un solo pass.
+TASK="${SLURM_ARRAY_TASK_ID}"
+SHARD=$(( TASK % 3 ))
+case $(( TASK / 3 )) in
+  0)
+    ARM=baseline_24
     ARM_OVERRIDES=( strategy=uniform )
     ;;
-  highlight|random)
-    CELL=$([ "${ARM}" = "highlight" ] && echo attention || echo random)
-    ARM_OVERRIDES=(
-        strategy=attention_highlight
-        strategy.top_k=1
-        strategy.cell_select=${CELL}
-        strategy.random_seed=0
-        strategy.always_highlight=false
-        strategy.pointer_units=seconds
-        strategy.pointer_position=prepend
-    )
+  1)
+    ARM=highlight_top1_24
+    ARM_OVERRIDES=( strategy=attention_highlight strategy.top_k=1
+                    strategy.cell_select=attention )
+    ;;
+  2)
+    ARM=random_top1_24
+    ARM_OVERRIDES=( strategy=attention_highlight strategy.top_k=1
+                    strategy.cell_select=random )
+    ;;
+  *)
+    echo "SLURM_ARRAY_TASK_ID inatteso: ${TASK} (attesi 0-8)" >&2
+    exit 1
     ;;
 esac
-echo "arm: ${ARM}  pass_video_metadata: ${META}"
+
+# Knob comuni ai due arm con puntatore, identici alle run originali: cambiare
+# uno solo di questi renderebbe il confronto con i numeri `meta=false` non
+# più appaiato.
+if [ "${ARM}" != "baseline_24" ]; then
+  ARM_OVERRIDES+=(
+      strategy.random_seed=0
+      strategy.always_highlight=false
+      strategy.entropy_threshold=0.7
+      strategy.pointer_units=seconds
+      strategy.pointer_position=prepend
+  )
+fi
+
+NAME="${ARM}_meta${META}"
+echo "arm: ${ARM}  shard: ${SHARD}/3  pass_video_metadata: ${META}"
 
 uv run python main.py \
     model=qwen2_5_vl_3b_attn \
@@ -129,9 +150,9 @@ uv run python main.py \
     model.pass_video_metadata=${META} \
     "${ARM_OVERRIDES[@]}" \
     hf_home=/work/tesi_avalenza/hf \
-    shuffle=true \
-    limit=500 \
-    wandb.group=video_mme-mrope-clock-control \
-    wandb.name=qwen2_5_vl_3b_attn-${ARM}_24-meta${META}-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
-    wandb.tags=[control,video_mme,mrope,${ARM},meta_${META}] \
+    shard=${SHARD} \
+    num_shards=3 \
+    wandb.group=video_mme-mrope-fix \
+    wandb.name=qwen2_5_vl_3b_attn-${NAME}-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
+    wandb.tags=[mrope,video_mme,${ARM},meta_${META}] \
     "$@"
