@@ -223,6 +223,25 @@ class AttentionHighlightStrategy(Strategy):
         # e in buona parte posizionale, plausibilmente per recency causale
         # (le righe-query sono i token della domanda, che stanno DOPO il
         # blocco visivo, quindi l'ultima cella è la più vicina).
+        #
+        # `antipeak` = SONDA DI SENSIBILITÀ, non un arm da confrontare in
+        # accuracy: indica di proposito il punto più lontano dal picco, cioè
+        # sviando il modello. Serve a decidere se il canale-prompt è vivo,
+        # domanda a monte di "il picco è quello giusto?". Va usata con
+        # `always_highlight=true` e letta SOLO sui sample corretti al pass 1
+        # (`pred_pass1`): il full eval `random_top1_24` era già una sonda
+        # debole in questo senso, ma diluita — puntatore solo sul ~73% col
+        # gate aperto, dove l'accuracy è ~42%, quindi quasi nessuno spazio
+        # per mostrare un danno. Sui corretti-al-pass-1 si parte da ~88% e
+        # lo spazio c'è tutto.
+        #
+        # L'interpretazione NON dipende da quanto è buono il picco, ed è il
+        # motivo per cui questa sonda vale più di un oracolo: se il picco è
+        # informativo, l'antipicco è sbagliato → il modello che obbedisce
+        # peggiora; se il picco è solo posizionale, l'antipicco è un random
+        # con bias opposto → il modello che obbedisce peggiora comunque, su
+        # sample che stava già indovinando. In entrambi i rami "nessun
+        # danno" ⟹ il puntatore non viene eseguito.
         self.cell_select = str(cfg.get("cell_select", "attention"))
         self.random_seed = int(cfg.get("random_seed", 0))
         self.pointer_units = str(cfg.get("pointer_units", "seconds"))
@@ -241,9 +260,10 @@ class AttentionHighlightStrategy(Strategy):
                 "'peak'/'window' non esistono più — si evidenziano sempre le "
                 "`top_k` celle a massa più alta ('peak' era `top_k=1`)."
             )
-        if self.cell_select not in ("attention", "random"):
+        if self.cell_select not in ("attention", "random", "antipeak"):
             raise ValueError(
-                f"cell_select sconosciuto: {self.cell_select!r}. Valide: 'attention', 'random'"
+                f"cell_select sconosciuto: {self.cell_select!r}. "
+                "Valide: 'attention', 'random', 'antipeak'"
             )
         if self.pointer_units not in ("seconds", "fraction"):
             raise ValueError(
@@ -265,11 +285,32 @@ class AttentionHighlightStrategy(Strategy):
         caso "massa nulla" NON è una ragione per astenersi: la cella non
         dipende dall'attenzione, e far saltare il controllo dove salta l'arm
         vero restringerebbe il suo campione senza motivo.
+
+        `antipeak`: le `top_k` celle più LONTANE NEL TEMPO dal picco — non le
+        celle a massa minima. Sono due cose diverse: la massa minima può
+        cadere accanto al picco (profilo bimodale stretto), mentre qui serve
+        massimizzare la probabilità di indicare un punto dove l'evidenza NON
+        c'è, e la distanza temporale è il proxy migliore disponibile.
+        Astiene come `attention` quando non c'è segnale: senza picco l'anti-
+        picco non è definito.
+
+        A `top_k>1` le celle escono contigue all'estremo opposto (distanze
+        decrescenti dal picco) e `_merge_spans` le fonde in un tratto solo —
+        voluto: un blocco lontano compatto è un'indicazione più netta di
+        `top_k` istanti sparsi.
         """
         if self.cell_select == "random":
             return rng.sample(range(t), k=min(self.top_k, t))
         if all(c.pct <= 0 for c in ranked):
             return None
+        if self.cell_select == "antipeak":
+            peak = ranked[0].cell
+            # `c` come secondo criterio: a parità di distanza (picco centrale)
+            # vince la cella di indice minore, deterministicamente — mai
+            # l'ordine di `ranked`, che dipende da masse quasi-pari e quindi
+            # oscillerebbe col rumore numerico fra GPU diverse.
+            far = sorted(range(t), key=lambda c: (-abs(c - peak), c))
+            return far[:min(self.top_k, t)]
         return [c.cell for c in ranked[:self.top_k]]
 
     def _build_pointer(
@@ -490,4 +531,16 @@ class AttentionHighlightStrategy(Strategy):
                 pred_fallback = True
             result["pred"] = pred
             result["pred_fallback"] = pred_fallback
+            # Risposta del pass 1 (argmax della softmax ristretta alle lettere,
+            # PRIMA che il puntatore esista): è la chiave che rende leggibile
+            # la sonda `antipeak`. Senza, "il puntatore ha rotto questo
+            # sample?" si può rispondere solo joinando a posteriori con un
+            # altro run (per `example.id`, come in
+            # `docs/analisi_winloss_resampling_video_mme.md`) — e quel join
+            # confronta due forward su GPU potenzialmente diverse, quindi
+            # attribuisce al puntatore anche il rumore numerico. Qui il
+            # confronto è intra-sample, stesso forward, zero rumore.
+            result["pred_pass1"] = (
+                letters.index(signal.pred_letter) if signal.pred_letter is not None else None
+            )
         return result

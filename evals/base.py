@@ -166,6 +166,33 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
         slug = f"{key}_{_slug(value)}"
         scores[f"correct_{slug}"] = correct
         scores[f"seen_{slug}"] = True
+
+    # Breakdown DERIVATO, non un passthrough come quelli sopra: la strategy
+    # logga `pred_pass1` (la risposta prima dell'intervento) ma non può
+    # sapere se è giusta — `answer` sta solo qui, nello scorer. Il join lo
+    # facciamo dunque a questo livello.
+    #
+    # `correct_pass1_true.true_fraction` è la lettura diretta della sonda di
+    # sensibilità (`cell_select=antipeak`): accuracy DOPO l'intervento sui
+    # soli sample che il modello indovinava GIÀ al pass 1. Se il puntatore
+    # non viene eseguito resta ~1.0; se viene eseguito e svia, scende. Il
+    # complemento (`correct_pass1_false`) dà il recupero sui già-sbagliati.
+    # Entrambi intra-sample, stesso forward di pass 1: nessun confronto fra
+    # run diversi, quindi nessun rumore numerico fra GPU nel mezzo.
+    #
+    # I sample con `pred_fallback=True` sono ESCLUSI, e non è un dettaglio: lì
+    # `pred` è posto UGUALE a `pred_pass1` (il pass 2 non ha prodotto una
+    # lettera parseabile e si ripiega sull'argmax del pass 1), quindi il
+    # sample non può risultare danneggiato per costruzione. Tenerli dentro
+    # gonfierebbe `correct_pass1_true` verso 1.0 — cioè verso "il puntatore
+    # non fa danno", che è proprio la conclusione che la sonda deve poter
+    # falsificare. Sui run reali il fallback è 0/900, ma la validità della
+    # sonda non deve dipendere da quel fatto empirico.
+    pred_pass1 = output.get("pred_pass1")
+    if pred_pass1 is not None and not output.get("pred_fallback", False):
+        slug = f"correct_pass1_{_slug(pred_pass1 == answer)}"
+        scores[f"correct_{slug}"] = correct
+        scores[f"seen_{slug}"] = True
     return scores
 
 

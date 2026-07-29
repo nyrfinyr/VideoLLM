@@ -184,10 +184,15 @@ strategy:
     always_highlight: false     # true = regime LoT (nessun gate, evidenzia sempre); false = confrontabile con gli arm di resampling
     top_k: 3                    # quante celle (istanti) evidenziare, le top-k per massa di attenzione sink-filtrata.
                                 # top_k=1 = la stessa cella su cui zooma il ramo zoom_peak di entropy_attention_resample
-    cell_select: attention      # (attention | random) random = ARM DI CONTROLLO: celle estratte a sorte invece che dal
+    cell_select: attention      # (attention | random | antipeak)
+                                # random = ARM DI CONTROLLO: celle estratte a sorte invece che dal
                                 # picco di attenzione, tutto il resto identico (gate, formato del puntatore, costo).
                                 # Serve ad attribuire il guadagno: se il caso rende quanto il picco, l'attenzione non
                                 # contribuisce e si sta misurando solo l'effetto del prompt.
+                                # antipeak = SONDA DI SENSIBILITÀ (non un arm di accuracy): indica il punto più lontano
+                                # dal picco, cioè svia di proposito. Da usare con always_highlight=true e da leggere su
+                                # `mcq_accuracy_correct_pass1_true` (accuracy sui sample già corretti al pass 1): se non
+                                # scende, il modello sta ignorando il puntatore e il problema non è DOVE si punta.
     random_seed: 0              # seed dell'estrazione, mescolato con (video_path, prompt) → cella stabile per sample,
                                 # identica fra shard e fra rilanci. Cambiarlo ripete il controllo con un'altra estrazione.
     pointer_units: seconds      # (seconds | fraction) come il puntatore riferisce il tempo; con `frames` fissati dal dataset è sempre fraction
