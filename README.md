@@ -142,8 +142,7 @@ lo stesso gate d'entropia: tre ricampionano i frame
 il quarto no — `highlight_top1_24` lascia i frame invariati e agisce solo
 sul prompt (`attention_highlight`, vedi sotto). `random_top1_24` è il suo
 controllo: identico in tutto tranne che indica una cella a caso.
-Tutti e 15 i run dei primi 5 arm (5 × 3 shard) sono `finished`;
-`highlight_top1_24` è in coda. Accuracy *pooled* sull'intero arm
+Tutti e 21 i run dei 7 arm (7 × 3 shard) sono `finished`. Accuracy *pooled* sull'intero arm
 (Σ corretti / Σ campioni, non media degli shard — stesso metodo di
 LVBench sopra).
 
@@ -171,8 +170,8 @@ sono `uniform`: non hanno gate, colonne assenti (`—`).
 | entropy_shift_24      | 55.63% (1502/2700) | +0.59 | 66.11% (595/900) | 53.00% (477/900) | 47.78% (430/900) | 73.15% (1975/2700) | 43.59% (861/1975) | 88.41% (641/725) | 100% (forzato) | — |
 | entropy_zoom_24       | 54.59% (1474/2700) | −0.44 | 63.33% (570/900) | 52.44% (472/900) | 48.00% (432/900) | 72.93% (1969/2700) | 42.10% (829/1969) | 88.24% (645/731) | — | 100% (forzato) |
 | shift_zoom_router_24  | 55.81% (1507/2700) | +0.78 | 66.00% (594/900) | 53.33% (480/900) | 48.11% (433/900) | 72.93% (1969/2700) | 43.93% (865/1969) | 87.82% (642/731) | 96.95% (1909/1969), acc 43.74% | 3.05% (60/1969), acc 50.00%\* |
-| highlight_top1_24     | — (in coda) | — | — | — | — | — | — | — | — | — |
-| random_top1_24        | — (in coda) | — | — | — | — | — | — | — | — | — |
+| highlight_top1_24     | 54.63% (1475/2700) | −0.41 | 63.22% (569/900) | 52.22% (470/900) | 48.44% (436/900) | 73.07% (1973/2700) | 42.17% (832/1973) | 88.45% (643/727) | — | — |
+| random_top1_24        | 54.78% (1479/2700) | −0.26 | 62.89% (566/900) | 53.11% (478/900) | 48.33% (435/900) | 73.00% (1971/2700) | 42.42% (836/1971) | 88.20% (643/729) | — | — |
 
 \* N piccola (60 sample) — indicativo, non conclusivo. Il salto
 ~42-44% → ~88% sul gate non è il gate che "funziona meglio quando non
@@ -191,14 +190,25 @@ Sul full dataset: `entropy_shift_24` (+0.59) e `shift_zoom_router_24`
 sample rispetto a non ricampionare affatto. Nessuno dei tre batte
 `baseline_24double` (56.93%), il controllo compute-matched.
 
-`highlight_top1_24` è l'arm successivo, ancora da lanciare
-(`scripts/sbatch/ablation-videomme/highlight_top1_24.sbatch`). Attesa sul
-gate: la quota di sample evidenziati deve cadere sullo stesso ~73% degli
-altri arm signal-driven, che condividono gate e pass 1 — non
-necessariamente identica al sample, perché il non-determinismo numerico
-fra GPU diverse fa oscillare i sample al bordo della soglia (fra
-`entropy_shift_24` e `entropy_zoom_24`, che hanno pass 1 identico, il
-conteggio già differisce di 6 su 2700).
+Il gate d'`highlight_top1_24`/`random_top1_24` scatta sul 73.07%/73.00%
+dei sample (1973 e 1971 su 2700) — in linea col ~73% degli altri arm
+signal-driven, come atteso (stesso pass 1, stesso gate).
+
+**Il risultato che conta è il confronto fra i due**: `highlight_top1_24`
+(54.63%, −0.41 vs `baseline_24`) e `random_top1_24` (54.78%, −0.26) sono
+indistinguibili entro il rumore campionario, e il controllo casuale è
+addirittura leggermente sopra la versione guidata dall'attenzione
+(+0.15). Nessuno dei due batte `baseline_24`. Indicare al modello dove
+guardare non aiuta più quando l'indicazione viene dal picco di
+attenzione rispetto a quando è estratta a caso — stessa forma del
+risultato già visto col router `concentration_ratio` (arm morto, vedi
+`docs/`), e coerente col probe da 40 sample (`2dodrndg`) che aveva
+mostrato il picco d'attenzione in buona parte posizionale/di recency
+piuttosto che legato al contenuto. Non è stata ancora fatta un'analisi
+win/loss per-sample (fixed/broken vs `baseline_24`, come in
+`docs/analisi_winloss_resampling_video_mme.md` per lo sweep
+`entropy_attention_resample`) per escludere che i due arm recuperino/
+rompano sample diversi nonostante l'accuracy pooled simile.
 
 **Cosa rappresenta ogni `arm` (colonna della tabella):**
 
