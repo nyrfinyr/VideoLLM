@@ -82,6 +82,7 @@ unità frazionarie, non in secondi (vedi `pointer_units`).
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 import shutil
 from pathlib import Path
@@ -99,6 +100,8 @@ if TYPE_CHECKING:
 
     from models.base import BaseVLM
     from models.signals import SignalAnswer
+
+logger = logging.getLogger(__name__)
 
 
 # Formulazione del puntatore. Imperativa e breve, modellata su
@@ -246,6 +249,9 @@ class AttentionHighlightStrategy(Strategy):
         self.random_seed = int(cfg.get("random_seed", 0))
         self.pointer_units = str(cfg.get("pointer_units", "seconds"))
         self.pointer_position = str(cfg.get("pointer_position", "prepend"))
+        # Flag del warning una-tantum di `_warn_flat_clock` (per istanza di
+        # strategy, cioè per run: una riga di log, non 2700).
+        self._flat_clock_warned = False
         self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
         self.sink_border = int(cfg.get("sink_border", 0))
 
@@ -273,6 +279,39 @@ class AttentionHighlightStrategy(Strategy):
             raise ValueError(
                 f"pointer_position sconosciuto: {self.pointer_position!r}. Valide: 'prepend', 'append'"
             )
+
+    def _warn_flat_clock(self, vlm: BaseVLM) -> None:
+        """Avverte UNA volta se si sta puntando in secondi a orologio piatto.
+
+        La combinazione `pointer_units=seconds` + `pass_video_metadata=False`
+        è silenziosamente insensata: il puntatore comunica istanti a un modello
+        le cui celle video stanno tutte sulla stessa posizione temporale
+        M-RoPE (vedi il commento esteso in `answer`). È anche il regime in cui
+        sono girati `highlight_top1_24`/`random_top1_24`/la sonda `antipeak`,
+        quindi NON si fa fail-fast: rilanciare quegli arm per riprodurli deve
+        restare possibile. Un warning una tantum, però, evita che la prossima
+        run ci ricaschi senza saperlo.
+
+        Una volta sola e non per sample: su 2700 sample sarebbero 2700 righe
+        identiche che seppellirebbero il resto del log.
+        """
+        if self._flat_clock_warned:
+            return
+        self._flat_clock_warned = True
+        # `None` = modello che non espone il knob (non-Qwen): niente da dire.
+        if getattr(vlm, "pass_video_metadata", None) is not False:
+            return
+        logger.warning(
+            "%s: pointer_units=seconds con model.pass_video_metadata=false — "
+            "second_per_grid_ts vale 0.083 per QUALUNQUE video e get_rope_index "
+            "lo tronca a 0, quindi TUTTE le celle video collassano sulla stessa "
+            "posizione temporale M-RoPE (non solo quelle con window_sec < t). "
+            "Il puntatore sta comunicando secondi a un modello senza coordinate "
+            "temporali. Per il regime corretto: model.pass_video_metadata=true "
+            "(NON confrontabile con i numeri del README, che sono tutti a "
+            "orologio piatto); in alternativa strategy.pointer_units=fraction.",
+            self.name,
+        )
 
     def _select_cells(self, ranked: list[RankedCell], *, t: int, rng: random.Random) -> list[int] | None:
         """Le `top_k` celle da evidenziare, o `None` se non c'è nulla da dire.
@@ -442,24 +481,42 @@ class AttentionHighlightStrategy(Strategy):
                 # Collasso dell'orologio del modello. La M-RoPE spazia le celle
                 # di `tokens_per_second * int(second_per_grid_ts)`
                 # (`modeling_qwen2_5_vl.py:1125`) e quel troncamento a INTERO
-                # azzera l'intervallo quando una cella dura meno di un secondo,
-                # cioè quando `window_sec/t < 1`: tutte le celle finiscono alla
-                # stessa posizione temporale e il modello perde ogni nozione di
-                # ordine, figurarsi di istante. Parlargli in secondi lì non
-                # significa nulla, mentre una posizione relativa resta leggibile
-                # dall'ordine in cui i frame compaiono nella sequenza. A
-                # `nframes=24` scatta sotto i 12 s di durata (~1% della fascia
-                # short di Video-MME; in regime frame-doubling la soglia
-                # raddoppia a 24 s e la quota sale a ~12%, vedi
-                # `docs/` e la nota in highlight_top1_24.sbatch).
+                # azzera l'intervallo quando una cella dura meno di un secondo:
+                # tutte le celle finiscono alla stessa posizione temporale e il
+                # modello perde ogni nozione di ordine, figurarsi di istante.
+                # Parlargli in secondi lì non significa nulla, mentre una
+                # posizione relativa resta leggibile dall'ordine in cui i frame
+                # compaiono nella sequenza — da cui il fallback qui sotto.
                 #
-                # Su Qwen3-VL il fenomeno non esiste — lì il tempo non passa
-                # dalla M-RoPE ma dai timestamp testuali `<x.x seconds>` che
-                # il processor scrive nel prompt, con risoluzione al decimo di
-                # secondo. Il fallback resta attivo comunque, identico per le
-                # due famiglie: cambiarlo solo su una renderebbe gli arm non
-                # confrontabili proprio sui sample brevi. `highlight_units`
-                # nel log dice sempre quale forma è stata usata.
+                # ⚠️ ATTENZIONE alla portata reale, che dipende dal regime di
+                # preprocessing (`model.pass_video_metadata`, vedi
+                # `Qwen._prepare_inputs`):
+                #
+                # - `pass_video_metadata=true`: `second_per_grid_ts` è quello
+                #   vero, il collasso avviene se e solo se `window_sec < t` —
+                #   la condizione che il fallback qui sotto testa. A
+                #   `nframes=24` scatta sotto i 12 s (~1% della fascia short di
+                #   Video-MME; in frame-doubling la soglia raddoppia a 24 s e
+                #   la quota sale a ~12%).
+                # - `pass_video_metadata=false` (DEFAULT, ed è il regime di
+                #   TUTTE le run del README): il processor non riceve i
+                #   metadata, `second_per_grid_ts` vale 2/24 = 0.083 per
+                #   QUALUNQUE video e `int(0.083) = 0` — quindi il collasso è
+                #   **universale**, non condizionale, e il fallback qui sotto
+                #   NON protegge niente: sul ~99% dei sample il puntatore parla
+                #   in secondi a un modello che non ha coordinate temporali.
+                #   È il motivo del warning in `_warn_flat_clock`.
+                #
+                # Su Qwen3-VL il fenomeno non esiste in nessuno dei due regimi:
+                # lì il tempo non passa dalla M-RoPE ma dai timestamp testuali
+                # `<x.x seconds>` che il processor scrive nel prompt, con
+                # risoluzione al decimo di secondo (e `pass_video_metadata` è
+                # sempre `True` su quella famiglia). Il fallback resta attivo
+                # comunque, identico per le due famiglie: cambiarlo solo su una
+                # renderebbe gli arm non confrontabili proprio sui sample
+                # brevi. `highlight_units` nel log dice sempre quale forma è
+                # stata usata.
+                self._warn_flat_clock(vlm)
                 if t_cells and window_sec < t_cells:
                     units = "fraction"
             pointer, highlight_spans, highlight_cells, highlight_skip_reason = self._build_pointer(

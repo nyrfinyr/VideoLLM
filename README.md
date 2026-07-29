@@ -214,16 +214,94 @@ signal-driven, come atteso (stesso pass 1, stesso gate).
 indistinguibili entro il rumore campionario, e il controllo casuale è
 addirittura leggermente sopra la versione guidata dall'attenzione
 (+0.15). Nessuno dei due batte `baseline_24`. Indicare al modello dove
-guardare non aiuta più quando l'indicazione viene dal picco di
-attenzione rispetto a quando è estratta a caso — stessa forma del
-risultato già visto col router `concentration_ratio` (arm morto, vedi
-`docs/`), e coerente col probe da 40 sample (`2dodrndg`) che aveva
-mostrato il picco d'attenzione in buona parte posizionale/di recency
-piuttosto che legato al contenuto. Non è stata ancora fatta un'analisi
-win/loss per-sample (fixed/broken vs `baseline_24`, come in
-`docs/analisi_winloss_resampling_video_mme.md` per lo sweep
-`entropy_attention_resample`) per escludere che i due arm recuperino/
-rompano sample diversi nonostante l'accuracy pooled simile.
+guardare non aiuta più quando l'indicazione viene dal picco di attenzione
+rispetto a quando è estratta a caso.
+
+Quel nulla ammetteva però due cause opposte — **(A)** il puntatore
+funziona ma punta male, **(B)** il modello non lo esegue affatto — con
+conseguenze pratiche inverse: in (A) migliorare il segnale ha senso, in
+(B) è tempo buttato, perché ogni miglioria agisce su *dove* si punta. La
+sonda della sezione seguente separa le due, ed è risultata **(A)**.
+
+Non è stata ancora fatta un'analisi win/loss per-sample (fixed/broken vs
+`baseline_24`, come in `docs/analisi_winloss_resampling_video_mme.md` per
+lo sweep `entropy_attention_resample`) per escludere che i due arm
+recuperino/rompano sample diversi nonostante l'accuracy pooled simile.
+
+### Sonda di sensibilità del canale-prompt (`antipeak`)
+
+> Non è un arm di accuracy e **non va letta nella tabella sopra**: gira su
+> un subset da 500 sample (`shuffle=true`, `seed=42`, `limit=500`) invece
+> che sui 2700 interi, quindi non è confrontabile con `baseline_24` né con
+> gli altri arm. Razionale completo in
+> `docs/sonda_sensibilita_puntatore_antipeak.md`, sbatch in
+> `scripts/sbatch/ablation-videomme/antipeak_probe_24.sbatch`.
+
+**A cosa serve.** Risponde alla domanda a monte di tutte le altre: *il
+modello è capace di ricevere un'indicazione temporale via prompt?* Il modo
+di scoprirlo non è puntare bene (servirebbe un ground truth temporale che
+Video-MME non ha), ma puntare **di proposito nel posto sbagliato** — la
+cella più lontana nel tempo dal picco (`cell_select=antipeak`) — e vedere
+se si rompono i sample che il modello stava già risolvendo. È il motivo
+per cui si legge solo sui corretti al pass 1 (`pred_pass1`, loggato dalla
+strategy e incrociato con `answer` nello scorer): lì si parte da ~99% e lo
+spazio per peggiorare c'è tutto, mentre `random_top1_24` girava col gate
+aperto, cioè sul ~73% di sample dove l'accuracy è ~42% e non c'era niente
+da rompere.
+
+L'interpretazione non dipende da quanto è buono il picco: se è informativo
+l'antipicco è sbagliato, se è solo posizionale l'antipicco è comunque
+arbitrario — in entrambi i casi **nessun danno ⟹ il puntatore non viene
+eseguito**.
+
+Due arm appaiati sullo stesso subset, gruppo wandb
+[`video_mme-antipeak-probe`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-antipeak-probe).
+Il controllo non è un di più: `pred_pass1` viene dalla softmax ristretta
+alle lettere e `pred` dal parse di `generate()`, due decoding diversi,
+quindi una quota di "corretto al pass 1, sbagliato al pass 2" esiste anche
+**senza** puntatore, e va sottratta.
+
+| arm | intervento | corretti al pass 1 | rotti al pass 2 | acc \| corretti al pass 1 | accuracy | run |
+|---|---|---:|---:|---:|---:|---|
+| `nopointer` (controllo) | nessuno (gate mai aperto) | 296/500 | **1** (0.34%) | **99.66%** (295/296) | 59.20% (296/500) | [`n0f2lrif`](https://wandb.ai/alesvale97-unimore/video_mme/runs/n0f2lrif) |
+| `antipeak` | puntatore sulla cella più lontana dal picco | 294/500 | **20** (6.80%) | **93.20%** (274/294) | 57.00% (285/500) | [`c69hvw7w`](https://wandb.ai/alesvale97-unimore/video_mme/runs/c69hvw7w) |
+
+```
+danno = 99.66% − 93.20% = 6.46 pp        z = 4.24, p < 0.0001
+```
+
+**Il canale-prompt è vivo.** Indicare la parte sbagliata del video rompe
+~1 sample su 15 fra quelli già corretti, contro un pavimento di controllo
+allo 0.34%: l'effetto è quasi interamente attribuibile al puntatore, non
+alla discrepanza fra i due decoding. Conferma dal lato opposto: sui
+sample già sbagliati al pass 1 l'antipicco ne cambia 11/206 (5.34%) contro
+1/204 (0.49%) del controllo. Rompe 20 e ripara 11 — netto −9 sample,
+−2.20 pp di accuracy complessiva: un'istruzione sbagliata danneggia più di
+quanto aiuti, che è la firma dell'obbedienza.
+
+**Cosa implica per gli arm sopra.** Se il modello esegue il puntatore e
+quello guidato dall'attenzione produce zero effetto netto, allora il picco
+d'attenzione vale quanto una cella a caso — coerente col probe da 40
+sample ([`2dodrndg`](https://wandb.ai/alesvale97-unimore/video_mme/runs/2dodrndg)):
+picco sull'ultima cella nel 28% dei casi (3.4× il livello di caso), celle
+estreme nel 40% (atteso 17%), `top1_pct` mediano 15.7% contro un livello
+di caso dell'8.3%. Il meccanismo plausibile è la recency causale — le
+righe-query sono i token della domanda, che stanno dopo il blocco visivo,
+quindi l'ultima cella è la più vicina a prescindere dal contenuto; il
+filtro sink non lo corregge, perché agisce su un effetto diverso.
+
+Il filone quindi **non è chiuso, ma va spostato dal canale al segnale**:
+la leva sono la risoluzione del puntatore (12 celle sono ~50 s su un video
+long — da qui l'arm double-frame) e la qualità del picco (righe-query
+ristrette ai token dell'entità, `question_rows` in `utils/attn_core.py`).
+
+*Caveat.* 6.46 pp è il costo di puntare **malissimo**, e non implica
+simmetricamente che puntare bene guadagni altrettanto: dice che il canale
+ha banda, non quanta se ne può estrarre. Inoltre i due arm sono finiti su
+GPU diverse (L40S vs Quadro RTX 6000), quindi il pass 1 non è identico
+bit-per-bit — si vede nei conteggi di corretti al pass 1 (296 vs 294,
+2 sample di oscillazione). Irrilevante a questa scala d'effetto, ma è il
+motivo per cui le due righe non partono dallo stesso denominatore.
 
 **Cosa rappresenta ogni `arm` (colonna della tabella):**
 
@@ -298,3 +376,12 @@ rompano sample diversi nonostante l'accuracy pooled simile.
   filtro sink non lo corregge, perché agisce su un effetto diverso. È
   anche una spiegazione candidata per `entropy_zoom_24`, che usa la stessa
   `peak_cell` per zoomare ed è l'unico arm sotto la baseline.
+
+  ⚠️ Questo arm risponde alla domanda "l'attenzione contribuisce?", non a
+  "il modello ascolta il puntatore?". Il fatto che `random ≈ attention`
+  sembrava suggerire di no, ma è una lettura che il disegno non autorizza:
+  girando col gate aperto, il puntatore cadeva su sample al ~42% di
+  accuracy, dove un'istruzione dannosa non ha spazio per fare danno
+  misurabile. La sonda `antipeak` (sezione sopra) mostra che il modello
+  **esegue** il puntatore: quindi il nulla di questo confronto va letto
+  come "il segnale è cattivo", non come "il canale è morto".

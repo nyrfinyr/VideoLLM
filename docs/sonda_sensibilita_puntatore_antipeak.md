@@ -6,6 +6,19 @@
 > (Video-MME)", strategy in `strategies/attention_highlight.py`, sbatch in
 > `scripts/sbatch/ablation-videomme/antipeak_probe_24.sbatch`.
 
+## Esito (2026-07-29)
+
+**Mondo (A): il canale-prompt è vivo.** Danno **6.46 pp**
+(99.66% → 93.20% sui sample corretti al pass 1), z = 4.24, p < 0.0001 —
+tabella completa e discussione in `README.md` § "Sonda di sensibilità del
+canale-prompt (`antipeak`)". Il resto di questo documento è il razionale
+con cui l'esperimento è stato disegnato, lasciato al tempo presente.
+
+Conseguenza: il nulla di `highlight_top1_24` va attribuito al **segnale**
+(picco d'attenzione posizionale, ~equivalente a una cella a caso), non al
+canale. Le direzioni "entity rows" e "double-frame" restano aperte;
+Qwen3-VL non serve più a stabilire se il modello ascolta.
+
 ## Il fatto di partenza
 
 Tre numeri su Video-MME intero (2700 sample, `qwen2_5_vl_3b_attn`,

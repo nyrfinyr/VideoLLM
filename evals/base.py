@@ -109,9 +109,17 @@ def extract_mcq_letters(prompt: str) -> list[str]:
 # nessun puntatore emesso" (segnale di attenzione nullo) — il motivo sta in
 # `highlight_skip_reason`, che NON è una chiave di breakdown perché le sue
 # fasce non partizionano i sample.
+# `highlight_units` partiziona i soli sample con puntatore emesso (è `None`
+# quando il gate è chiuso, e le chiavi None sono saltate sopra) fra "secondi"
+# e "frazione della durata". Serve in regime frame-doubling: il collasso
+# dell'orologio M-RoPE scatta sotto `window_sec < t_cells`, quindi la soglia
+# passa da 12 s a 24 s e una quota molto più grossa della fascia short cade
+# in `fraction` (vedi `strategies/attention_highlight.py`). Senza questo
+# breakdown, un delta fra l'arm a 12 celle e quello a 24 mescolerebbe
+# l'effetto della RISOLUZIONE del puntatore con quello del cambio di UNITÀ.
 BREAKDOWN_KEYS = (
     "duration", "task_type", "resampled", "resample_kind", "pred_fallback",
-    "highlighted",
+    "highlighted", "highlight_units",
 )
 
 _SLUG_RE = re.compile(r"\W+")
