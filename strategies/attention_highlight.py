@@ -52,8 +52,10 @@ Tre differenze rispetto al paper, tutte volute:
    leggendo `mm_token_type_ids` e consuma un `grid_thw` per gruppo, quindi il
    testo inserito in mezzo spezza il gruppo video in due. Su Qwen3-VL sarebbe
    invece nativo (il formato è già `<t seconds><|vision_start|>cella<|vision_end|>`
-   per cella, e `get_rope_index` splitta apposta `video_grid_thw`), ma il
-   wiring dei segnali per quella famiglia non esiste ancora.
+   per cella, e `get_rope_index` splitta apposta `video_grid_thw`): da quando
+   esistono i preset `qwen3_vl_*_attn` (`models/qwen_attn.py`,
+   `docs/qwen3vl_signals.md`) è una variante implementabile su quella
+   famiglia, ma resta non implementata.
 
 Perché è interessante confrontarla con `entropy_attention_resample`: a
 parità di gate e di segnale, il resampling dà al modello frame NUOVI (nuova
@@ -69,8 +71,8 @@ nuovo, nessun PNG estratto) — è un solo forward in più sugli stessi token
 visivi, quindi questa strategy è più economica degli arm di resampling a
 parità di gate.
 
-Richiede un modello che implementa `SupportsSignals` (oggi solo
-`model=qwen2_5_vl_3b_attn`) — fail-fast altrimenti, stesso pattern di
+Richiede un modello che implementa `SupportsSignals` (i preset `*_attn`:
+`qwen2_5_vl_3b_attn`, `qwen3_vl_2b_attn`, `qwen3_vl_4b_attn`) — fail-fast altrimenti, stesso pattern di
 `entropy_shortcut`/`entropy_attention_resample`. A differenza del
 resampling, funziona anche quando `frames` è fissato dal dataset (es.
 MVBench `data_type="frame"`): non serve poter riselezionare i frame, basta
@@ -348,7 +350,8 @@ class AttentionHighlightStrategy(Strategy):
             raise RuntimeError(
                 f"strategy {self.name!r} richiede un modello che implementa "
                 f"SupportsSignals (segnali di confidenza/attenzione), ma "
-                f"{type(vlm).__name__} non lo fa — usa model=qwen2_5_vl_3b_attn "
+                f"{type(vlm).__name__} non lo fa — usa uno dei preset con cattura "
+                "(qwen2_5_vl_3b_attn, qwen3_vl_2b_attn, qwen3_vl_4b_attn) "
                 "o un'altra strategy."
             )
 
@@ -408,6 +411,14 @@ class AttentionHighlightStrategy(Strategy):
                 # short di Video-MME; in regime frame-doubling la soglia
                 # raddoppia a 24 s e la quota sale a ~12%, vedi
                 # `docs/` e la nota in highlight_top1_24.sbatch).
+                #
+                # Su Qwen3-VL il fenomeno non esiste — lì il tempo non passa
+                # dalla M-RoPE ma dai timestamp testuali `<x.x seconds>` che
+                # il processor scrive nel prompt, con risoluzione al decimo di
+                # secondo. Il fallback resta attivo comunque, identico per le
+                # due famiglie: cambiarlo solo su una renderebbe gli arm non
+                # confrontabili proprio sui sample brevi. `highlight_units`
+                # nel log dice sempre quale forma è stata usata.
                 if t_cells and window_sec < t_cells:
                     units = "fraction"
             pointer, highlight_spans, highlight_cells, highlight_skip_reason = self._build_pointer(

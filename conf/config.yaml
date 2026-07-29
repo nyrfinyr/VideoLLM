@@ -1,5 +1,5 @@
 active:
-  model: qwen2_5_vl_3b         # (qwen2_5_vl_3b | qwen2_5_vl_3b_attn | qwen3_vl_2b | qwen3_vl_4b)
+  model: qwen2_5_vl_3b         # (qwen2_5_vl_3b | qwen2_5_vl_3b_attn | qwen3_vl_2b | qwen3_vl_2b_attn | qwen3_vl_4b | qwen3_vl_4b_attn)
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
@@ -14,6 +14,12 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    # false = regime storico (tutte le misure del README): senza video_metadata
+    # il processor inventa fps/indici e `second_per_grid_ts` vale 0.083 per
+    # QUALUNQUE video → in get_rope_index diventa 0 e le celle video collassano
+    # sulla stessa posizione temporale M-RoPE. true = timestamp reali, corretto
+    # ma NON confrontabile con i numeri esistenti. Vedi `Qwen._prepare_inputs`.
+    pass_video_metadata: false   # (true | false)
 
   qwen2_5_vl_3b_attn:
     name: qwen25_vl_3b_attn
@@ -23,8 +29,9 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    pass_video_metadata: false   # (true | false) vedi qwen2_5_vl_3b
     attn_implementation:
-      text_config: qwen25_attn_capture
+      text_config: qwen25_attn_capture   # alias storico di qwen_attn_capture
       vision_config: sdpa
 
   qwen3_vl_2b:
@@ -33,6 +40,24 @@ model:
     device_map: auto
     min_pixels: null
     max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+
+  # Varianti con cattura dei segnali (SupportsSignals): richieste dalle
+  # strategy signal-driven (entropy_shortcut, entropy_attention_resample,
+  # attention_highlight). Su Qwen3-VL i video_metadata reali sono sempre
+  # passati (il processor ci scrive i timestamp nel prompt) — nessun knob.
+  qwen3_vl_2b_attn:
+    name: qwen3_vl_2b_attn
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+    attn_implementation:
+      text_config: qwen_attn_capture
+      vision_config: sdpa
 
   qwen3_vl_4b:
     name: qwen3_vl_4b
@@ -40,6 +65,20 @@ model:
     device_map: auto
     min_pixels: null
     max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+
+  qwen3_vl_4b_attn:
+    name: qwen3_vl_4b_attn
+    torch_dtype: bfloat16        # (float16 | bfloat16 | float32)
+    device_map: auto
+    min_pixels: null
+    max_pixels: 802816
+    num_text_layers: null
+    num_vision_layers: null
+    attn_implementation:
+      text_config: qwen_attn_capture
+      vision_config: sdpa
 
 generation:
   precise:

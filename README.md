@@ -27,6 +27,12 @@ via `uv run python main.py` dal root, vedi `CLAUDE.md` per i dettagli).
   * [Qwen2.5-VL-3B](https://github.com/QwenLM/Qwen2.5-VL)
   * [Qwen3-VL-2B](https://github.com/QwenLM/Qwen3-VL)
   * [Qwen3-VL-4B](https://github.com/QwenLM/Qwen3-VL)
+
+  Ognuno ha anche una variante `*_attn` (`qwen2_5_vl_3b_attn`,
+  `qwen3_vl_2b_attn`, `qwen3_vl_4b_attn`) che monta la cattura
+  dell'attenzione e implementa `SupportsSignals`: è quella richiesta dalle
+  strategy signal-driven. Differenze Qwen3 (token visivi non contigui, sink
+  dims, timestamp nel prompt) in `docs/qwen3vl_signals.md`.
 - **Dataset:** 
   * [EgoSchema](https://github.com/egoschema/EgoSchema)
   * [MVBench](https://github.com/OpenGVLab/Ask-Anything)
@@ -58,6 +64,15 @@ rilanciato su GPU ≥ 40 GiB
 230/517) e 1
 ([`usuy6en7`](https://wandb.ai/alesvale97-unimore/lvbench/runs/usuy6en7),
 227/516). In linea col paper (−0.3 punti).
+
+**Nota su tutti i numeri Qwen2.5 di questa pagina** — il preprocessing non
+passa al processor i `video_metadata` reali, quindi `second_per_grid_ts` vale
+0.083 per qualunque video e `get_rope_index` lo tronca a 0: le celle video
+finiscono tutte sulla stessa posizione temporale M-RoPE. Riguarda ogni run
+qui riportata; è il regime in cui sono state prodotte, quindi resta il
+default (knob `model.pass_video_metadata`, default `false`, da alzare solo
+per una run di controllo). Misura e implicazioni in
+`docs/qwen3vl_signals.md`.
 
 ## Sweep `entropy_attention_resample` (Video-MME, in corso)
 

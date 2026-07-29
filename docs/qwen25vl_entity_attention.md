@@ -3,6 +3,13 @@
 > **Stato** (2026-06-03): implementazione completa, verificata in locale
 > (import, registrazioni, composizione Hydra, ricerca span col tokenizer
 > vero). **Non ancora verificata su GPU** — checklist HPC in fondo.
+>
+> **Aggiornamento**: la cattura è poi stata estesa a Qwen3-VL e il corpo
+> condiviso vive nel mixin `QwenAttentionCapture`; l'interface si chiama ora
+> `qwen_attn_capture` (`qwen25_attn_capture` resta come alias). Individuazione
+> degli span, sink dims e timestamp per quella famiglia:
+> `docs/qwen3vl_signals.md`. Questo documento resta il riferimento sul
+> disegno originale.
 
 ---
 

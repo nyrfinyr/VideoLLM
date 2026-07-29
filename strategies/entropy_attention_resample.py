@@ -53,8 +53,8 @@ Soglie NON validate per MVBench (i numeri raccolti in
 `strategy.entropy_attention_resample` in `conf/config.yaml`, tarabili da
 CLI senza toccare codice, es. `strategy.entropy_threshold=1.0`.
 
-Richiede un modello che implementa `SupportsSignals` (oggi solo
-`model=qwen2_5_vl_3b_attn`) — fail-fast altrimenti, stesso pattern di
+Richiede un modello che implementa `SupportsSignals` (i preset `*_attn`:
+`qwen2_5_vl_3b_attn`, `qwen3_vl_2b_attn`, `qwen3_vl_4b_attn`) — fail-fast altrimenti, stesso pattern di
 `entropy_shortcut`. Se `frames` è già fissato dal dataset (nessuna libertà
 di selezione, es. MVBench `data_type="frame"`) il resampling è per
 definizione impossibile: si accetta sempre il pass 1.
@@ -395,7 +395,8 @@ class EntropyAttentionResampleStrategy(Strategy):
             raise RuntimeError(
                 f"strategy {self.name!r} richiede un modello che implementa "
                 f"SupportsSignals (segnali di confidenza/attenzione), ma "
-                f"{type(vlm).__name__} non lo fa — usa model=qwen2_5_vl_3b_attn "
+                f"{type(vlm).__name__} non lo fa — usa uno dei preset con cattura "
+                "(qwen2_5_vl_3b_attn, qwen3_vl_2b_attn, qwen3_vl_4b_attn) "
                 "o un'altra strategy."
             )
 

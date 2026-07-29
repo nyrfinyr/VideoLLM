@@ -10,8 +10,8 @@ a decidere la strategy "giusta" — quella resta lavoro futuro (es. una
 strategy multi-pass che ri-campiona i frame in base all'entropia/
 concentrazione dell'attenzione della prima passata).
 
-Richiede un modello che implementa `SupportsSignals` (oggi solo
-`Qwen25VLAttention`, `model=qwen2_5_vl_3b_attn`) — fallisce esplicitamente
+Richiede un modello che implementa `SupportsSignals` (i preset `*_attn`:
+`qwen2_5_vl_3b_attn`, `qwen3_vl_2b_attn`, `qwen3_vl_4b_attn`) — fallisce esplicitamente
 altrimenti, stesso pattern di fail-fast già usato in `evals/video_mme.py`
 per `use_subtitles` senza campo `subtitle`.
 """
@@ -51,7 +51,8 @@ class EntropyShortcutStrategy(Strategy):
             raise RuntimeError(
                 f"strategy {self.name!r} richiede un modello che implementa "
                 f"SupportsSignals (segnali di confidenza/attenzione), ma "
-                f"{type(vlm).__name__} non lo fa — usa model=qwen2_5_vl_3b_attn "
+                f"{type(vlm).__name__} non lo fa — usa uno dei preset con cattura "
+                "(qwen2_5_vl_3b_attn, qwen3_vl_2b_attn, qwen3_vl_4b_attn) "
                 "o un'altra strategy."
             )
         media, tmp_dir = self._build_media(video_path, frames, video_start, video_end, budget)

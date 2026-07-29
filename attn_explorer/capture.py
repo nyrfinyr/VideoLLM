@@ -12,8 +12,10 @@ forward. Il dump conserva una mappa di attenzione per ogni token della domanda;
 la selezione delle entity e il riordino dei frame avvengono a RUNTIME nel server
 `attn_explorer.serve`. `--entity` resta solo come quick-check testuale opzionale.
 
-Usa SEMPRE `Qwen25VLAttention` (l'unico modello con la custom attention
-interface che stasha i pesi softmax delle query verso i token visivi).
+Il modello si sceglie con `--model` fra quelli che montano la custom attention
+interface (quella che stasha i pesi softmax delle query verso i token visivi):
+`qwen2_5_vl_3b_attn` (default), `qwen3_vl_2b_attn`, `qwen3_vl_4b_attn` — stessi
+nomi dei preset in `conf/config.yaml`.
 
 Tre sorgenti:
 
@@ -83,10 +85,22 @@ DEFAULT_MAX_PIXELS = 151200
 
 DTYPES = {"float16": "float16", "bfloat16": "bfloat16", "float32": "float32"}
 
+# Modelli con cattura dell'attenzione, per `--model`. Chiavi identiche ai
+# preset omonimi di `conf/config.yaml` (`model.<chiave>`), così un capture e
+# l'eval che lo produrrebbe si nominano allo stesso modo.
+CAPTURE_MODELS = {
+    "qwen2_5_vl_3b_attn": "Qwen25VLAttention",
+    "qwen3_vl_2b_attn": "Qwen3VL2BAttention",
+    "qwen3_vl_4b_attn": "Qwen3VL4BAttention",
+}
+DEFAULT_MODEL = "qwen2_5_vl_3b_attn"
+
 # Config dell'attention interface del modello custom: il decoder testuale usa
 # l'implementazione che cattura i pesi softmax, la torre visiva resta su sdpa.
+# `qwen_attn_capture` è family-agnostica (Qwen2.5 e Qwen3); il vecchio nome
+# `qwen25_attn_capture` resta registrato come alias in `models/qwen_attn.py`.
 ATTN_IMPLEMENTATION = {
-    "text_config": "qwen25_attn_capture",
+    "text_config": "qwen_attn_capture",
     "vision_config": "sdpa",
 }
 
@@ -116,6 +130,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--double-frames", action="store_true", help="frame-doubling: ogni cella temporale ↔ un singolo frame (costo ~2x token visivi nel prefill)")
     ap.add_argument("--topk",       type=int, default=8, help="[quick-check] quante celle marcare come 'top' nello stdout (default 8)")
     ap.add_argument("--metric",     choices=["sum", "max"], default="sum", help="[quick-check] ranking celle: 'sum' = massa totale, 'max' = picco (default sum)")
+    ap.add_argument("--model",      choices=list(CAPTURE_MODELS), default=DEFAULT_MODEL, help=f"modello con cattura dell'attenzione (default {DEFAULT_MODEL})")
     ap.add_argument("--outdir",     default="debug_out", help="cartella STORE di output (default debug_out/)")
     ap.add_argument("--dtype",      choices=list(DTYPES), default="bfloat16", help="precisione dei pesi (default bfloat16)")
     ap.add_argument("--device-map", default="auto", help="device placement (default auto)")
@@ -441,12 +456,13 @@ def main() -> None:
     jobs = resolve_jobs(args)
 
     import torch
-    from models import Qwen25VLAttention
+    import models
 
     torch.manual_seed(42)
 
-    logger.info("Caricamento Qwen25VLAttention (dtype=%s, device_map=%s)", args.dtype, args.device_map)
-    vlm = Qwen25VLAttention(
+    vlm_cls = getattr(models, CAPTURE_MODELS[args.model])
+    logger.info("Caricamento %s (dtype=%s, device_map=%s)", vlm_cls.__name__, args.dtype, args.device_map)
+    vlm = vlm_cls(
         torch_dtype=getattr(torch, args.dtype),
         device_map=args.device_map,
         attn_implementation=ATTN_IMPLEMENTATION,

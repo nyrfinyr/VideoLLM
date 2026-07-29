@@ -28,6 +28,17 @@ class Qwen(BaseVLM):
     model_cls: type  # override in subclass: *ForConditionalGeneration
     processor_cls: type  # override in subclass: *Processor della famiglia
 
+    # Granularità del patch visivo passata a `qwen_vl_utils.process_vision_info`
+    # (arrotondamento di `smart_resize`): 14 su Qwen2.5-VL, 16 su Qwen3-VL —
+    # vedi `Qwen3VL`.
+    image_patch_size: int = 14
+
+    # Se passare al processor i `video_metadata` REALI (fps e indici dei frame
+    # campionati) invece di lasciarglieli inventare. Default `False` = regime
+    # storico, vedi `_prepare_inputs` per cosa comporta; `True` di default su
+    # Qwen3-VL, dove senza è insensato (i timestamp finiscono nel prompt).
+    pass_video_metadata: bool = False
+
     def _load(
         self,
         torch_dtype,
@@ -36,6 +47,7 @@ class Qwen(BaseVLM):
         max_pixels: int | None = None,
         num_text_layers: int | None = None,
         num_vision_layers: int | None = None,
+        pass_video_metadata: bool | None = None,
         **kwargs,
     ):
         """Load the Qwen-VL processor + model.
@@ -43,6 +55,10 @@ class Qwen(BaseVLM):
         `min_pixels` and `max_pixels` cap the per-image visual-token budget
         (forwarded to `processor_cls`); leave as `None` to keep the model's
         default range.
+
+        `pass_video_metadata` (`None` = lascia il default della classe)
+        sovrascrive l'attributo omonimo dal preset yaml — knob per-run, vedi
+        `_prepare_inputs`.
 
         `num_text_layers` / `num_vision_layers` (entrambi `None` di default)
         sono knob per **smoke test su GPU piccola**: troncano il decoder
@@ -54,6 +70,12 @@ class Qwen(BaseVLM):
         il code path (load → preprocess → generate → parse → scorer)
         senza occupare la VRAM piena, non a produrre metriche utili.
         """
+        if pass_video_metadata is not None:
+            # Assegnato sull'istanza (non sulla classe): `_load` è chiamato da
+            # `BaseVLM.__init__`, quindi `self` esiste già ed è l'unico punto
+            # in cui i knob del preset yaml sono visibili.
+            self.pass_video_metadata = bool(pass_video_metadata)
+
         processor_kwargs = {}
         if min_pixels is not None:
             processor_kwargs["min_pixels"] = min_pixels
@@ -99,6 +121,19 @@ class Qwen(BaseVLM):
                     "SMOKE TEST: vision encoder troncato da %d a %d layer.",
                     orig, num_vision_layers,
                 )
+                # Qwen3-VL preleva le feature "deepstack" da layer del ViT
+                # indicizzati esplicitamente (default 8/16/24): troncando il
+                # ViT sotto quegli indici nessuna feature verrebbe raccolta e
+                # il merger resterebbe spaiato dal decoder. Si tengono solo
+                # gli indici ancora esistenti.
+                deepstack = getattr(vc, "deepstack_visual_indexes", None)
+                if deepstack is not None:
+                    kept = [i for i in deepstack if i < num_vision_layers]
+                    logger.warning(
+                        "SMOKE TEST: deepstack_visual_indexes %s → %s.",
+                        list(deepstack), kept,
+                    )
+                    vc.deepstack_visual_indexes = kept
             model_kwargs["config"] = config
 
         model = self.model_cls.from_pretrained(
@@ -139,21 +174,71 @@ class Qwen(BaseVLM):
         Wraps the three steps of the official quickstart: `apply_chat_template`,
         `process_vision_info`, then `self.processor(...)`. The returned object
         already lives on `self.model.device`.
+
+        Due regimi, secondo `pass_video_metadata`:
+
+        - **`False` (default, regime storico di questo repo)** — i frame
+          arrivano al processor senza `video_metadata`, che quindi se li
+          inventa (`transformers.video_utils.make_batched_metadata`:
+          `fps=None`, `frames_indices=range(T)`). Su Qwen2.5-VL questo rende
+          `second_per_grid_ts = temporal_patch_size / sampled_fps = 2/24 =
+          0.083` per QUALUNQUE video, e `get_rope_index`
+          (`modeling_qwen2_5_vl.py:1125`) fa `tokens_per_second *
+          int(0.083) = 0`: tutte le celle video finiscono sulla stessa
+          posizione temporale M-RoPE. È il regime in cui sono state prodotte
+          tutte le misure del README, quindi resta il default per non
+          invalidarle — non perché sia corretto.
+          Nota: `video_kwargs` è passato come kwarg singolo e transformers 5.7
+          lo SCARTA con un warning (`_merge_kwargs`: chiave non valida). Non
+          si può semplicemente spacchettarlo (`**video_kwargs`): contiene
+          `fps` come LISTA e la validazione strict di `VideosKwargs` pretende
+          uno scalare → `StrictDataclassFieldValidationError`. Lasciato
+          com'era di proposito: qui l'obiettivo è la riproducibilità.
+
+        - **`True`** — `process_vision_info` ritorna i metadata reali (fps del
+          sorgente + indici dei frame campionati) e li si passa al processor.
+          Su Qwen2.5-VL ripristina il vero `second_per_grid_ts`; su Qwen3-VL
+          (dove è il default, vedi `Qwen3VL`) è l'unico modo di avere nel
+          prompt i timestamp `<x.x seconds>` giusti. `video_kwargs` qui è il
+          solo `do_sample_frames=False` (niente `fps`), quindi si spacchetta.
         """
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+
+        if not self.pass_video_metadata:
+            image_inputs, video_inputs, video_kwargs = process_vision_info(
+                messages, return_video_kwargs=True, image_patch_size=self.image_patch_size,
+            )
+            return self.processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+                video_kwargs=video_kwargs,
+            ).to(self.model.device)
+
         image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages, return_video_kwargs=True
+            messages,
+            return_video_kwargs=True,
+            return_video_metadata=True,
+            image_patch_size=self.image_patch_size,
         )
+        # Con `return_video_metadata=True` ogni elemento è `(video, metadata)`.
+        videos = video_metadata = None
+        if video_inputs:
+            videos = [v for v, _ in video_inputs]
+            video_metadata = [m for _, m in video_inputs]
 
         inputs = self.processor(
             text=[text],
             images=image_inputs,
-            videos=video_inputs,
+            videos=videos,
+            video_metadata=video_metadata,
             padding=True,
             return_tensors="pt",
-            video_kwargs=video_kwargs,
+            **video_kwargs,
         ).to(self.model.device)
 
         return inputs
@@ -209,13 +294,37 @@ class Qwen25VL3B(Qwen):
     processor_cls = Qwen2_5_VLProcessor
 
 
-class Qwen3VL2B(Qwen):
+class Qwen3VL(Qwen):
+    """Base della famiglia Qwen3-VL: cambia solo il preprocessing visivo.
+
+    Due differenze rispetto a Qwen2.5-VL, entrambe nel percorso
+    `process_vision_info` → processor:
+
+    1. **`image_patch_size = 16`** (Qwen2.5-VL: 14) — `smart_resize`
+       arrotonda a `patch_size * merge_size`, quindi con 14 i frame
+       verrebbero pre-ridimensionati su una griglia che il video processor
+       di Qwen3 dovrebbe poi rifare.
+    2. **`pass_video_metadata = True`** — obbligatorio, non un'opzione: il
+       processor di Qwen3-VL scrive i timestamp DENTRO il prompt, un
+       `<x.x seconds>` prima di ogni blocco visivo
+       (`processing_qwen3_vl.py:157-170`), calcolandoli da
+       `video_metadata.frames_indices / fps`. Senza metadata reali ripiega su
+       `fps=24` e `frames_indices=range(T)`: un video di un'ora sampleato a
+       128 frame verrebbe presentato al modello come lungo 5 secondi. E su
+       questa famiglia il tempo È quel testo — `get_rope_index` splitta
+       `video_grid_thw` per frame e non esiste alcun `second_per_grid_ts`.
+    """
+
+    image_patch_size = 16
+    pass_video_metadata = True
+
+    model_cls = Qwen3VLForConditionalGeneration
+    processor_cls = Qwen3VLProcessor
+
+
+class Qwen3VL2B(Qwen3VL):
     model_id = "Qwen/Qwen3-VL-2B-Instruct"
-    model_cls = Qwen3VLForConditionalGeneration
-    processor_cls = Qwen3VLProcessor
 
 
-class Qwen3VL4B(Qwen):
+class Qwen3VL4B(Qwen3VL):
     model_id = "Qwen/Qwen3-VL-4B-Instruct"
-    model_cls = Qwen3VLForConditionalGeneration
-    processor_cls = Qwen3VLProcessor

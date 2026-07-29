@@ -1,51 +1,81 @@
 import torch
 import torch.nn.functional as F
 from transformers import AttentionInterface, GenerationConfig
+from transformers.integrations.sdpa_attention import repeat_kv
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv
 
 from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats, top_k_logits
 
 from .media import MediaItem, Text
-from .qwen import Qwen25VL3B
+from .qwen import Qwen25VL3B, Qwen3VL2B, Qwen3VL4B
 from .signals import SignalAnswer, SupportsSignals
 
 
 # Indici di canale "outlier" per modello: i token visivi-sink hanno hidden
-# state con valori estremi in queste poche dimensioni. Ricalcati da
-# `lot/retrieval.py` (metodo "sink-dims" di Xiao et al.). Solo Qwen2.5-VL-3B
-# è rilevante qui (oddio `Qwen25VLAttention` subclassa `Qwen25VL3B`).
+# state con valori estremi in queste poche dimensioni. Ricopiati da
+# `lot/retrieval.py:64-79` (metodo "sink-dims" di Xiao et al.), che li ha
+# ricavati modello per modello — inclusi i Qwen3-VL.
 SINK_DIMS: dict[str, tuple[int, ...]] = {
     "Qwen/Qwen2.5-VL-3B-Instruct": (318, 1874, 1819),
     "Qwen/Qwen2.5-VL-7B-Instruct": (458, 2570),
     "Qwen/Qwen2.5-VL-32B-Instruct": (4675, 3094),
     "Qwen/Qwen2-VL-2B-Instruct": (1073, 534, 940),
     "Qwen/Qwen2-VL-7B-Instruct": (2570, 458),
+    # Qwen3-VL: il 4B ne ha UNO SOLO (canale 0) — se la `sink_map` risultasse
+    # quasi costante, il filtro al 25° percentile diventerebbe una soglia
+    # arbitraria invece di isolare una minoranza di token: da controllare al
+    # primo forward reale (vedi `docs/qwen3vl_signals.md`).
+    "Qwen/Qwen3-VL-2B-Instruct": (1793, 1999, 1401),
+    "Qwen/Qwen3-VL-4B-Instruct": (0,),
+    "Qwen/Qwen3-VL-8B-Instruct": (1838,),
 }
-# Default se il model_id non è tabulato (riesce comunque: i sink score
-# saranno solo approssimati).
-SINK_DIMS_DEFAULT = SINK_DIMS["Qwen/Qwen2.5-VL-3B-Instruct"]
 
 
-# Span catturati dal prossimo forward (impostati da `full_visual_attention`):
+def sink_dims_for(model_id: str) -> tuple[int, ...]:
+    """Sink dims tabulati per `model_id`, o `KeyError` esplicito.
+
+    Niente fallback silenzioso su un altro modello: i canali outlier sono una
+    proprietà dei pesi: usare quelli del 3B su un'altra famiglia produrrebbe
+    una `sink_map` di puro rumore, e ogni segnale che dipende dal filtro sink
+    (`top1_pct`, ramo zoom, cella evidenziata) sarebbe silenziosamente falso.
+    """
+    try:
+        return SINK_DIMS[model_id]
+    except KeyError:
+        raise KeyError(
+            f"sink dims non tabulati per {model_id!r}. Aggiungili a "
+            "`SINK_DIMS` in models/qwen_attn.py (riferimento: la tabella "
+            "omonima in lot/retrieval.py) — nessun default: i canali di un "
+            "altro modello darebbero una sink_map priva di significato."
+        ) from None
+
+
+# Cosa cattura il prossimo forward (impostato da `full_visual_attention`):
 #   QUERY_SPAN = [q_lo, q_hi)  righe-query da conservare (= testo della domanda)
-#   VIS_SPAN   = [v_lo, v_hi)  colonne-key visive da conservare
+#   VIS_INDEX  = indici delle colonne-key visive da conservare (tensore, già
+#                sul device del modello)
 # Restringere le righe al solo testo è ciò che rende la cattura economica:
 # evita di materializzare la matrice [S, S] piena (S~16k coi token visivi).
+#
+# Le colonne sono un ELENCO DI INDICI e non uno span perché su Qwen3-VL il
+# blocco visivo non è contiguo: il processor interleava un `<x.x seconds>`
+# testuale prima di ogni frame, quindi i token visivi sono `t` isole separate
+# (vedi `QwenAttentionCapture._capture_spans`). Su Qwen2.5-VL gli indici sono
+# semplicemente contigui e il risultato è identico allo slice di prima.
 QUERY_SPAN: tuple[int, int] | None = None
-VIS_SPAN: tuple[int, int] | None = None
+VIS_INDEX: torch.Tensor | None = None
 
 
 def set_capture_spans(
     query_span: tuple[int, int] | None,
-    vis_span: tuple[int, int] | None = None,
+    vis_index: torch.Tensor | None = None,
 ) -> None:
-    """Imposta gli span (righe-query, colonne-visive) per il prossimo forward."""
-    global QUERY_SPAN, VIS_SPAN
-    QUERY_SPAN, VIS_SPAN = query_span, vis_span
+    """Imposta righe-query e colonne visive per il prossimo forward."""
+    global QUERY_SPAN, VIS_INDEX
+    QUERY_SPAN, VIS_INDEX = query_span, vis_index
 
 
-def qwen25_attn_capture(
+def qwen_attn_capture(
     module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -59,9 +89,14 @@ def qwen25_attn_capture(
     """Attention interface che, oltre all'output SDPA, stasha i pesi softmax.
 
     Cattura `softmax(q·kᵀ)` per le SOLE righe-query in `QUERY_SPAN`, ne tiene le
-    SOLE colonne visive in `VIS_SPAN`, fa la media sulle teste e stasha
+    SOLE colonne visive in `VIS_INDEX`, fa la media sulle teste e stasha
     `[n_q, n_vis]` (cpu) in `module._last_attn`. Entity-agnostico: conserva una
     riga per OGNI token della domanda, non per una singola entity.
+
+    Indipendente dalla versione: la firma dell'attention interface è la stessa
+    per Qwen2.5-VL e Qwen3-VL, e su Qwen3 `q_norm`/`k_norm` sono già applicate
+    dal chiamante (`modeling_qwen3_vl.py:478-480`), quindi il matmul qui sotto
+    ricalcola gli stessi pesi che userebbe il kernel.
     """
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
@@ -77,29 +112,38 @@ def qwen25_attn_capture(
     )
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    if QUERY_SPAN is not None and VIS_SPAN is not None:
+    if QUERY_SPAN is not None and VIS_INDEX is not None:
         q_lo, q_hi = QUERY_SPAN
-        v_lo, v_hi = VIS_SPAN
         query_rows = query[:, :, q_lo:q_hi, :]
         attn_weights = torch.matmul(query_rows, key_states.transpose(2, 3)) * scaling
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask[:, :, q_lo:q_hi, : key_states.shape[-2]]
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
-        # slice colonne visive + media sulle teste → [n_q, n_vis] (batch=1).
-        vis = attn_weights[:, :, :, v_lo:v_hi].mean(dim=1)
+        # colonne visive + media sulle teste → [n_q, n_vis] (batch=1).
+        vis = attn_weights.index_select(-1, VIS_INDEX.to(attn_weights.device)).mean(dim=1)
         module._last_attn = vis[0].detach().cpu()
 
     return attn_output, None
 
 
-AttentionInterface.register("qwen25_attn_capture", qwen25_attn_capture)
+AttentionInterface.register("qwen_attn_capture", qwen_attn_capture)
+AttentionMaskInterface.register("qwen_attn_capture", eager_mask)
+# Alias storico: è il nome che compare nel preset `qwen2_5_vl_3b_attn`, negli
+# sbatch e nei config snapshottati delle run già fatte. Stessa funzione, che
+# nel frattempo è diventata family-agnostica.
+AttentionInterface.register("qwen25_attn_capture", qwen_attn_capture)
 AttentionMaskInterface.register("qwen25_attn_capture", eager_mask)
 
 
-class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
-    """Qwen2.5-VL con attention interface custom per analisi dell'attenzione.
+class QwenAttentionCapture(SupportsSignals):
+    """Cattura dell'attenzione domanda→token visivi, comune a Qwen2.5/Qwen3-VL.
 
-    L'interface `qwen25_attn_capture` (registrata sopra, attivata via
+    Mixin: va combinato con una sottoclasse concreta di `Qwen` (che porta
+    `model_id`, `_load`, `_prepare_inputs`, `generate`) — vedi
+    `Qwen25VLAttention`/`Qwen3VL2BAttention`/`Qwen3VL4BAttention` in fondo al
+    modulo.
+
+    L'interface `qwen_attn_capture` (registrata sopra, attivata via
     `attn_implementation.text_config` nello yaml — scoped al solo decoder
     testuale) calcola `softmax(q·kᵀ)` per le righe-query del testo della domanda
     e stasha i pesi sui token visivi per layer in `self_attn._last_attn`.
@@ -110,6 +154,12 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
     `SupportsSignals`, `models/signals.py`) è il punto d'ingresso usato dalle
     strategy signal-driven (es. `strategies.entropy_shortcut`): avvolge
     `full_visual_attention` senza duplicarne la logica.
+
+    Nulla qui è specifico di una versione: griglia (`spatial_merge_size=2`,
+    `temporal_patch_size=2` → una cella = 2 frame in entrambe le famiglie),
+    path dei layer (`model.model.language_model.layers`) e `logits_to_keep=1`
+    coincidono. L'unico punto in cui le due famiglie divergono è
+    `_capture_spans`, che le gestisce entrambe con lo stesso codice.
     """
 
     def _find_entity_span(self, input_ids: torch.Tensor, entity: str) -> tuple[int, int]:
@@ -129,6 +179,49 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
                     return i, i + n
         raise ValueError(f"entity {entity!r} non trovata nei token del prompt")
 
+    def _capture_spans(self, input_ids: torch.Tensor) -> tuple[tuple[int, int], torch.Tensor]:
+        """`(query_span, vis_index)` per un prompt già tokenizzato (1D).
+
+        - **colonne visive** = tutte le posizioni dei placeholder visivi
+          (`image_token_id`/`video_token_id`, cioè `<|image_pad|>`/
+          `<|video_pad|>`), non lo spazio fra il primo `vision_start` e il
+          primo `vision_end`. Su Qwen2.5-VL le due definizioni coincidono (fra
+          start ed end c'è solo il pad ripetuto, quindi la cattura resta
+          identica a prima); su Qwen3-VL no: il processor emette
+          `<x.x seconds><|vision_start|>frame<|vision_end|>` PER OGNI frame
+          (`processing_qwen3_vl.py:157-170`), quindi ci sono `t` coppie
+          start/end e i token visivi sono `t` isole separate da testo.
+        - **righe-query** = tutto ciò che sta dopo l'ULTIMO `vision_end`, cioè
+          il testo della domanda (più il generation prompt). Su Qwen2.5-VL
+          "ultimo" e "primo" sono lo stesso token; su Qwen3-VL prendere il
+          primo significherebbe trattare tutto il video tranne il frame 0
+          come se fosse la domanda.
+
+        `vis_index` è in ordine di sequenza, cioè frame-major: è ciò che rende
+        valido il `reshape(t, grid_h, grid_w)` a valle.
+        """
+        cfg = self.model.config
+        visual_ids = torch.tensor(
+            [cfg.image_token_id, cfg.video_token_id], device=input_ids.device,
+        )
+        vis_index = torch.isin(input_ids, visual_ids).nonzero(as_tuple=True)[0]
+        if vis_index.numel() == 0:
+            raise ValueError(
+                "nessun token visivo nel prompt: `full_visual_attention` "
+                "richiede un media (immagine o video) nei messaggi."
+            )
+
+        vision_end = (input_ids == cfg.vision_end_token_id).nonzero(as_tuple=True)[0]
+        if vision_end.numel() == 0:
+            raise ValueError("nessun <|vision_end|> nel prompt — layout inatteso")
+        query_span = (int(vision_end[-1].item()) + 1, int(input_ids.shape[0]))
+        if query_span[0] >= query_span[1]:
+            raise ValueError(
+                "nessun token dopo l'ultimo <|vision_end|>: il testo della "
+                "domanda deve seguire il media (vedi `Qwen.build_messages`)."
+            )
+        return query_span, vis_index
+
     def full_visual_attention(
         self,
         media: MediaItem,
@@ -145,8 +238,8 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
         sui layer e ne deriva `sink_map`: per ogni token visivo, `max` dei
         sink dims normalizzato RMS, mediato sui layer centrali. I token con
         sink score alto sono "sink" (assorbono attenzione spuria) — a runtime
-        si filtrano azzerandoli. Solo per `Qwen25VLAttention` (text_config
-        custom), ma non richiede modifiche al vision encoder. Inspired by
+        si filtrano azzerandoli. Richiede il text_config custom (la cattura
+        dei pesi), non modifiche al vision encoder. Inspired by
         `lot/retrieval.py` ("sink-dims" di Xiao et al.).
 
         Args:
@@ -169,18 +262,16 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
         """
         inputs = self._prepare_inputs(self.build_messages(media, text))
         input_ids = inputs.input_ids[0]
-        seq_len = input_ids.shape[0]
 
         cfg = self.model.config
-        vis_start = (input_ids == cfg.vision_start_token_id).nonzero(as_tuple=True)[0][0].item()
-        vis_end = (input_ids == cfg.vision_end_token_id).nonzero(as_tuple=True)[0][0].item()
+        query_span, vis_index = self._capture_spans(input_ids)
+        # Estremi del blocco visivo, a scopo informativo: su Qwen3-VL le
+        # colonne NON sono contigue fra questi due indici (vedi
+        # `_capture_spans`), quindi non va usato per fare slicing — nessuno lo
+        # fa, viene solo riportato nei DTO.
+        visual_span = (int(vis_index[0].item()), int(vis_index[-1].item()) + 1)
 
-        # Righe-query = testo DOPO il video (la domanda); colonne = token visivi.
-        query_span = (vis_end + 1, seq_len)
-        visual_span = (vis_start + 1, vis_end)
-
-        # Sink dims per questo model_id (o default se non tabulati).
-        sink_dims = SINK_DIMS.get(self.model_id, SINK_DIMS_DEFAULT)
+        sink_dims = sink_dims_for(self.model_id)
         sink_dims_t = torch.tensor(sink_dims, dtype=torch.long)
 
         layers = self.model.model.language_model.layers
@@ -192,12 +283,12 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
         # tenere pulito il path di capture.
         sink_per_layer: dict[int, torch.Tensor] = {}
 
-        def make_sink_hook(layer_idx: int, v_lo: int, v_hi: int, dims: torch.Tensor):
+        def make_sink_hook(layer_idx: int, columns: torch.Tensor, dims: torch.Tensor):
             def _hook(_module, _inputs, output):
                 # output è un tuple; il primo è l'hidden state.
                 hs = output[0] if isinstance(output, tuple) else output
-                vis_hidden = hs[0, v_lo:v_hi, :]  # [n_vis, D]
-                sink_vals = vis_hidden[:, dims]    # [n_vis, n_sink_dims]
+                vis_hidden = hs[0].index_select(0, columns.to(hs.device))  # [n_vis, D]
+                sink_vals = vis_hidden[:, dims.to(hs.device)]  # [n_vis, n_sink_dims]
                 max_sink_val = sink_vals.abs().max(dim=1).values
                 rms = torch.sqrt(vis_hidden.pow(2).mean(dim=1))
                 score = max_sink_val / (rms + 1e-6)  # [n_vis]
@@ -205,11 +296,11 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
             return _hook
 
         hooks = [
-            layers[i].register_forward_hook(make_sink_hook(i, *visual_span, sink_dims_t))
+            layers[i].register_forward_hook(make_sink_hook(i, vis_index, sink_dims_t))
             for i in range(n_layers)
         ]
 
-        set_capture_spans(query_span, visual_span)
+        set_capture_spans(query_span, vis_index)
         try:
             with torch.no_grad():
                 # use_cache=False: questo è un prefill isolato (nessuna
@@ -361,3 +452,20 @@ class Qwen25VLAttention(Qwen25VL3B, SupportsSignals):
             grid_w=out.grid_w,
             query_tokens=out.query_tokens,
         )
+
+
+# Varianti "con segnali" dei modelli di `models/qwen.py`: aggiungono solo la
+# cattura (il mixin), il resto — pesi, processor, preprocessing — è quello
+# della classe base. Vanno selezionate con il preset yaml corrispondente, che
+# è ciò che attiva davvero l'interface (`attn_implementation.text_config`):
+# senza, `_last_attn` non verrebbe mai popolato.
+class Qwen25VLAttention(Qwen25VL3B, QwenAttentionCapture):
+    """Qwen2.5-VL-3B con cattura dell'attenzione (preset `qwen2_5_vl_3b_attn`)."""
+
+
+class Qwen3VL2BAttention(Qwen3VL2B, QwenAttentionCapture):
+    """Qwen3-VL-2B con cattura dell'attenzione (preset `qwen3_vl_2b_attn`)."""
+
+
+class Qwen3VL4BAttention(Qwen3VL4B, QwenAttentionCapture):
+    """Qwen3-VL-4B con cattura dell'attenzione (preset `qwen3_vl_4b_attn`)."""

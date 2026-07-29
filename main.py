@@ -66,7 +66,14 @@ def run(cfg: Cfg) -> None:
     os.environ.setdefault("WEAVE_PARALLELISM", "1")
 
     from transformers import GenerationConfig
-    from models import Qwen25VL3B, Qwen3VL2B, Qwen3VL4B, Qwen25VLAttention
+    from models import (
+        Qwen25VL3B,
+        Qwen25VLAttention,
+        Qwen3VL2B,
+        Qwen3VL2BAttention,
+        Qwen3VL4B,
+        Qwen3VL4BAttention,
+    )
     from models.base import BaseVLM
 
     _MODELS: dict[str, type[BaseVLM]] = {
@@ -74,6 +81,8 @@ def run(cfg: Cfg) -> None:
         "qwen3_vl_2b": Qwen3VL2B,
         "qwen3_vl_4b": Qwen3VL4B,
         "qwen25_vl_3b_attn": Qwen25VLAttention,
+        "qwen3_vl_2b_attn": Qwen3VL2BAttention,
+        "qwen3_vl_4b_attn": Qwen3VL4BAttention,
     }
 
     init_observability(cfg)
