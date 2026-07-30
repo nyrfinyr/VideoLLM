@@ -35,28 +35,45 @@
 # inferenza aggiuntivo, solo meno righe da mediare.
 #
 # SUI 2700 E NON SU UN SUBSET, per la stessa ragione del controllo M-RoPE:
-# qui le celle di confronto ESISTONO GIÀ, stesso set e stesso codice
-# (gruppo `video_mme-ablation`), quindi questo arm costa 3 job e il
-# confronto è appaiato per costruzione:
-#     baseline_24                    55.04%  (1486/2700)
-#     highlight_top1_24  (all rows)  54.63%  (1475/2700)   <- il paragone
-#     random_top1_24                 54.78%  (1479/2700)
+# le celle di confronto ESISTONO GIÀ, stesso set e stessi shard, quindi
+# questo arm costa 3 job e il confronto è appaiato per costruzione. E
+# esistono in ENTRAMBI i regimi d'orologio:
+#
+#                            meta=false   meta=true
+#     baseline_24              55.04%      55.41%
+#     highlight_top1_24 (all)  54.63%      55.33%   <- il paragone
+#     random_top1_24           54.78%      non lanciato
+#
 # Su un subset da 500 quei controlli andrebbero rifatti sullo stesso
 # subset (3 job comunque) E l'errore standard su una DIFFERENZA fra due arm
 # sarebbe ±3.1 pp contro scarti in gioco di 0.4-1.9 pp: si misurerebbe
 # rumore. Su 2700 è ±1.35 pp.
 #
+# REGIME `meta=true` DI DEFAULT. L'appaiamento non decide (i controlli ci
+# sono da entrambe le parti), quindi decide il merito: il puntatore dice
+# "focus between X and Y seconds", e a `meta=false` comunica ISTANTI a un
+# modello le cui celle video stanno tutte sulla stessa posizione temporale
+# M-RoPE. Che quel collasso costi solo +0.37 pp è stato misurato con il
+# puntatore che indicava rumore (`highlight_top1_24` a righe `all`): non
+# dice nulla su quanto costi a un puntatore che punta bene. Le due
+# correzioni possono essere complementari, e misurare il segnale
+# migliorato nel regime rotto rischia di mascherarlo. Qui si prova a fare
+# meglio, non solo ad attribuire.
+#     META=false sbatch ...   # per isolare il contributo del solo orologio
+#
 # COSA GUARDARE, IN QUEST'ORDINE. L'accuracy pooled è lo strumento MENO
 # sensibile: anche sui 2700 ±1.35 pp è al limite per un effetto da 1 pp.
 # Il breakdown `correct_pass1_*` (evals/base.py) lo è molto di più, perché
-# guarda le risposte che si MUOVONO invece del saldo:
-#     highlight_top1_24 a `all` rows:  77 rotti / 76 recuperati  → netto -1
-# 153 risposte cambiano per un saldo di zero: un puntatore che
-# ridistribuisce invece di informare. Se le righe-domanda rendono il picco
-# informativo, quel rapporto si sbilancia PRIMA che l'accuracy si muova.
-# Quindi si legge:
-#     1. n_correct_correct_pass1_false  (recuperati)  vs  77-x (rotti)
-#     2. mcq_accuracy pooled            vs  54.63%
+# guarda le risposte che si MUOVONO invece del saldo. A righe `all` e
+# `meta=true`, cioè il diretto predecessore di questo arm:
+#     1495 corretti al pass 1  ->  77 rotti   (5.15%)
+#     1205 sbagliati al pass 1 ->  76 recuperati (6.31%)
+#     153 risposte mosse, netto -1
+# Un puntatore che ridistribuisce invece di informare. Se le righe-domanda
+# rendono il picco informativo, quel rapporto si sbilancia PRIMA che
+# l'accuracy si muova. Quindi si legge:
+#     1. rotti vs recuperati            vs  77 / 76
+#     2. mcq_accuracy pooled            vs  55.33%  (e 55.41% della baseline)
 #     3. mcq_accuracy_duration_*        (il puntatore serve sui long?)
 #
 # `QROWS` sceglie la selezione, così i due arm non possono divergere per
@@ -69,12 +86,6 @@
 # (top1_pct 15.5 vs 15.4, gini 0.208 vs 0.207), cioè il boilerplate da solo
 # non sembra essere il problema. Lanciarlo solo se `question` si muove e
 # si vuole sapere quale metà della differenza viene dalle opzioni.
-#
-# ⚠️ REGIME `meta=false` (default del preset). NON è una svista: le celle
-# di confronto qui sopra sono girate così, e il controllo dell'orologio ha
-# mostrato che il regime vale +0.37 pp, dentro il rumore. Alzarlo qui
-# spezzerebbe l'appaiamento per guadagnare un effetto che non c'è.
-# Il warning di `_warn_flat_clock` in log è quindi ATTESO.
 #
 # DIAGNOSTICA GEMELLA, offline e a costo ~zero:
 # `attn_explorer.diag_query_rows` misura sullo stesso asse il bias
@@ -98,12 +109,14 @@ nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || tr
 cd /homes/avalenza/video-language-model-playground
 export PYTHONUNBUFFERED=1
 
+META="${META:-true}"
 QROWS="${QROWS:-question}"
 case "${QROWS}" in
-  question|qopts) ARM="highlight_top1_24_${QROWS}" ;;
+  question|qopts) ARM="highlight_top1_24_${QROWS}_meta${META}" ;;
   all)
-    echo "QROWS=all è l'arm highlight_top1_24 già misurato (54.63%, gruppo" >&2
-    echo "video_mme-ablation): rilanciarlo qui produrrebbe un duplicato." >&2
+    echo "QROWS=all è già misurato in entrambi i regimi (54.63% a meta=false," >&2
+    echo "gruppo video_mme-ablation; 55.33% a meta=true, gruppo" >&2
+    echo "video_mme-mrope-fix): rilanciarlo qui produrrebbe un duplicato." >&2
     exit 1
     ;;
   *)
@@ -111,7 +124,7 @@ case "${QROWS}" in
     exit 1
     ;;
 esac
-echo "arm: ${ARM} (query_rows=${QROWS})"
+echo "arm: ${ARM} (query_rows=${QROWS}, pass_video_metadata=${META})"
 
 # Knob IDENTICI a highlight_top1_24.sbatch: cambiarne uno solo qui romperebbe
 # l'appaiamento con le celle di controllo sui 2700, che è tutto il motivo per
@@ -121,6 +134,7 @@ uv run python main.py \
     dataset=video_mme \
     strategy=attention_highlight \
     dataset.nframes=24 \
+    model.pass_video_metadata=${META} \
     strategy.top_k=1 \
     strategy.cell_select=attention \
     strategy.query_rows=${QROWS} \
@@ -132,7 +146,7 @@ uv run python main.py \
     hf_home=/work/tesi_avalenza/hf \
     shard=${SLURM_ARRAY_TASK_ID} \
     num_shards=${SLURM_ARRAY_TASK_COUNT} \
-    wandb.group=video_mme-ablation \
+    wandb.group=video_mme-query-rows \
     wandb.name=qwen2_5_vl_3b_attn-${ARM}-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
-    wandb.tags=[ablation,video_mme,${ARM},query_rows] \
+    wandb.tags=[video_mme,${ARM},query_rows,meta_${META}] \
     "$@"
