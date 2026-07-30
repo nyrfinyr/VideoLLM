@@ -254,6 +254,34 @@ class AttentionHighlightStrategy(Strategy):
         self._flat_clock_warned = False
         self.sink_percentile = float(cfg.get("sink_percentile", 25.0))
         self.sink_border = int(cfg.get("sink_border", 0))
+        # QUALI righe-query producono il picco. `_capture_spans`
+        # (models/qwen_attn.py) le definisce come tutto ciò che segue
+        # l'ultimo `<|vision_end|>`, e `ranked_cells_from_attention` ne fa la
+        # media: su un prompt MCQ sono domanda + le quattro opzioni +
+        # "Answer with the letter of the correct option only." + il
+        # generation prompt. Misurato col tokenizer su un prompt Video-MME
+        # tipico: 86 token totali di cui 21 di domanda, cioè il 76% delle
+        # righe che formano il "picco d'attenzione della domanda" non è la
+        # domanda.
+        #
+        #   all       (DEFAULT) tutte le righe — il comportamento con cui
+        #             sono girati highlight_top1_24/random_top1_24/antipeak
+        #             e tutti gli arm di `entropy_attention_resample`.
+        #             Resta il default proprio per questo: cambiarlo
+        #             renderebbe non appaiate le celle di controllo esistenti
+        #             sui 2700, che è l'unica ragione per cui un nuovo arm
+        #             costa 3 job invece di 9.
+        #   qopts     domanda + opzioni, senza boilerplate né generation
+        #             prompt. Le opzioni restano perché contengono referenti
+        #             visivi legittimi ("the toolbox", "the van"); il
+        #             boilerplate no, non ha alcun referente.
+        #   question  solo la domanda (`utils.attn_core.question_rows`).
+        #
+        # Diagnostica offline dello stesso asse, senza spendere una eval:
+        # `attn_explorer.diag_query_rows` (misura il bias POSIZIONALE del
+        # picco sotto ognuna di queste selezioni, più un rowset `entity` che
+        # qui non c'è perché richiederebbe un estrattore in-linea).
+        self.query_rows = str(cfg.get("query_rows", "all"))
 
         # Knob rimossi (modalità `peak`/`window`, vedi docstring del modulo):
         # senza questo check una CLI o uno sbatch che li passa ancora
@@ -270,6 +298,11 @@ class AttentionHighlightStrategy(Strategy):
             raise ValueError(
                 f"cell_select sconosciuto: {self.cell_select!r}. "
                 "Valide: 'attention', 'random', 'antipeak'"
+            )
+        if self.query_rows not in ("all", "qopts", "question"):
+            raise ValueError(
+                f"query_rows sconosciuto: {self.query_rows!r}. "
+                "Valide: 'all', 'qopts', 'question'"
             )
         if self.pointer_units not in ("seconds", "fraction"):
             raise ValueError(
@@ -451,6 +484,7 @@ class AttentionHighlightStrategy(Strategy):
         if signal.visual_attention is not None:
             ranked_cells = ranked_cells_from_attention(
                 signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
+                query_rows=self.query_rows,
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
             t_cells = signal.visual_attention.t

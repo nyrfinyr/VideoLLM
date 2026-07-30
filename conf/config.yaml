@@ -199,6 +199,16 @@ strategy:
     pointer_position: prepend   # (prepend | append) puntatore prima della domanda (adiacente al video) o dopo
     sink_percentile: 25.0       # filtro sink identico a entropy_attention_resample (= tau del paper, 25° percentile)
     sink_border: 0
+    # (all | qopts | question) SU QUALI righe-query si calcola il picco.
+    # `all` = tutto ciò che segue l'ultimo <|vision_end|>: domanda + le quattro
+    # opzioni + "Answer with the letter..." + generation prompt. Su un prompt
+    # Video-MME tipico sono 86 token di cui 21 di domanda, cioè il 76% delle
+    # righe mediate NON è la domanda. `qopts` toglie solo il boilerplate,
+    # `question` tiene la sola domanda (utils.attn_core.question_rows).
+    # Default `all` perché è il regime di tutti gli arm già misurati: cambiarlo
+    # renderebbe non appaiate le celle di controllo esistenti sui 2700.
+    # Diagnostica offline dello stesso asse: attn_explorer.diag_query_rows.
+    query_rows: all
     capture_attention: false    # opt-in: dump capture.pt/frames SOLO per i sample con gate aperto
 
 wandb:

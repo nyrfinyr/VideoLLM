@@ -72,6 +72,51 @@ class QueryToken:
     text: str
 
 
+def _rows_before_marker(query_tokens: tuple[QueryToken, ...], marker: str) -> list[int]:
+    """Righe dei token che precedono `marker` nel testo ricostruito.
+
+    Il testo si ricostruisce concatenando i `QueryToken.text` in ordine e si
+    cerca `marker` (già lowercase) su quello, non sui token: un marcatore può
+    cadere a cavallo di due token e non comparire in nessuno dei due. Se il
+    marcatore non c'è ritorna TUTTE le righe, che è l'unico fallback sicuro —
+    `aggregate` con tutte le righe è il comportamento di default.
+    """
+    texts = [qt.text for qt in query_tokens]
+    at = "".join(texts).lower().find(marker)
+    if at == -1:
+        return [qt.row for qt in query_tokens]
+    rows: list[int] = []
+    pos = 0
+    for qt, text in zip(query_tokens, texts):
+        if pos >= at:
+            break
+        rows.append(qt.row)
+        pos += len(text)
+    return rows
+
+
+# Coda del prompt MCQ senza alcun referente visivo: l'istruzione di formato.
+# `evals.base.format_mcq_prompt` la scrive sempre così.
+BOILERPLATE_MARKER = "answer with the letter"
+
+
+def question_and_options_rows(query_tokens: tuple[QueryToken, ...]) -> list[int]:
+    """Righe di domanda + opzioni: via solo il boilerplate e il generation prompt.
+
+    Selezione intermedia fra "tutte le righe" e `question_rows`. Le opzioni
+    RESTANO: contengono referenti visivi legittimi ("the toolbox", "the van")
+    e la loro attenzione può essere informativa. Quello che non ne ha è
+    l'istruzione di formato ("Answer with the letter of the correct option
+    only.") e il generation prompt del chat template che la segue.
+
+    Usata dal knob `query_rows=qopts` di `attention_highlight` e dal rowset
+    omonimo di `attn_explorer.diag_query_rows`: la stessa implementazione per
+    entrambi, altrimenti la diagnostica offline misurerebbe una selezione
+    diversa da quella che gira nell'eval.
+    """
+    return _rows_before_marker(query_tokens, BOILERPLATE_MARKER)
+
+
 def question_rows(query_tokens: tuple[QueryToken, ...]) -> list[int]:
     """Righe dei token che compongono SOLO la domanda, non l'MCQ scaffolding.
 
@@ -85,20 +130,20 @@ def question_rows(query_tokens: tuple[QueryToken, ...]) -> list[int]:
     Usata per pre-selezionare la entity di default nella pagina video: senza
     questo, "nessuna selezione" media anche i token delle opzioni di
     risposta e del boilerplate ("Answer with the letter..."), diluendo
-    l'attenzione sulla domanda vera e propria.
+    l'attenzione sulla domanda vera e propria. È anche il knob
+    `query_rows=question` di `attention_highlight`.
     """
-    texts = [qt.text for qt in query_tokens]
-    marker = "".join(texts).lower().find("options:")
-    if marker == -1:
-        return [qt.row for qt in query_tokens]
-    rows: list[int] = []
-    pos = 0
-    for qt, text in zip(query_tokens, texts):
-        if pos >= marker:
-            break
-        rows.append(qt.row)
-        pos += len(text)
-    return rows
+    return _rows_before_marker(query_tokens, "options:")
+
+
+# Selettori di righe-query esposti come knob (`attention_highlight`) e come
+# rowset della diagnostica (`attn_explorer.diag_query_rows`). `all` è `[]`,
+# cioè il fallback "tutte le righe" di `AttentionCapture.aggregate`.
+ROW_SELECTORS = {
+    "all": lambda qt: [],
+    "qopts": question_and_options_rows,
+    "question": question_rows,
+}
 
 
 def parse_answer_meta(obj: dict) -> dict:
@@ -573,6 +618,7 @@ def ranked_cells_from_attention(
     *,
     percentile: float = 25.0,
     border: int = 0,
+    query_rows: str = "all",
 ) -> list[RankedCell]:
     """Classifica TUTTE le celle temporali di un `VisualAttention` per massa
     di attenzione (sink-filtrata).
@@ -586,12 +632,27 @@ def ranked_cells_from_attention(
     tronca a `topk` (marca solo `is_top`), quindi ritorna sempre le `t` celle
     ordinate per massa decrescente.
 
+    `query_rows` seleziona SU QUALI righe mediare (chiave di `ROW_SELECTORS`):
+    `all` (default) le media tutte, cioè tutto ciò che segue l'ultimo
+    `<|vision_end|>` — domanda + opzioni + boilerplate + generation prompt.
+    Il default NON va cambiato qui: tutti gli arm già misurati sono girati
+    con `all`, e spostarlo renderebbe le loro celle non più confrontabili con
+    quelle nuove. Si cambia per arm, dal knob `query_rows` della strategy.
+
     Condivisa fra le strategy signal-driven (`entropy_attention_resample`,
     `attention_highlight`): il ranking DEVE essere calcolato allo stesso modo
     in tutte, altrimenti un confronto win/loss per-sample fra arm diversi
     misurerebbe anche la differenza di segnale, non solo quella di intervento.
     """
-    heat = visual_attention.attn.float().mean(dim=0)  # [t, grid_h, grid_w]
+    try:
+        selector = ROW_SELECTORS[query_rows]
+    except KeyError:
+        raise ValueError(
+            f"query_rows sconosciuto: {query_rows!r}. Valide: {sorted(ROW_SELECTORS)}"
+        ) from None
+    rows = selector(visual_attention.query_tokens)
+    sel = visual_attention.attn if not rows else visual_attention.attn[rows]
+    heat = sel.float().mean(dim=0)  # [t, grid_h, grid_w]
     grid = GridSpec(
         t=visual_attention.t,
         grid_h=visual_attention.grid_h,

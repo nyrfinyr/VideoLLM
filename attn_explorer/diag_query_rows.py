@@ -64,9 +64,9 @@ from statistics import median
 import torch
 
 from utils.attn_core import (
+    ROW_SELECTORS,
     QueryToken,
     load_capture,
-    question_rows,
     rank_cells,
     sink_view,
 )
@@ -74,37 +74,9 @@ from utils.attn_core import (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("diag_query_rows")
 
-ROWSETS = ("all", "qopts", "question", "entity")
-
-# Coda del prompt MCQ che non ha alcun referente visivo: l'istruzione di
-# formato. `format_mcq_prompt` (evals/base.py) la scrive sempre così.
-BOILERPLATE_MARKER = "answer with the letter"
-
-
-def rows_qopts(query_tokens: tuple[QueryToken, ...]) -> list[int]:
-    """Righe di domanda + opzioni: tolto solo il boilerplate di formato.
-
-    Stessa tecnica di `question_rows` (ricostruisce il testo concatenando i
-    `QueryToken.text` e taglia al marcatore), ma tagliando più avanti: qui le
-    opzioni RESTANO, perché contengono referenti visivi legittimi ("the
-    toolbox", "the van") e la loro attenzione può essere informativa. Quello
-    che non ne ha è l'istruzione di formato e il generation prompt che segue.
-
-    Se il marcatore non compare, ritorna tutte le righe — come `question_rows`
-    quando manca "Options:".
-    """
-    texts = [qt.text for qt in query_tokens]
-    marker = "".join(texts).lower().find(BOILERPLATE_MARKER)
-    if marker == -1:
-        return [qt.row for qt in query_tokens]
-    rows: list[int] = []
-    pos = 0
-    for qt, text in zip(query_tokens, texts):
-        if pos >= marker:
-            break
-        rows.append(qt.row)
-        pos += len(text)
-    return rows
+# `entity` non è in `ROW_SELECTORS` perché non è un knob della strategy: le
+# entità arrivano da un JSON scritto a mano (oracolo), non da una regola.
+ROWSETS = (*ROW_SELECTORS, "entity")
 
 
 def rows_entity(query_tokens: tuple[QueryToken, ...], entity: str | None) -> list[int] | None:
@@ -199,12 +171,11 @@ def main() -> None:
         cap = load_capture(cap_path)
         n_cells.add(cap.grid.t)
 
-        selections = {
-            "all": [],
-            "qopts": rows_qopts(cap.query_tokens),
-            "question": question_rows(cap.query_tokens),
-            "entity": rows_entity(cap.query_tokens, entities.get(stem)),
-        }
+        # Gli stessi selettori che usa la strategy (`query_rows`), non una
+        # reimplementazione: la diagnostica deve misurare esattamente la
+        # selezione che poi gira nell'eval.
+        selections = {name: sel(cap.query_tokens) for name, sel in ROW_SELECTORS.items()}
+        selections["entity"] = rows_entity(cap.query_tokens, entities.get(stem))
         line = [f"{stem:22s}"]
         for rs in ROWSETS:
             rows = selections[rs]
