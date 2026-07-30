@@ -59,6 +59,7 @@ echo "node: $(hostname)"; echo "date: $(date -Iseconds)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
+source scripts/lib/notify.sh && tg_job_start   # notifica Telegram (no-op senza bot)
 export PYTHONUNBUFFERED=1
 
 N="${N:-60}"
