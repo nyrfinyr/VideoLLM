@@ -122,15 +122,30 @@ senza metadata, 25.0 con metadata veri sullo stesso input.
 È lo stesso meccanismo del caveat già noto in
 `strategies/attention_highlight.py` (il fallback a unità relative quando una
 cella dura meno di un secondo), ma non limitato ai video brevi: vale sempre.
-È anche una spiegazione candidata per due osservazioni del README — che il
+Era anche una spiegazione candidata per due osservazioni del README — che il
 picco d'attenzione sia in buona parte posizionale, e che `entropy_zoom_24`
 non guadagni nulla.
 
 **Non è stato cambiato il comportamento di default.** Il preset Qwen2.5 ha un
 knob `pass_video_metadata` (default `false` = regime storico, tutte le misure
-del README restano riproducibili bit-per-bit). Una run di controllo con
-`model.pass_video_metadata=true` sullo stesso subset dello sweep quantifica
-quanto pesa.
+del README restano riproducibili bit-per-bit).
+
+**MISURATO, ed è quasi inerte** (`docs/controllo_orologio_mrope.md`).
+`baseline_24` e `highlight_top1_24` rilanciati con
+`model.pass_video_metadata=true` su Video-MME intero:
+
+```
+baseline_24         55.04% → 55.41%   (+0.37 pp, z=0.27)
+highlight_top1_24   54.63% → 55.33%   (+0.70 pp)
+highlight − baseline:  −0.41 pp → −0.07 pp
+```
+
+Cioè: il difetto è reale a codice, ma **non ha invalidato nessun
+esperimento**, non spiega il gap col paper (−0.3…−2.2 pp su tutti e quattro
+i benchmark) e non riabilita il puntatore d'attenzione. Cade quindi anche la
+spiegazione candidata qui sopra: il bias posizionale del picco e il nulla di
+`entropy_zoom_24` vanno cercati altrove. Per questo il default resta `false`
+— non è più solo inerzia storica, è una scelta senza costo misurato.
 
 ---
 

@@ -70,9 +70,18 @@ passa al processor i `video_metadata` reali, quindi `second_per_grid_ts` vale
 0.083 per qualunque video e `get_rope_index` lo tronca a 0: le celle video
 finiscono tutte sulla stessa posizione temporale M-RoPE. Riguarda ogni run
 qui riportata; è il regime in cui sono state prodotte, quindi resta il
-default (knob `model.pass_video_metadata`, default `false`, da alzare solo
-per una run di controllo). Misura e implicazioni in
-`docs/qwen3vl_signals.md`.
+default (knob `model.pass_video_metadata`, default `false`). Misura del
+difetto in `docs/qwen3vl_signals.md`.
+
+**È stato quantificato, ed è quasi inerte.** Rilanciando `baseline_24` su
+Video-MME intero con `model.pass_video_metadata=true` l'accuracy sale di
+**+0.37 pp** (55.04% → 55.41%, z = 0.27), dentro il pavimento di rumore
+run-to-run (±3 sample su 900). Il gap sistematico di −0.3…−2.2 pp rispetto
+al paper su tutti e quattro i benchmark **non** è attribuibile all'orologio
+piatto, e nessuna delle run precedenti va considerata invalidata. Dettagli
+in `docs/controllo_orologio_mrope.md` e nella sezione
+[Controllo dell'orologio M-RoPE](#controllo-dellorologio-m-rope-pass_video_metadatatrue)
+più sotto.
 
 ## Sweep `entropy_attention_resample` (Video-MME, in corso)
 
@@ -217,11 +226,15 @@ addirittura leggermente sopra la versione guidata dall'attenzione
 guardare non aiuta più quando l'indicazione viene dal picco di attenzione
 rispetto a quando è estratta a caso.
 
-Quel nulla ammetteva però due cause opposte — **(A)** il puntatore
-funziona ma punta male, **(B)** il modello non lo esegue affatto — con
-conseguenze pratiche inverse: in (A) migliorare il segnale ha senso, in
-(B) è tempo buttato, perché ogni miglioria agisce su *dove* si punta. La
-sonda della sezione seguente separa le due, ed è risultata **(A)**.
+Quel nulla ammetteva però tre cause, con conseguenze pratiche inverse —
+**(A)** il puntatore funziona ma punta male (migliorare il segnale ha
+senso), **(B)** il modello non lo esegue affatto (è tempo buttato: ogni
+miglioria agisce su *dove* si punta), **(C)** il puntatore parla di
+istanti a un modello le cui celle video sono tutte sulla stessa posizione
+temporale M-RoPE (il canale non poteva funzionare, e il verdetto sul
+segnale va rifatto da capo). Le due sezioni seguenti le separano: la sonda
+`antipeak` esclude (B), il controllo dell'orologio esclude (C). **Resta
+(A).**
 
 Non è stata ancora fatta un'analisi win/loss per-sample (fixed/broken vs
 `baseline_24`, come in `docs/analisi_winloss_resampling_video_mme.md` per
@@ -303,6 +316,88 @@ bit-per-bit — si vede nei conteggi di corretti al pass 1 (296 vs 294,
 2 sample di oscillazione). Irrilevante a questa scala d'effetto, ma è il
 motivo per cui le due righe non partono dallo stesso denominatore.
 
+### Controllo dell'orologio M-RoPE (`pass_video_metadata=true`)
+
+> Gira su Video-MME **intero** (2700 sample, stessi 3 shard e stessi knob
+> degli arm sopra), quindi questi numeri **sono** confrontabili con la
+> tabella — sono le stesse righe rimisurate in un regime diverso. Razionale
+> completo in `docs/controllo_orologio_mrope.md`, sbatch in
+> `scripts/sbatch/ablation-videomme/mrope_clock_control.sbatch`, gruppo
+> wandb [`video_mme-mrope-fix`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-mrope-fix).
+
+**A cosa serve.** `attention_highlight` dice al modello *"Focus on the part
+of the video between 880 and 1100 seconds"*: comunica **istanti** a un
+modello che — per il difetto descritto nella nota alla sezione Baseline —
+aveva tutte le celle video sulla stessa posizione temporale M-RoPE. Tutto
+il filone del puntatore è girato così, quindi il suo nulla poteva essere
+l'artefatto di un canale che non poteva funzionare. Questo controllo
+rilancia baseline e highlight con `model.pass_video_metadata=true`
+(`second_per_grid_ts` 0.0833 → 6.1923, `time_interval` 0 → 12: celle
+finalmente spaziate) e verifica se il verdetto cambia.
+
+| arm | `meta=false` (tabella sopra) | `meta=true` | Δ |
+|---|---:|---:|---:|
+| `baseline_24` | 55.04% (1486/2700) | **55.41%** (1496/2700) | +0.37 pp |
+| `highlight_top1_24` | 54.63% (1475/2700) | **55.33%** (1494/2700) | +0.70 pp |
+| `random_top1_24` | 54.78% (1479/2700) | *non lanciato* | — |
+
+```
+costo del collasso  = baseline_true  − baseline_false  = +0.37 pp   z = +0.27
+il puntatore aiuta? = highlight_true − baseline_true   = −0.07 pp   z = −0.05
+```
+
+**Il collasso non costava quasi nulla** (dieci sample su 2700, segno non
+consistente sui tre shard) e **il puntatore continua a non staccare la
+baseline**: −0.41 pp prima, −0.07 pp ora, entrambi indistinguibili da zero.
+`random_top1_24` in regime `true` non è stato lanciato: il disegno lo
+condizionava a un trigger dichiarato prima di guardare i numeri
+(`highlight − baseline > ~1 pp`, cioè 3× il pavimento di rumore
+run-to-run), e il trigger non è scattato. Senza un guadagno da attribuire,
+non c'è niente da attribuire.
+
+Controprova per durata: se l'orologio piatto avesse pesato, il guadagno
+sarebbe concentrato sui **long**, dove le celle sono più distanti nel
+tempo. Invece la baseline fa −0.22 pp su short, **+1.56** su medium,
+−0.22 su long — la distribuzione dello scarto è quella del rumore, non
+quella di un effetto temporale.
+
+**Il dato nuovo è il churn.** Il breakdown `correct_pass1_*` (aggiunto in
+`evals/base.py` per questa run) incrocia il `pred_pass1` loggato dalla
+strategy con `answer`, e mostra che il netto zero nasconde molto movimento:
+
+| `highlight_top1_24` `meta=true` | n | esito al pass 2 | tasso |
+|---|---:|---:|---:|
+| corretti al pass 1 | 1495 | **77 rotti** | 5.15% |
+| sbagliati al pass 1 | 1205 | **76 recuperati** | 6.31% |
+| | | **netto −1**, 153 mossi | |
+
+Il pavimento senza puntatore misurato dalla sonda `antipeak` è **0.34%**.
+Poiché il gate apre sul 72.74% dei sample e i non puntati possono
+contribuire al massimo a quel pavimento, il tasso di rottura sul
+sottoinsieme *effettivamente puntato* sta fra **5.15% e 9.82%** — in ogni
+caso ≥ 15× il pavimento, nella fascia del 6.80% dell'antipeak, cioè di un
+puntatore diretto di proposito nel posto sbagliato. (Le due popolazioni non
+sono appaiate: il gate seleziona sample ad alta entropia, più fragili per
+costruzione, quindi il confronto che regge è quello col pavimento.)
+
+Non è dunque un puntatore che il modello ignora, ed è la firma di un
+puntatore **arbitrario** più che sbagliato: uno sistematicamente sbagliato
+romperebbe più di quanto ripara — è esattamente ciò che fa l'antipeak, 20
+rotti contro 11 riparati — mentre qui rotture e riparazioni si equivalgono.
+Il picco d'attenzione si comporta come una posizione estratta a caso,
+coerente col bias posizionale del probe da 40 sample.
+
+**Conseguenza per il filone.** Delle tre cause del nulla, (B) canale morto
+e (C) orologio piatto sono escluse; resta (A) **il segnale è poco
+informativo**. La leva rimasta è la risoluzione del puntatore (arm
+double-frame, `highlight_top1_24double.sbatch` — committato, non lanciato,
+e da correggere perché non setta `model.pass_video_metadata`), ma il churn
+la indebolisce: se il picco fosse la cella giusta solo troppo larga, ci si
+aspetterebbe recuperi > rotture. Prima conviene la diagnostica offline
+sulla **qualità** del picco (righe-query ristrette ai token dell'entità,
+`docs/qwen25vl_entity_attention.md`), che costa una GPU-ora invece di
+quaranta.
+
 **Cosa rappresenta ogni `arm` (colonna della tabella):**
 
 - **`baseline_24`** — riferimento: 24 frame campionati uniformemente
@@ -382,6 +477,14 @@ motivo per cui le due righe non partono dallo stesso denominatore.
   sembrava suggerire di no, ma è una lettura che il disegno non autorizza:
   girando col gate aperto, il puntatore cadeva su sample al ~42% di
   accuracy, dove un'istruzione dannosa non ha spazio per fare danno
-  misurabile. La sonda `antipeak` (sezione sopra) mostra che il modello
-  **esegue** il puntatore: quindi il nulla di questo confronto va letto
-  come "il segnale è cattivo", non come "il canale è morto".
+  misurabile. La sonda `antipeak` mostra che il modello **esegue** il
+  puntatore, e il controllo dell'orologio M-RoPE mostra che lo eseguiva
+  anche quando le celle video erano temporalmente collassate (entrambe le
+  sezioni sopra): quindi il nulla di questo confronto va letto come "il
+  segnale è cattivo", non come "il canale è morto".
+
+  Questo arm **non è stato rilanciato** in regime `pass_video_metadata=true`
+  — il suo unico scopo è attribuire un guadagno di `highlight_top1_24`, che
+  in quel regime non c'è (−0.07 pp). Il ramo è comunque già scritto e
+  appaiato dentro `mrope_clock_control.sbatch` (`sbatch --array=6-8 ...`),
+  pronto se un arm-puntatore futuro staccasse davvero la baseline.
