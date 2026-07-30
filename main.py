@@ -13,6 +13,7 @@ import yaml
 from evals import Dataset, mcq_accuracy
 from strategies import Strategy
 from utils.config import Cfg, load_config
+from utils.notify import dump_run_summary
 from utils.obs import init_observability, log_eval_summary
 from utils.samples import prepare_samples
 
@@ -109,6 +110,7 @@ def run(cfg: Cfg) -> None:
     summary = asyncio.run(evaluation.evaluate(dataset.predict_factory(vlm, strategy, gen_cfg, cfg.dataset)))
     logger.info("Eval summary: %s", summary)
     log_eval_summary(summary, len(samples))
+    dump_run_summary()  # metriche per la notifica Telegram (no-op fuori da SLURM)
 
 
 def main(argv: list[str] | None = None) -> None:

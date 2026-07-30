@@ -74,6 +74,45 @@ default (knob `model.pass_video_metadata`, default `false`, da alzare solo
 per una run di controllo). Misura e implicazioni in
 `docs/qwen3vl_signals.md`.
 
+## Notifiche Telegram dei job SLURM
+
+Ogni job sottomesso tiene **un solo messaggio** su Telegram, modificato in
+place: `🕓 PENDING` alla sottomissione → `🏃 RUNNING` quando SLURM lo schedula
+(lo script sbatch parte esattamente in quel momento, nessun polling di
+`squeue`) → `✅/❌/⏱` a fine job con **tutte** le metriche di
+`wandb.run.summary`. Le metriche non sono elencate da nessuna parte: chi ne
+aggiunge una in `utils/obs.py` se la ritrova su Telegram senza toccare altro.
+
+Setup, una volta sola sul cluster:
+
+1. crea il bot con [@BotFather](https://t.me/BotFather) → token;
+2. scrivi un messaggio qualsiasi al bot, poi apri
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` e leggi `message.chat.id`;
+3. `~/.config/telegram-notify.env` (`chmod 600`, **fuori dal repo**):
+   ```sh
+   TG_BOT_TOKEN=123456:AAH...
+   TG_CHAT_ID=987654321
+   ```
+4. verifica che il firewall non filtri Telegram **dal nodo di calcolo** (che
+   wandb funzioni prova solo che c'è egress HTTPS, non che ci sia questo host):
+   ```sh
+   srun --account=tesi_avalenza --partition=all_usr_prod --time=00:02:00 \
+     bash -c 'source ~/.config/telegram-notify.env
+              curl -sS --max-time 10 "https://api.telegram.org/bot$TG_BOT_TOKEN/getMe"'
+   ```
+
+Poi si sottomette con `scripts/tgsbatch` al posto di `sbatch` (stessi
+argomenti, stesso output, stesso exit code); i launcher di sweep lo usano già.
+Sottomettere con `sbatch` diretto resta legittimo: si perde solo lo stato
+PENDING, il resto del ciclo arriva lo stesso. **Senza il file di configurazione
+tutto è no-op** e i job girano esattamente come prima.
+
+| Voglio | Come |
+|---|---|
+| sottomettere in silenzio | `SBATCH_BIN=sbatch ./scripts/sweep_video_mme_thresholds.sh` |
+| disattivare tutto per un job | `TELEGRAM_NOTIFY_ENV=/dev/null sbatch ...` |
+| notificare da uno script nuovo | `source scripts/lib/notify.sh && tg_job_start` dopo il `cd` nel repo |
+
 ## Sweep `entropy_attention_resample` (Video-MME, in corso)
 
 Subset comune a tutte le righe: `limit=250`, `shuffle=true`, `seed=42`

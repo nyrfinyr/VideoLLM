@@ -26,6 +26,7 @@ echo "job_id: ${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
+source scripts/lib/notify.sh && tg_job_start   # notifica Telegram (no-op senza bot)
 MODEL="${MODEL:-qwen2_5_vl_3b}"
 
 uv run python main.py \

@@ -46,6 +46,11 @@ SWEEP_TIME="${SWEEP_TIME:-02:00:00}"    # entropy_attention_resample: pass1 + ge
                                           # limit=250, wandb y6u5k1pq) ha impiegato 6152s (~1h42m) su
                                           # L40S; 2h lascia margine anche su GPU più lente.
 CONTROL_TIME="${CONTROL_TIME:-03:00:00}" # uniform: singola generate(), più economico
+# Wrapper che apre il messaggio Telegram 🕓 PENDING alla sottomissione; senza
+# bot configurato è `sbatch` puro. Con lo sweep sono 13 messaggi, uno per
+# combinazione, ognuno aggiornato in place fino alle metriche finali.
+# `SBATCH_BIN=sbatch` per sottomettere in silenzio.
+SBATCH_BIN="${SBATCH_BIN:-scripts/tgsbatch}"
 
 run() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -58,7 +63,7 @@ run() {
 echo "sweep group: ${GROUP} (limit=${LIMIT}, model=${MODEL})"
 
 # Baseline di controllo: uniform sullo STESSO subset (stesso seed/shuffle).
-run env MODEL="${MODEL}" STRATEGY=uniform sbatch --time="${CONTROL_TIME}" \
+run env MODEL="${MODEL}" STRATEGY=uniform "${SBATCH_BIN}" --time="${CONTROL_TIME}" \
     scripts/sbatch/video_mme-signal-test.sbatch \
     limit=${LIMIT} \
     wandb.group=${GROUP} \
@@ -67,7 +72,7 @@ run env MODEL="${MODEL}" STRATEGY=uniform sbatch --time="${CONTROL_TIME}" \
 
 for et in 0.3 0.5 0.7 1.0; do
     for ct in 20 30 45; do
-        run env MODEL="${MODEL}" sbatch --time="${SWEEP_TIME}" \
+        run env MODEL="${MODEL}" "${SBATCH_BIN}" --time="${SWEEP_TIME}" \
             scripts/sbatch/video_mme-signal-test.sbatch \
             limit=${LIMIT} \
             strategy.entropy_threshold=${et} \

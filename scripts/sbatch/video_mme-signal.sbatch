@@ -45,6 +45,7 @@ echo "array_job: ${SLURM_ARRAY_JOB_ID} task: ${SLURM_ARRAY_TASK_ID} job_id: ${SL
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader || true
 
 cd /homes/avalenza/video-language-model-playground
+source scripts/lib/notify.sh && tg_job_start   # notifica Telegram (no-op senza bot)
 MODEL="${MODEL:-qwen2_5_vl_3b_attn}"
 STRATEGY="${STRATEGY:-entropy_attention_resample}"
 

@@ -25,6 +25,10 @@ LIMIT=250
 MODEL="${MODEL:-qwen2_5_vl_3b_attn}"
 GROUP="${MODEL}-sweep-video_mme-test"
 RERUN_TIME="${RERUN_TIME:-03:00:00}"
+# Wrapper che apre il messaggio Telegram 🕓 PENDING alla sottomissione; senza
+# bot configurato è `sbatch` puro. `SBATCH_BIN=sbatch` per sottomettere in
+# silenzio.
+SBATCH_BIN="${SBATCH_BIN:-scripts/tgsbatch}"
 
 run() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -39,7 +43,7 @@ echo "rerun group: ${GROUP} (limit=${LIMIT}, model=${MODEL}, time=${RERUN_TIME})
 for combo in "0.7:20" "0.5:45" "0.5:30"; do
     et="${combo%%:*}"
     ct="${combo##*:}"
-    run env MODEL="${MODEL}" sbatch --time="${RERUN_TIME}" \
+    run env MODEL="${MODEL}" "${SBATCH_BIN}" --time="${RERUN_TIME}" \
         scripts/sbatch/video_mme-signal-test.sbatch \
         limit=${LIMIT} \
         strategy.entropy_threshold=${et} \
