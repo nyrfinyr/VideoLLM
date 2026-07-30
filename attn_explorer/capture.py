@@ -135,8 +135,19 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--dtype",      choices=list(DTYPES), default="bfloat16", help="precisione dei pesi (default bfloat16)")
     ap.add_argument("--device-map", default="auto", help="device placement (default auto)")
     ap.add_argument("--hf-home",    default=None, help="root cache HuggingFace (default: $HF_HOME). Applicato PRIMA di importare transformers.")
+    ap.add_argument("overrides",    nargs="*", metavar="key=value",
+                    help="override di config nella stessa sintassi di main.py, applicati al preset "
+                         "risolto da --dataset (es. `dataset.root=/path/locale`, `dataset.max_pixels=50176`). "
+                         "Ignorati senza --dataset, che è l'unica modalità che legge conf/config.yaml.")
 
-    return ap.parse_args()
+    args = ap.parse_args()
+    bad = [o for o in args.overrides if "=" not in o]
+    if bad:
+        ap.error(f"override senza '=': {bad} (sintassi attesa `key=value`, come in main.py)")
+    if args.overrides and not args.dataset:
+        ap.error("gli override di config valgono solo con --dataset: le modalità --video/--video-dir "
+                 "non leggono conf/config.yaml")
+    return args
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,7 +229,10 @@ def _load_dataset(args) -> tuple[object, list[dict]]:
 
     # Riusa lo stesso loader/config unica di main.py: `dataset=<nome>` pesca
     # il preset da `conf/config.yaml` (`dataset.<nome>`), niente file separati.
-    cfg = load_config([f"dataset={args.dataset}"])
+    # Gli `overrides` posizionali seguono `dataset=<nome>` perché `load_config`
+    # li applica sul preset GIÀ risolto (`dataset.root=...` mira alla scelta
+    # attiva, non alla struttura annidata) — stesso ordine di main.py.
+    cfg = load_config([f"dataset={args.dataset}", *args.overrides])
     dataset = Dataset.get(args.dataset)
     samples = dataset.loader(cfg.dataset)
     logger.info("Caricati %d sample da %s (%s)", len(samples), dataset.name, cfg.dataset.root)
