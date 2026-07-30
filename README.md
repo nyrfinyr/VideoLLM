@@ -374,11 +374,17 @@ rilancia baseline e highlight con `model.pass_video_metadata=true`
 (`second_per_grid_ts` 0.0833 → 6.1923, `time_interval` 0 → 12: celle
 finalmente spaziate) e verifica se il verdetto cambia.
 
-| arm | `meta=false` (tabella sopra) | `meta=true` | Δ |
-|---|---:|---:|---:|
-| `baseline_24` | 55.04% (1486/2700) | **55.41%** (1496/2700) | +0.37 pp |
-| `highlight_top1_24` | 54.63% (1475/2700) | **55.33%** (1494/2700) | +0.70 pp |
-| `random_top1_24` | 54.78% (1479/2700) | *non lanciato* | — |
+Stesse colonne della tabella degli arm sopra (`% resampling` e le due
+accuracy condizionate al gate sono assenti per `baseline_24`, che è
+`uniform` e non ha gate). `Δ vs baseline` è calcolato **dentro lo stesso
+regime**: i confronti fra regimi diversi sono nel blocco sotto.
+
+| arm | regime | pooled | Δ vs baseline (stesso regime) | short | medium | long | % resampling | acc \| high_ans_entropy | acc \| low_ans_entropy |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `baseline_24` | `meta=false` | 55.04% (1486/2700) | — (riferimento) | 64.33% (579/900) | 52.00% (468/900) | 48.78% (439/900) | — | — | — |
+| `baseline_24` | **`meta=true`** | **55.41%** (1496/2700) | — (riferimento) | 64.11% (577/900) | 53.56% (482/900) | 48.56% (437/900) | — | — | — |
+| `highlight_top1_24` | `meta=false` | 54.63% (1475/2700) | −0.41 | 63.22% (569/900) | 52.22% (470/900) | 48.44% (436/900) | 73.07% (1973/2700) | 42.17% (832/1973) | 88.45% (643/727) |
+| `highlight_top1_24` | **`meta=true`** | **55.33%** (1494/2700) | **−0.07** | 64.33% (579/900) | 53.44% (481/900) | 48.22% (434/900) | 72.74% (1964/2700) | 42.57% (836/1964) | 89.40% (658/736) |
 
 ```
 costo del collasso  = baseline_true  − baseline_false  = +0.37 pp   z = +0.27
@@ -394,11 +400,23 @@ condizionava a un trigger dichiarato prima di guardare i numeri
 run-to-run), e il trigger non è scattato. Senza un guadagno da attribuire,
 non c'è niente da attribuire.
 
-Controprova per durata: se l'orologio piatto avesse pesato, il guadagno
-sarebbe concentrato sui **long**, dove le celle sono più distanti nel
-tempo. Invece la baseline fa −0.22 pp su short, **+1.56** su medium,
-−0.22 su long — la distribuzione dello scarto è quella del rumore, non
-quella di un effetto temporale.
+**Controprova per durata.** Se l'orologio piatto avesse pesato, il guadagno
+sarebbe concentrato sui **long**, dove le celle sono più distanti nel tempo
+e quindi il collasso delle posizioni M-RoPE distrugge più informazione.
+Succede il contrario: la baseline fa −0.22 pp su short, **+1.56** su
+medium, −0.22 su long, e highlight +1.11 / +1.22 / −0.22. La fascia long è
+l'unica che *peggiora* in entrambi gli arm. La distribuzione dello scarto è
+quella del rumore, non quella di un effetto temporale.
+
+**Il gate non si muove.** `% resampling` passa da 73.07% a 72.74% e le due
+accuracy condizionate da 42.17%/88.45% a 42.57%/89.40%: riparare l'orologio
+non sposta in modo apprezzabile l'entropia della risposta al pass 1, quindi
+il gate seleziona sostanzialmente la stessa popolazione di sample nei due
+regimi. È ciò che rende i due arm confrontabili riga per riga — e conferma
+che qualunque differenza vada cercata nel pass 2, cioè nel puntatore. Resta
+valido il caveat della tabella sopra: il salto ~42% → ~89% fra gate aperto
+e chiuso è un effetto di selezione (il gate manda a ricampionamento i
+sample intrinsecamente più difficili), non una misura di efficacia.
 
 **Il dato nuovo è il churn.** Il breakdown `correct_pass1_*` (aggiunto in
 `evals/base.py` per questa run) incrocia il `pred_pass1` loggato dalla

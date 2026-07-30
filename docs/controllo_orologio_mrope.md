@@ -70,13 +70,29 @@ un pavimento di rumore di ~0.33 pp per shard.
 ## 3. Risultati
 
 Accuracy *pooled* (Σ corretti / Σ sample sui 3 shard, non media degli
-shard).
+shard). Stesse colonne della tabella degli arm nel README: accuracy per
+fascia di durata (breakdown `duration_*` emesso da `evals/base.py`),
+`% resampling` = quota di sample su cui il gate d'entropia è scattato
+(`answer_entropy > 0.7` al pass 1 — per `highlight` il pass 2 c'è comunque
+ma non ricampiona nulla, cambia solo il prompt), e le due accuracy
+condizionate al gate. `baseline_24` è `uniform`: niente gate, colonne
+assenti. `Δ vs baseline` è calcolato **dentro lo stesso regime**; i
+confronti fra regimi sono nel §4.
 
-| arm | `meta=false` (storico) | `meta=true` | Δ |
-|---|---:|---:|---:|
-| `baseline_24` | 55.04% (1486/2700) | **55.41%** (1496/2700) | +0.37 pp |
-| `highlight_top1_24` | 54.63% (1475/2700) | **55.33%** (1494/2700) | +0.70 pp |
-| `random_top1_24` | 54.78% (1479/2700) | *non lanciato* (trigger non scattato) | — |
+| arm | regime | pooled | Δ vs baseline (stesso regime) | short | medium | long | % resampling | acc \| high_ans_entropy | acc \| low_ans_entropy |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `baseline_24` | `meta=false` | 55.04% (1486/2700) | — (riferimento) | 64.33% (579/900) | 52.00% (468/900) | 48.78% (439/900) | — | — | — |
+| `baseline_24` | **`meta=true`** | **55.41%** (1496/2700) | — (riferimento) | 64.11% (577/900) | 53.56% (482/900) | 48.56% (437/900) | — | — | — |
+| `highlight_top1_24` | `meta=false` | 54.63% (1475/2700) | −0.41 | 63.22% (569/900) | 52.22% (470/900) | 48.44% (436/900) | 73.07% (1973/2700) | 42.17% (832/1973) | 88.45% (643/727) |
+| `highlight_top1_24` | **`meta=true`** | **55.33%** (1494/2700) | **−0.07** | 64.33% (579/900) | 53.44% (481/900) | 48.22% (434/900) | 72.74% (1964/2700) | 42.57% (836/1964) | 89.40% (658/736) |
+
+`random_top1_24` compare solo in regime `meta=false` (54.78%, 1479/2700,
+nella tabella dell'ablation del README): in regime `true` non è stato
+lanciato perché il trigger non è scattato — vedi §4.
+
+Le righe `meta=false` sono le run originali dell'ablation, non rifatte:
+stesso set, stesso codice, stessi shard. È il motivo per cui il confronto
+è appaiato per costruzione.
 
 Per shard, appaiati:
 
@@ -88,18 +104,32 @@ Per shard, appaiati:
 
 Il segno non è nemmeno consistente sui tre shard della baseline.
 
-Per durata, regime `meta=true`:
+**Letta per durata, la tabella dice che non è un effetto temporale.** Se
+l'orologio piatto avesse davvero pesato, il guadagno sarebbe concentrato
+sui **long**: è lì che le celle sono più distanti nel tempo, quindi è lì
+che collassarle sulla stessa posizione M-RoPE distrugge più informazione.
+Succede il contrario — passando da `false` a `true`:
 
 | arm | short | medium | long |
 |---|---:|---:|---:|
-| `baseline_24` | 64.11% (577/900) | 53.56% (482/900) | 48.56% (437/900) |
-| `highlight_top1_24` | 64.33% (579/900) | 53.44% (481/900) | 48.22% (434/900) |
+| `baseline_24` | −0.22 pp | **+1.56** | −0.22 |
+| `highlight_top1_24` | +1.11 | +1.22 | −0.22 |
 
-Se l'orologio piatto avesse davvero pesato ci si aspetterebbe il guadagno
-concentrato sui **long**, dove le celle sono più distanti nel tempo. Non
-succede: contro `meta=false` la baseline fa −0.22 pp su short, **+1.56** su
-medium, −0.22 su long. La distribuzione dello scarto è quella del rumore,
-non quella di un effetto temporale.
+La fascia `long` è l'unica che *peggiora*, e in entrambi gli arm. Il
+guadagno complessivo viene dai `medium`, dove non c'è alcuna ragione
+meccanicistica per aspettarselo. È la distribuzione del rumore, non quella
+di un effetto temporale.
+
+**Il gate non si muove fra i due regimi.** `% resampling` 73.07% → 72.74%,
+accuracy condizionate 42.17%/88.45% → 42.57%/89.40%: riparare l'orologio
+non sposta in modo apprezzabile l'entropia della risposta al pass 1, quindi
+il gate seleziona sostanzialmente la stessa popolazione. Due conseguenze:
+le righe della tabella sono confrontabili una per una, e qualunque
+differenza va cercata nel **pass 2**, cioè nel puntatore — non in una
+diversa selezione di sample a monte. (Il salto ~42% → ~89% fra gate aperto
+e chiuso resta un effetto di selezione — il gate manda a ricampionamento i
+sample intrinsecamente più difficili — non una misura di efficacia; vale
+qui il caveat già scritto nel README per la tabella dell'ablation.)
 
 ## 4. Le due righe che il disegno prevedeva
 
@@ -214,9 +244,6 @@ restare posizionale.
   (che scatta quando una cella dura meno di un secondo) non si attiva
   praticamente mai, quindi non confonde questi numeri. Diventerà rilevante
   a 24 celle, dove la soglia raddoppia da 12 s a 24 s.
-- Il gate apre sul 72.74% (1964/2700), in linea col 73.07% del regime
-  `meta=false` e con gli altri arm signal-driven: `pass_video_metadata` non
-  sposta l'entropia del pass 1 in modo apprezzabile.
 - Costo: ~1h40 per shard su A5000/Quadro RTX 6000, 6 task, nessun
   fallimento. `--time=06:00:00` è risultato largo.
 - **Riproducibilità non verificata al 100%**: il check `META=false` sullo
