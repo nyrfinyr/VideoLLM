@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=03:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -24,31 +24,31 @@
 # per timeout l'array 76131. SLURM stampa un INFO consultivo suggerendo di
 # riaggiungere RTX6000 per ridurre l'attesa in coda: IGNORARLO.
 #
-# ⚠️ PRIMA DELLA PROD, LA PROBE. Nessuna run Qwen3 ha MAI usato una strategy
-# signal-driven: tutte le run esistenti sono `strategy=uniform`, quindi
-# `generate_with_signals` / `full_visual_attention` non è mai girato su questo
-# modello in un job vero (la classe `Qwen3VL2BAttention` esiste, il forward
-# reale no). La probe è il primo test di quel path, non una formalità:
+# PROBE GIÀ FATTA (job 92375, run `ff5e15rr`, 60 sample su A40 — il primo
+# giro di `generate_with_signals`/`full_visual_attention` su Qwen3-VL-2B, che
+# fino a quel momento non era mai stato eseguito in un job vero). Esito:
+#   mcq_accuracy 0.60 (36/60)   → il forward con cattura NON esplode su Qwen3
+#   n_samples_resampled_true 40 → il gate si apre sul 66.7% dei sample
+#   n_samples_resample_kind_phase_shift 40 = resampled_true → ramo corretto
+#   pred_fallback 0/60          → tutte le risposte parseabili
+#   model_latency_mean 10.73 s
+#
+# `--time=04:00:00` è calibrato su QUELLA misura, non su una stima: 900
+# sample × 10.73 s = 2h41, margine 1.49× (lo stesso dell'arm Qwen2.5).
+# ⚠️ Il costo del gate + secondo pass su Qwen3 è **3.04×** la baseline
+# uniform (10.73 contro 3.53 s/sample sugli STESSI 60 sample), non l'1.87×
+# misurato su Qwen2.5: l'overhead fisso della cattura d'attenzione pesa di
+# più quando il forward di base costa la metà. Non ridurre la walltime
+# assumendo il fattore di Qwen2.5.
+#
+# Per rifare la probe (es. dopo un cambio al path signal-driven):
 #
 #     LIMIT=60 sbatch --array=0 --time=00:40:00 \
 #         scripts/sbatch/ablation-videomme/entropy_shift_24_qwen3.sbatch
 #
-# Nel summary controllare, in quest'ordine:
-#   1. `mcq_accuracy` esiste           → il forward con cattura non è esploso
-#      (un OOM di `full_visual_attention` NON si vede dallo stato del job:
-#      Weave cattura l'eccezione per sample e il run risulta `finished` con
-#      0 predizioni valide)
-#   2. `n_samples_resampled_true` > 0  → il gate si apre su Qwen3
-#   3. `n_samples_resample_kind_phase_shift` = n_samples_resampled_true
-#                                      → il ramo forzato è quello giusto
-#   4. `model_latency_mean`            → da cui la walltime di prod, misurata
-#
-# `--time=03:00:00` è una STIMA, non una misura: baseline uniform 3.11-3.43
-# s/sample su L40S (~52 min/shard) × 1.87 (costo gate + secondo pass, misurato
-# su Qwen2.5) + ~5 min di estrazione PNG del nuovo `phase_shift` ≈ 1h45.
-# Margine 1.7×. Il tasso di resampling del 73% viene da Qwen2.5: la
-# distribuzione di `answer_entropy` di Qwen3 può essere diversa e il fattore
-# con lei — è il numero che la probe misura.
+# Un OOM di `full_visual_attention` NON si vede dallo stato del job: Weave
+# cattura l'eccezione per sample e il run risulta `finished` con 0 predizioni
+# valide. Il check è sempre "`mcq_accuracy` esiste nel summary".
 #
 # Il ramo `phase_shift` estrae PNG espliciti su disco (tmpdir per sample,
 # ripulita dopo la generate) invece di traslare la finestra di
