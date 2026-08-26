@@ -9,7 +9,11 @@ Logica (pass 1 sempre uniforme, budget `nframes` invariato):
     entropia bassa                → accetta la risposta del pass 1
     entropia alta, ramo "disperso"    → ricampiona, SFASATO di fase rispetto
                                      ai frame già visti (dispersione: non
-                                     si sa dove guardare, si prova altrove)
+                                     si sa dove guardare, si prova altrove).
+                                     Indici calcolati esplicitamente, budget
+                                     `nframes-1` — vedi
+                                     `_build_phase_shifted_media` per perché
+                                     traslare la finestra non funziona.
     entropia alta, ramo "concentrato" → ricampiona, INFITTITO in una finestra
                                      stretta intorno al frame di picco
                                      (il modello guarda "quasi giusto" ma
@@ -73,7 +77,7 @@ from PIL import Image
 
 from models.media import Text, VideoFrames
 from models.signals import SupportsSignals
-from utils.attn_core import RankedCell, ranked_cells_from_attention
+from utils.attn_core import RankedCell, ranked_cells_from_attention, reconstruct_frame_indices
 from utils.mcq import parse_mcq_letter
 
 from .base import SamplingBudget, Strategy, video_duration_sec
@@ -262,6 +266,86 @@ def _allocate_region_budget(masses: list[float], nframes: int, *, allocation: st
     return counts
 
 
+def _build_phase_shifted_media(
+    video_path: str,
+    budget: SamplingBudget,
+    video_start: float | None,
+    video_end: float | None,
+    phase_shift_frac: float,
+) -> tuple[VideoFrames, list[int], Path]:
+    """Frame SFASATI di `phase_shift_frac` di intervallo rispetto a quelli
+    del pass 1, estratti per indice esplicito.
+
+    **Perché non basta traslare la finestra** (`video_start`/`video_end`) e
+    lasciar ricampionare `Video`, che era l'implementazione precedente:
+    `reconstruct_frame_indices` fa `linspace(lo, hi, nframes)` con ENTRAMBI
+    gli estremi inclusi, quindi una finestra traslata a destra e poi clampata
+    a fine video (`w1 == duration` — sempre, su Video-MME, che non passa mai
+    un trim) non trasla affatto: si comprime. Lo sfasamento risultante decade
+    linearmente da mezzo intervallo a ZERO sull'ultimo frame, che resta
+    identico a quello del pass 1; a `nframes=24` metà dei frame ricadono
+    entro un quarto di intervallo da quelli già visti e lo shift medio è il
+    48% di quello dichiarato. Con la finestra intera non c'è spazio per
+    traslare né a destra né a sinistra: l'unico modo di esprimere davvero uno
+    sfasamento è calcolare gli indici a mano.
+
+    Si campionano gli `nframes - 1` punti interni fra frame consecutivi del
+    pass 1 (`x_i + frac * (x_{i+1} - x_i)`): tutti sfasati della STESSA
+    frazione di intervallo, nessuno coincidente col pass 1. Il budget scende
+    di un frame — è il prezzo dell'uniformità (a `nframes=24`, il 4%), e
+    l'alternativa (tenerne `nframes` clampando l'ultimo a fine video) fa
+    degenerare proprio il frame che il bug precedente già sprecava.
+
+    `sample_fps` è iniettato come in `Strategy._sample_doubled_frames`: con
+    una lista di frame `fetch_video` non ha timestamp reali e usa questo
+    scalare per `second_per_grid_ts` (M-RoPE). Vale
+    `n_frame_estratti * fps / span_frames`, raddoppiato nel regime
+    `double_frames` (lì una cella copre un frame invece di due).
+
+    Ritorna `(media, indici assoluti usati, tmpdir dei PNG)` — il chiamante
+    ripulisce la tmpdir dopo la `generate()`.
+    """
+    import decord
+
+    frame_indices, fps = reconstruct_frame_indices(
+        video_path, budget.nframes, video_start=video_start, video_end=video_end,
+    )
+    # `or frame_indices`: con nframes <= 1 non esistono intervalli da sfasare
+    # (zip su lista di 1 elemento è vuoto) — si ricade sui frame del pass 1.
+    shifted = [
+        round(a + phase_shift_frac * (b - a))
+        for a, b in zip(frame_indices, frame_indices[1:])
+    ] or list(frame_indices)
+
+    vr = decord.VideoReader(video_path)
+    last = len(vr) - 1
+
+    span_frames = shifted[-1] - shifted[0] + 1
+    sample_fps = len(shifted) * fps / span_frames if span_frames > 0 else 2.0
+    if budget.double_frames:
+        sample_fps *= 2.0
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="phase_shift_"))
+    try:
+        frame_paths = []
+        for i, idx in enumerate(shifted):
+            p = tmp_dir / f"frame_{i:04d}.png"
+            Image.fromarray(vr[max(0, min(int(idx), last))].asnumpy()).save(p)
+            frame_paths.append(str(p))
+    except Exception:
+        # Stesso motivo del cleanup in `_build_multi_region_media`: il
+        # chiamante non riceve mai la tmpdir se l'eccezione precede il return.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    if budget.double_frames:
+        frame_paths = [p for p in frame_paths for _ in range(2)]
+    media = VideoFrames(
+        frame_paths, max_pixels=budget.max_pixels, min_pixels=budget.min_pixels, sample_fps=sample_fps,
+    )
+    return media, shifted, tmp_dir
+
+
 def _build_multi_region_media(
     video_path: str,
     spans: list[tuple[float, float, float]],
@@ -441,6 +525,10 @@ class EntropyAttentionResampleStrategy(Strategy):
         resample_kind: str | None = None
         n_regions_used: int | None = None
         region_spans: list[tuple[float, float]] | None = None
+        # Numero di frame effettivamente passati al pass 2 quando differisce da
+        # `budget.nframes` (oggi solo `phase_shift`, che ne usa nframes-1 —
+        # vedi `_build_phase_shifted_media`). `None` nei rami "accetta".
+        n_frames_resampled: int | None = None
 
         can_resample = (
             frames is None
@@ -469,18 +557,18 @@ class EntropyAttentionResampleStrategy(Strategy):
                 )
 
             if not self.force_zoom_for_debug and dispersed:
-                # Dispersa: sfasa la griglia uniforme di mezzo intervallo
-                # rispetto al pass 1 — nuovi frame "in mezzo" a quelli già
-                # visti, stesso budget. Clampata a [0, duration]: se il
-                # pass 1 copriva già tutto il video, lo shift si limita
-                # a restringere leggermente da sinistra.
-                interval = (w1 - w0) / budget.nframes if budget.nframes else 0.0
-                shift = interval * self.phase_shift_frac
-                new_start = min(w0 + shift, duration)
-                new_end = min(w1 + shift, duration)
-                final_media, shift_tmp_dir = self._build_media(video_path, None, new_start, new_end, budget)
-                if shift_tmp_dir is not None:
-                    tmp_dirs.append(shift_tmp_dir)
+                # Dispersa: sfasa la griglia uniforme di `phase_shift_frac` di
+                # intervallo rispetto al pass 1 — nuovi frame "in mezzo" a
+                # quelli già visti. Gli indici sono calcolati esplicitamente,
+                # NON traslando la finestra: su una finestra che copre già
+                # tutto il video la traslazione viene clampata e si riduce a
+                # una compressione, con shift che decade a zero sull'ultimo
+                # frame (vedi `_build_phase_shifted_media`).
+                final_media, shifted_indices, shift_tmp_dir = _build_phase_shifted_media(
+                    video_path, budget, video_start, video_end, self.phase_shift_frac,
+                )
+                tmp_dirs.append(shift_tmp_dir)
+                n_frames_resampled = len(shifted_indices)
                 resample_kind = "phase_shift"
             elif self.zoom_multi_region:
                 # Concentrata (o `force_zoom_for_debug`): fino a `n_regions`
@@ -547,6 +635,7 @@ class EntropyAttentionResampleStrategy(Strategy):
             "resample_kind": resample_kind,
             "n_regions_used": n_regions_used,
             "region_spans": region_spans,
+            "n_frames_resampled": n_frames_resampled,
         }
         if options is not None:
             pred = parse_mcq_letter(raw, options)
