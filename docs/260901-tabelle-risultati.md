@@ -1,0 +1,112 @@
+# Tabelle risultati — Qwen3-VL-2B su Video-MME
+
+Solo dati. Continua `260803-tabelle_risultati.md`, che copre lo stesso filone
+su **Qwen2.5-VL-3B** (3B parametri) e resta invariato. Qui il modello è
+**Qwen3-VL-2B** (2B): un terzo in meno di parametri, generazione successiva.
+
+**Setup.** `qwen3_vl_2b_attn`, decoding greedy (`generation=precise`),
+`seed=42`, `dataset.nframes=24`, Video-MME intero senza sottotitoli, 3 shard
+SLURM da 900 sample — accuracy **pooled** (Σ corretti / Σ campioni). Su
+Qwen3-VL i `video_metadata` reali sono sempre passati al processor: la
+distinzione `meta=false`/`meta=true` di `260803 §3` non esiste qui.
+Run: [`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b)
+(baseline, job 92353) e [`video_mme-qwen3vl2b-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation)
+(arm, job 92377).
+
+---
+
+## 1. Arm su Qwen3-VL-2B (2700 sample)
+
+Colonne come in `260803 §1`. `% resampling` = quota di sample su cui è
+scattato il gate d'entropia al pass 1; `acc | high/low ans entropy` = accuracy
+condizionata al gate. `entropy_shift_24` instrada nel ramo `phase_shift` il
+100% dei sample ricampionati (`concentration_threshold=101`), quindi le
+colonne di ramo di `260803` qui non aggiungono nulla.
+
+| arm | pooled | Δ vs `baseline_24` | short | medium | long | % resampling | acc \| high ans entropy | acc \| low ans entropy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `baseline_24` | **54.44%** (1470/2700) | — (riferimento) | 66.89% (602/900) | 52.33% (471/900) | 44.11% (397/900) | — | — | — |
+| `entropy_shift_24` | **55.00%** (1485/2700) | **+0.56** | 67.78% (610/900) | 52.11% (469/900) | 45.11% (406/900) | 53.70% (1450/2700) | 37.86% (549/1450) | 74.88% (936/1250) |
+
+Letture dirette:
+
+- **+0.56 pp = 15 sample su 2700**, e la N effettiva è 1450, non 2700: sui
+  1250 sample con gate chiuso l'arm restituisce la risposta del pass 1, cioè
+  quella della baseline. Il z non appaiato vale +0.41 (p ≈ 0.68); il test
+  appaiato sui 1450 ricampionati richiede le righe Weave, non i summary.
+- il salto 37.86% → 74.88% fra gate aperto e chiuso è **effetto di selezione**
+  (il gate manda al pass 2 i sample intrinsecamente più difficili), non una
+  misura di efficacia del ricampionamento — stessa lettura di `260803 §1`.
+
+---
+
+## 2. Stesso arm sui due modelli
+
+`entropy_shift_24` con knob identici (`entropy_threshold=0.7`,
+`branch_selector=concentration`, `concentration_threshold=101`), stesso
+benchmark, stesso `nframes`. Righe Qwen2.5 da `260803 §1`.
+
+| | Qwen2.5-VL-3B | Qwen3-VL-2B |
+|---|---:|---:|
+| parametri | 3B | **2B** |
+| `baseline_24` pooled | 55.04% (1486/2700) | 54.44% (1470/2700) |
+| `entropy_shift_24` pooled | 55.63% (1502/2700) | 55.00% (1485/2700) |
+| **Δ arm − baseline** | **+0.59** | **+0.56** |
+| % resampling | 73.15% (1975/2700) | **53.70%** (1450/2700) |
+| acc \| high ans entropy | 43.59% | 37.86% |
+| acc \| low ans entropy | 88.41% | 74.88% |
+| latenza baseline (solo shard L40S) | 3.77 s | 3.32 s |
+| latenza arm (solo shard L40S) | 6.36 s | 8.97 s |
+| costo arm / baseline | 1.69× | **2.70×** |
+| sovraccosto per sample ricampionato | 3.54 s | **10.5 s** |
+
+1. **Il Δ è replicato quasi esattamente (+0.59 → +0.56)**: il nulla misurato
+   su Qwen2.5 non era una proprietà di quel modello. Vale anche per le
+   baseline — il 2B sta a −0.60 pp dal 3B con un terzo dei parametri in meno.
+2. **Il gate non si trasferisce.** A soglia invariata si apre sul 53.70% dei
+   sample invece che sul 73.15%, e separa meno (37.86/74.88 contro
+   43.59/88.41). I due arm **non sono compute-matched fra modelli**: per
+   appaiare la frazione ricampionata la soglia va ricalibrata su Qwen3, non
+   riusata.
+3. **Il costo relativo è più alto nonostante meno sample al pass 2.** Le
+   latenze sono a parità di GPU (solo shard L40S; su Qwen2.5 lo shard 0 girava
+   su Quadro RTX 6000 ed è escluso). I forward di base sono quasi uguali, la
+   differenza sta tutta nell'intervento: `6.36 = 3.77 + 0.7315·x → x = 3.54 s`
+   contro `8.97 = 3.32 + 0.5370·x → x = 10.5 s`, cioè **~3× per sample
+   ricampionato**. Causa non misurata (cattura d'attenzione o estrazione PNG
+   del ramo `phase_shift`): da profilare prima di altri arm signal-driven su
+   Qwen3.
+
+### Breakdown per task type
+
+In grassetto ogni arm sopra la **propria** baseline. `Δ` in pp; a queste N
+(cinque categorie sotto i 180 sample, dove 2 pp è un sample solo) conta il
+segno, non l'ampiezza.
+
+| task type | n | Qwen2.5-3B `baseline_24` | Qwen2.5-3B `entropy_shift_24` | Δ | Qwen3-2B `baseline_24` | Qwen3-2B `entropy_shift_24` | Δ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| action reasoning | 285 | 52.98 | **53.33** | +0.35 | 44.21 | **46.32** | +2.11 |
+| action recognition | 313 | 51.76 | 51.12 | −0.64 | 53.04 | **54.31** | +1.28 |
+| attribute perception | 222 | 65.32 | **69.37** | +4.05 | 66.22 | **67.57** | +1.35 |
+| counting problem | 268 | 33.58 | **37.69** | +4.10 | 38.43 | 37.31 | −1.12 |
+| information synopsis | 323 | 71.21 | 68.73 | −2.48 | 73.07 | 71.83 | −1.24 |
+| object reasoning | 454 | 53.96 | **55.73** | +1.76 | 49.34 | **50.00** | +0.66 |
+| object recognition | 354 | 57.91 | **59.04** | +1.13 | 61.58 | **62.43** | +0.85 |
+| ocr problems | 139 | 59.71 | 58.27 | −1.44 | 58.27 | **62.59** | **+4.32** |
+| spatial perception | 54 | 61.11 | **62.96** | +1.85 | 62.96 | 61.11 | −1.85 |
+| spatial reasoning | 56 | 67.86 | **71.43** | +3.57 | 66.07 | 64.29 | −1.79 |
+| temporal perception | 55 | 63.64 | 56.36 | −7.27 | 61.82 | 54.55 | **−7.27** |
+| temporal reasoning | 177 | 38.98 | 36.72 | −2.26 | 36.16 | **37.85** | +1.69 |
+| **↑ / ↓ vs baseline** | | | | **7 / 5** | | | **7 / 5** |
+
+- **Il segno concorda su 6 categorie su 12**: appena sopra il caso. Il Δ
+  pooled quasi identico fra i due modelli non nasce dallo stesso pattern per
+  task, ma da compensazioni diverse.
+- **`temporal perception` è l'unica categoria che perde su entrambi**, con lo
+  stesso Δ (−7.27 pp, −4 sample): la categoria che dovrebbe beneficiare di più
+  del ricampionamento temporale è quella che peggiora di più. Su Qwen2.5 era
+  0 arm su 9 sopra la baseline (`260803 §1b`), qui il segno si ripete.
+- **`counting problem` e `ocr problems` si invertono fra i due modelli**
+  (+4.10 → −1.12 e −1.44 → +4.32). Su Qwen2.5 `counting` era l'unica categoria
+  dove tutti e 9 gli arm guadagnavano e `ocr` quella dove 7 su 9 perdevano:
+  nessuna delle due regolarità sopravvive al cambio di modello.

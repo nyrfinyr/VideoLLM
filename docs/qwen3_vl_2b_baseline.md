@@ -37,6 +37,7 @@ stesso benchmark — righe da
 
 ## File rilevanti
 
+- [`260901-tabelle-risultati.md`](260901-tabelle-risultati.md) — tabelle degli arm su Qwen3-VL-2B, questa baseline è il loro riferimento
 - [`scripts/sbatch/baseline-qwen3vl2b.sbatch`](../scripts/sbatch/baseline-qwen3vl2b.sbatch)
 - [`260803-tabelle_risultati.md`](260803-tabelle_risultati.md)
 - [`qwen2_5_vl_3b_baseline.md`](qwen2_5_vl_3b_baseline.md)
