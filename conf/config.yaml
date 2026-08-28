@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt)
 
 model:
   qwen2_5_vl_3b:
@@ -224,6 +224,24 @@ strategy:
     sink_filter: false          # attenzione GREZZA, niente filtro sink (piano §3bis)
     random_seed: 0
     capture_attention: false
+
+  # Visual prompting: la parola IMPORTANT DIPINTA sui frame della cella di
+  # picco, invece di marcatori testuali attorno al blocco (variante "C").
+  # Un solo blocco video: nessuno split, struttura token identica alla
+  # baseline. Vedi strategies/visual_prompt.py e docs/piano_visual_prompting.md.
+  visual_prompt:
+    name: visual_prompt
+    always_highlight: true       # nessun gate: si interviene su tutti i sample
+    top_k: 1                     # celle dipinte (ENTRAMBI i frame di ognuna)
+    cell_select: attention       # (attention | random) random = arm di controllo
+    query_rows: question         # NON "all": appaiato con attention_marker
+    sink_filter: false           # attenzione GREZZA, come attention_marker
+    sink_percentile: 25.0        # conta solo se sink_filter=true
+    sink_border: 0
+    random_seed: 0
+    overlay_position: top        # (top | bottom) geometria = knob, la parola no
+    overlay_height_frac: 0.18    # altezza banda in frazione dell'altezza frame
+    capture_attention: false     # opt-in: dump capture.pt/frames per attn_explorer
 
 wandb:
   default:

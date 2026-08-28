@@ -8,6 +8,7 @@ from .base import SamplingBudget, Strategy
 from .entropy_attention_resample import EntropyAttentionResampleStrategy
 from .entropy_shortcut import EntropyShortcutStrategy
 from .uniform import UniformStrategy
+from .visual_prompt import VisualPromptStrategy
 
 __all__ = [
     "AttentionHighlightStrategy",
@@ -17,4 +18,5 @@ __all__ = [
     "SamplingBudget",
     "Strategy",
     "UniformStrategy",
+    "VisualPromptStrategy",
 ]
