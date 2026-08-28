@@ -49,6 +49,22 @@ class BaseVLM(ABC):
             to be passed to `generate`.
         """
 
+    def build_messages_from_parts(self, parts: list[MediaItem | Text]) -> list[dict]:
+        """Come `build_messages`, ma da una content list GIÀ ordinata di
+        parti arbitrarie (media e testi interleaved, es. `[video, text,
+        video, text, ...]` per i marcatori inline di
+        `strategies/attention_marker.py`).
+
+        Opzionale: le famiglie che non lo implementano sollevano — le
+        strategy che ne hanno bisogno devono fail-fastare su un modello che
+        non lo supporta, non degradare a un prompt diverso in silenzio.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} non supporta content list arbitrarie "
+            "(build_messages_from_parts) — solo la coppia (media, text) di "
+            "build_messages."
+        )
+
     @abstractmethod
     def generate(
         self,

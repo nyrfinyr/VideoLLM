@@ -64,10 +64,55 @@ class VideoFrames:
     # fps, la spaziatura reale (buchi fra regioni) è persa in encoding.
     # None = default di qwen-vl-utils (2.0).
     sample_fps: float | None = None
+    # Metadata REALI del blocco: indici ASSOLUTI dei frame nel video sorgente
+    # e fps reale del sorgente. Servono nel regime `pass_video_metadata=True`
+    # (Qwen3-VL): il processor calcola i timestamp `<x.x seconds>` da
+    # `video_metadata.frames_indices / fps`, e con più blocchi (marcatori
+    # inline, `strategies/attention_marker.py`) i fake metadata di
+    # qwen-vl-utils farebbero ripartire l'orologio da zero a ogni blocco
+    # (`fetch_video` fabbrica `frames_indices=range(n)` LOCALI al blocco).
+    # Questi campi NON finiscono nel dict per il chat template (vedi
+    # `to_content_dict`): viaggiano su un canale separato fino a
+    # `Qwen._prepare_inputs`, che li converte in
+    # `transformers.video_utils.VideoMetadata` per blocco. Vanno impostati
+    # entrambi o nessuno; quando sono presenti `sample_fps` è irrilevante
+    # (su Qwen3-VL non esiste `second_per_grid_ts`).
+    frames_indices: list[int] | None = None
+    fps: float | None = None
+
+    def __post_init__(self):
+        if (self.frames_indices is None) != (self.fps is None):
+            raise ValueError(
+                "VideoFrames: `frames_indices` e `fps` vanno impostati insieme "
+                "(o nessuno dei due) — il processor calcola i timestamp da "
+                "`frames_indices / fps`, con uno solo dei due non può."
+            )
+        if self.frames_indices is not None and len(self.frames_indices) != len(self.video):
+            raise ValueError(
+                f"VideoFrames: {len(self.frames_indices)} frames_indices per "
+                f"{len(self.video)} frame — serve un indice assoluto per ogni "
+                "frame, altrimenti i timestamp risultano sfasati in silenzio."
+            )
+
+# Campi di `VideoFrames` che NON devono raggiungere il chat template né
+# `process_vision_info`: sono metadata per `Qwen._prepare_inputs`, non
+# direttive di campionamento. In particolare un `fps` in un content dict
+# video verrebbe interpretato da qwen-vl-utils come frame-rate di
+# campionamento, non come fps del sorgente.
+_VIDEOFRAMES_METADATA_FIELDS = ("frames_indices", "fps")
 
 MediaItem = Image | Video | VideoFrames
 
 
 def to_content_dict(item: MediaItem | Text) -> dict:
-    """Flatten un MediaItem/Text al dict atteso dal chat template Qwen."""
-    return {k: v for k, v in asdict(item).items() if v is not None}
+    """Flatten un MediaItem/Text al dict atteso dal chat template Qwen.
+
+    Droppa i field `None` e i metadata-only di `VideoFrames`
+    (`frames_indices`/`fps`), che viaggiano su un canale separato — vedi
+    `Qwen.build_messages_from_parts`.
+    """
+    d = {k: v for k, v in asdict(item).items() if v is not None}
+    if isinstance(item, VideoFrames):
+        for k in _VIDEOFRAMES_METADATA_FIELDS:
+            d.pop(k, None)
+    return d

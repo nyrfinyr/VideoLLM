@@ -11,10 +11,18 @@ from transformers import (
 )
 from qwen_vl_utils import process_vision_info
 from .base import BaseVLM
-from .media import MediaItem, Text, to_content_dict
+from .media import MediaItem, Text, VideoFrames, to_content_dict
 import weave
 
 logger = logging.getLogger(__name__)
+
+# Chiave PRIVATA con cui `build_messages_from_parts` fa viaggiare i metadata
+# reali di un blocco `VideoFrames` (`frames_indices` assoluti + `fps` del
+# sorgente) dentro il content dict, da `build_messages_from_parts` fino a
+# `_prepare_inputs` — che la RIMUOVE prima di `apply_chat_template` e
+# `process_vision_info` (il template e qwen-vl-utils non devono vederla) e la
+# converte in un `transformers.video_utils.VideoMetadata` per blocco.
+_VIDEO_METADATA_KEY = "_video_metadata"
 
 
 class Qwen(BaseVLM):
@@ -157,16 +165,87 @@ class Qwen(BaseVLM):
         field `None` (es. `video_start`/`video_end` opzionali su `Video`)
         per non passare `None` ai backend video di qwen-vl-utils. Media è
         prima del testo, come negli example ufficiali.
+
+        Delega a `build_messages_from_parts`: firma e comportamento restano
+        INVARIATI (i 4 call site esistenti non vanno toccati — arm già
+        misurati).
         """
-        return [
-            {
-                "role": "user",
-                "content": [
-                    to_content_dict(media),
-                    to_content_dict(text),
-                ]
-            }
-        ]
+        return self.build_messages_from_parts([media, text])
+
+    def build_messages_from_parts(self, parts: list[MediaItem | Text]) -> list[dict]:
+        """Messaggio single-turn da una content list GIÀ ordinata di parti.
+
+        Generalizzazione di `build_messages` a un numero arbitrario di media
+        e testi interleaved (es. `[video, text, video, text, video, text]`
+        per i marcatori inline di `strategies/attention_marker.py`). Ogni
+        parte è flattenata via `to_content_dict`; i `VideoFrames` che
+        portano metadata reali (`frames_indices`/`fps`) li vedono aggiunti
+        sotto `_VIDEO_METADATA_KEY`, canale privato che `_prepare_inputs`
+        consuma e rimuove prima che il dict raggiunga il chat template o
+        `process_vision_info`.
+        """
+        content = []
+        for part in parts:
+            d = to_content_dict(part)
+            if isinstance(part, VideoFrames) and part.frames_indices is not None:
+                d[_VIDEO_METADATA_KEY] = {
+                    "fps": float(part.fps),
+                    "frames_indices": [int(i) for i in part.frames_indices],
+                }
+            content.append(d)
+        return [{"role": "user", "content": content}]
+
+    @staticmethod
+    def _extract_manual_video_metadata(
+        messages: list[dict],
+    ) -> tuple[list[dict], dict[int, "VideoMetadata"]]:
+        """Estrae e RIMUOVE il canale privato `_VIDEO_METADATA_KEY`.
+
+        Ritorna `(messages ripuliti, {indice blocco video → VideoMetadata})`.
+        L'indice conta i content item `type == "video"` in ordine di
+        documento — lo stesso ordine in cui `process_vision_info` estrae i
+        video, quindi allineato alla lista `video_metadata` del processor.
+        I messaggi ritornati sono copie shallow con i content dict privati
+        della chiave: né `apply_chat_template` né `process_vision_info`
+        devono vederla. Senza chiavi private i messaggi tornano invariati
+        (stessi oggetti, zero costo).
+        """
+        from transformers.video_utils import VideoMetadata
+
+        manual: dict[int, VideoMetadata] = {}
+        clean_messages = []
+        vid_i = 0
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                clean_messages.append(msg)
+                continue
+            new_content = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "video":
+                    meta = item.get(_VIDEO_METADATA_KEY)
+                    if meta is not None:
+                        item = {k: v for k, v in item.items() if k != _VIDEO_METADATA_KEY}
+                        # `total_num_frames` serve solo al percorso di
+                        # RICAMPIONAMENTO del video processor
+                        # (`sample_frames`), che qui è spento
+                        # (`do_sample_frames=False` nei video_kwargs del
+                        # regime metadata): i timestamp usano solo
+                        # `frames_indices`/`fps`. Si passa un lower bound
+                        # coerente per non lasciare il campo obbligatorio a
+                        # un valore di fantasia.
+                        manual[vid_i] = VideoMetadata(
+                            total_num_frames=int(meta["frames_indices"][-1]) + 1,
+                            fps=meta["fps"],
+                            frames_indices=list(meta["frames_indices"]),
+                            video_backend="decord",
+                        )
+                    vid_i += 1
+                new_content.append(item)
+            clean_messages.append({**msg, "content": new_content})
+        if not manual:
+            return messages, {}
+        return clean_messages, manual
 
     def _prepare_inputs(self, messages: list[dict]) -> BatchFeature:
         """Turn chat `messages` into a model-ready `BatchFeature` on device.
@@ -201,12 +280,31 @@ class Qwen(BaseVLM):
           (dove è il default, vedi `Qwen3VL`) è l'unico modo di avere nel
           prompt i timestamp `<x.x seconds>` giusti. `video_kwargs` qui è il
           solo `do_sample_frames=False` (niente `fps`), quindi si spacchetta.
+          I blocchi `VideoFrames` con metadata REALI (`frames_indices`
+          assoluti + `fps` del sorgente, canale `_VIDEO_METADATA_KEY` — vedi
+          `build_messages_from_parts`) sovrascrivono i fake metadata di
+          `process_vision_info`, che per una lista di frame partono sempre
+          da zero.
         """
+        messages, manual_metadata = self._extract_manual_video_metadata(messages)
+
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
 
         if not self.pass_video_metadata:
+            if manual_metadata:
+                # Fail-fast, non degrado silenzioso: senza il kwarg
+                # `video_metadata` al processor gli indici assoluti non
+                # arrivano da nessuna parte e i timestamp ripartirebbero da
+                # zero a ogni blocco — l'esperimento sbagliato che crede di
+                # essere quello giusto.
+                raise ValueError(
+                    "VideoFrames con frames_indices/fps richiede "
+                    "model.pass_video_metadata=true (su Qwen3-VL è il "
+                    "default): nel regime storico i metadata non vengono "
+                    "inoltrati al processor e andrebbero persi in silenzio."
+                )
             image_inputs, video_inputs, video_kwargs = process_vision_info(
                 messages, return_video_kwargs=True, image_patch_size=self.image_patch_size,
             )
@@ -230,6 +328,15 @@ class Qwen(BaseVLM):
         if video_inputs:
             videos = [v for v, _ in video_inputs]
             video_metadata = [m for _, m in video_inputs]
+            # I blocchi con metadata manuali (VideoFrames + frames_indices
+            # assoluti) SOSTITUISCONO i fake metadata che `fetch_video`
+            # fabbrica per una lista di frame (`frames_indices=range(n)`
+            # locali al blocco, orologio che riparte da zero — vedi
+            # `models/media.py`). L'indice `i` è la posizione del blocco
+            # video in ordine di documento, lo stesso ordine in cui
+            # `process_vision_info` li estrae.
+            for i, meta in manual_metadata.items():
+                video_metadata[i] = meta
 
         inputs = self.processor(
             text=[text],

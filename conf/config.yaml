@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker)
 
 model:
   qwen2_5_vl_3b:
@@ -210,6 +210,20 @@ strategy:
     # Diagnostica offline dello stesso asse: attn_explorer.diag_query_rows.
     query_rows: all
     capture_attention: false    # opt-in: dump capture.pt/frames SOLO per i sample con gate aperto
+
+  # Marcatori inline attorno ai frame di picco — SOLO Qwen3-VL (variante "B"
+  # scartata nel docstring di attention_highlight, qui implementabile perché
+  # su Qwen3 il video è già t isole visive separate da testo). Vedi
+  # `strategies/attention_marker.py` e docs/piano_marcatori_frame_qwen3.md.
+  attention_marker:
+    name: attention_marker
+    always_highlight: true      # nessun gate: si interviene su tutti i sample
+    top_k: 1                    # celle marcate
+    cell_select: attention      # (attention | random) random = arm di controllo
+    query_rows: question        # NON "all": solo i token della domanda (piano §3)
+    sink_filter: false          # attenzione GREZZA, niente filtro sink (piano §3bis)
+    random_seed: 0
+    capture_attention: false
 
 wandb:
   default:

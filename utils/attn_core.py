@@ -619,6 +619,7 @@ def ranked_cells_from_attention(
     percentile: float = 25.0,
     border: int = 0,
     query_rows: str = "all",
+    sink_filter: bool = True,
 ) -> list[RankedCell]:
     """Classifica TUTTE le celle temporali di un `VisualAttention` per massa
     di attenzione (sink-filtrata).
@@ -639,10 +640,20 @@ def ranked_cells_from_attention(
     con `all`, e spostarlo renderebbe le loro celle non più confrontabili con
     quelle nuove. Si cambia per arm, dal knob `query_rows` della strategy.
 
+    `sink_filter` (default `True`, e ANCHE QUESTO default non va cambiato,
+    stessa ragione di `query_rows`): `True` = ranking sulla vista
+    `view="nonsink"` (i token-sink azzerati, comportamento storico); `False`
+    = attenzione GREZZA, `view="all"` — nessun azzeramento, nessuna
+    renormalizzazione. È il modo giusto di spegnere il filtro:
+    `percentile=0` NON lo è (la soglia diventerebbe il massimo e l'argmax
+    della sink_map verrebbe azzerato comunque — un "quasi spento" travestito
+    da spento). Usato dal knob `sink_filter` di `attention_marker`.
+
     Condivisa fra le strategy signal-driven (`entropy_attention_resample`,
-    `attention_highlight`): il ranking DEVE essere calcolato allo stesso modo
-    in tutte, altrimenti un confronto win/loss per-sample fra arm diversi
-    misurerebbe anche la differenza di segnale, non solo quella di intervento.
+    `attention_highlight`, `attention_marker`): il ranking DEVE essere
+    calcolato allo stesso modo in tutte, altrimenti un confronto win/loss
+    per-sample fra arm diversi misurerebbe anche la differenza di segnale,
+    non solo quella di intervento.
     """
     try:
         selector = ROW_SELECTORS[query_rows]
@@ -659,10 +670,12 @@ def ranked_cells_from_attention(
         grid_w=visual_attention.grid_w,
         double=True,
     )
-    heat_nonsink, _ = sink_view(
-        heat, visual_attention.sink_map, view="nonsink", percentile=percentile, border=border,
+    heat_view, _ = sink_view(
+        heat, visual_attention.sink_map,
+        view="nonsink" if sink_filter else "all",
+        percentile=percentile, border=border,
     )
-    return rank_cells(heat_nonsink, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
+    return rank_cells(heat_view, grid, list(range(visual_attention.t)), fps=1.0, metric="sum", topk=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
