@@ -26,6 +26,10 @@ import shutil
 import sys
 from pathlib import Path
 
+# Lanciato come `python scripts/probe_overlay_legibility.py` il repo root non
+# è su sys.path e gli import del progetto fallirebbero.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import torch
 from transformers import GenerationConfig
 
