@@ -2,7 +2,7 @@
 #SBATCH --job-name=baseline-qwen3vl4b
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
-#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G"
+#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G|gpu_RTX_A5000_24G"
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
@@ -43,13 +43,24 @@
 # un fattore 6 che ha già ucciso per timeout l'array 76131. SLURM stampa
 # un INFO consultivo suggerendo di riaggiungere RTX6000 per ridurre
 # l'attesa in coda: IGNORARLO.
-# Escluse anche le 24G (`gpu_RTX_A5000_24G`): il 4B non è mai stato
-# provato qui e il preset `_attn` materializza una maschera eager O(L²).
-# Se la coda sulle 45G è lunga e la probe sotto passa, si possono
-# riaggiungere a mano — sono Ampere, quindi il problema è la VRAM, non la
-# velocità:
 #
-#     sbatch --constraint="gpu_A40_45G|gpu_L40S_45G|gpu_RTX_A5000_24G" ...
+# ⚠️ Le A5000 24G restano nella lista PER FORZA, non per scelta: su
+# `all_usr_prod` un constraint che ammette solo card >24G viene respinto
+# in submit —
+#
+#     ERROR: Jobs requiring > 24G VRAM must be run on the 'boost_usr_prod'
+#     partition.  ...  Batch job submission failed: Invalid feature
+#     specification
+#
+# — quindi la lista deve contenere almeno una 24G. È la stessa ragione per
+# cui `ablation-videomme/marker_24_qwen3.sbatch` ha la sua.
+# Il 4B a 24 frame dovrebbe starci: pesa ~8 GB in bf16 e Qwen2.5-VL-3B
+# girava a 24 frame su queste card (l'OOM del README era a 128 frame).
+# Se invece va OOM su A5000, la via è la partizione dedicata, non un
+# constraint più stretto qui:
+#
+#     sbatch --partition=boost_usr_prod \
+#         --constraint="gpu_A40_45G|gpu_L40S_45G" ...
 #
 # PRIMA DELLA PROD, LA PROBE DI THROUGHPUT (`LIMIT`). Per il 4B non esiste
 # una latenza misurata su questo cluster, e tirare a indovinare la
