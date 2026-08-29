@@ -11,7 +11,7 @@ Qwen3-VL i `video_metadata` reali sono sempre passati al processor: la
 distinzione `meta=false`/`meta=true` di `260803 §3` non esiste qui.
 Run: [`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b)
 (baseline, job 92353) e [`video_mme-qwen3vl2b-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation)
-(arm, job 92377).
+(arm, job 92377 `entropy_shift`, 92844/92845 `marker`).
 
 ---
 
@@ -19,24 +19,67 @@ Run: [`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/group
 
 Colonne come in `260803 §1`. `% resampling` = quota di sample su cui è
 scattato il gate d'entropia al pass 1; `acc | high/low ans entropy` = accuracy
-condizionata al gate. `entropy_shift_24` instrada nel ramo `phase_shift` il
-100% dei sample ricampionati (`concentration_threshold=101`), quindi le
-colonne di ramo di `260803` qui non aggiungono nulla.
+condizionata al gate — vuote per i `marker_*`, che girano con
+`always_highlight=true` e quindi intervengono su tutti i sample, senza gate.
+`entropy_shift_24` instrada nel ramo `phase_shift` il 100% dei sample
+ricampionati (`concentration_threshold=101`), quindi le colonne di ramo di
+`260803` qui non aggiungono nulla.
+
+`marker_24` / `marker_random_24` = arm `attention_marker`
+(`docs/piano_marcatori_frame_qwen3.md`; implementazione in
+`docs/attention_marker_implementazione.md`): la cella di picco è racchiusa fra
+`<START_IMPORTANT_FRAME>`/`<END_IMPORTANT_FRAME>` inseriti DENTRO il flusso
+visivo, più un'istruzione fissa che li spiega. `top_k=1`,
+`query_rows=question`, `sink_filter=false`; job 92844 (`cell_select=attention`)
+e 92845 (`cell_select=random`).
+
+⚠️ `query_rows`/`sink_filter` dei due `marker_*` differiscono dagli altri arm
+di questa tabella e di `260803`, che classificano le celle CON filtro sink su
+tutte le righe: un confronto `marker_*` contro `entropy_shift_24` mescolerebbe
+due cambiamenti. Per i marcatori il confronto valido è quello **interno**,
+`attention` contro `random`. La baseline resta comparabile con tutti perché
+`uniform` non classifica celle.
 
 | arm | pooled | Δ vs `baseline_24` | short | medium | long | % resampling | acc \| high ans entropy | acc \| low ans entropy |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | `baseline_24` | **54.44%** (1470/2700) | — (riferimento) | 66.89% (602/900) | 52.33% (471/900) | 44.11% (397/900) | — | — | — |
 | `entropy_shift_24` | **55.00%** (1485/2700) | **+0.56** | 67.78% (610/900) | 52.11% (469/900) | 45.11% (406/900) | 53.70% (1450/2700) | 37.86% (549/1450) | 74.88% (936/1250) |
+| `marker_24` (attention) | **53.04%** (1432/2700) | **−1.41** | 66.33% (597/900) | 49.56% (446/900) | 43.22% (389/900) | — | — | — |
+| `marker_random_24` (random) | **53.11%** (1434/2700) | **−1.33** | 66.44% (598/900) | 49.89% (449/900) | 43.00% (387/900) | — | — | — |
 
 Letture dirette:
 
-- **+0.56 pp = 15 sample su 2700**, e la N effettiva è 1450, non 2700: sui
-  1250 sample con gate chiuso l'arm restituisce la risposta del pass 1, cioè
-  quella della baseline. Il z non appaiato vale +0.41 (p ≈ 0.68); il test
-  appaiato sui 1450 ricampionati richiede le righe Weave, non i summary.
+- **`entropy_shift_24`: +0.56 pp = 15 sample su 2700**, e la N effettiva è
+  1450, non 2700: sui 1250 sample con gate chiuso l'arm restituisce la
+  risposta del pass 1, cioè quella della baseline. Il z non appaiato vale
+  +0.41 (p ≈ 0.68); il test appaiato sui 1450 ricampionati richiede le righe
+  Weave, non i summary.
 - il salto 37.86% → 74.88% fra gate aperto e chiuso è **effetto di selezione**
   (il gate manda al pass 2 i sample intrinsecamente più difficili), non una
   misura di efficacia del ricampionamento — stessa lettura di `260803 §1`.
+- **`marker_24` − `marker_random_24` = −2 sample su 2700 (−0.07 pp)**: i due
+  arm sono indistinguibili. Non è mancata applicazione — `marked` 900/900 su
+  tutte e sei le eval, e le celle scelte dai due criteri differiscono nel
+  35–40% dei sample (`peak_cell` vs `peak_cell_sink_filtered`). **Marcare il
+  frame "giusto" non vale più che marcarne uno a caso**: il segnale
+  d'attenzione non è ciò che manca al modello.
+- **entrambi i `marker_*` stanno sotto la baseline** di 1.3–1.4 pp. La SE non
+  appaiata su una differenza fra proporzioni a n=2700 vale ≈1.36 pp, quindi il
+  calo è ~1 SE: suggestivo, non stabilito. Il test appaiato contro
+  `baseline_24` non è fattibile — `uniform` non ri-emette campi per-sample,
+  quindi le sue Evaluation Weave non sono attribuibili ai singoli shard.
+- **costo dei `marker_*` ~3.2× la baseline** (10.7 contro 3.1–3.4 s/sample):
+  con `always_highlight=true` ogni sample paga estrazione PNG di tutti i 24
+  frame + secondo pass, nessuno è esente. Il calo si concentra su **`medium`**
+  (52.33 → 49.56, −25 sample); `short` e `long` si muovono di meno di 1 pp.
+- correttezza dei `marker_*` verificata sulle 6 Evaluation Weave distinte
+  (5400 sample): `marked` 900/900, `n_query_rows < n_query_tokens` 900/900,
+  blocchi pari con `somma(block_sizes)/2 == t_cells` 900/900, `pred_fallback`
+  4/5400 (0.07%).
+- **esito dei marcatori: arm chiuso.** Il controllo pareggia il treatment,
+  quindi non è la scelta della cella a essere sbagliata ma il canale: non ha
+  senso spendere GPU su varianti dei knob (`sink_filter`, `top_k`) dello
+  stesso intervento.
 
 ---
 

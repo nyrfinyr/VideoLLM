@@ -2,12 +2,11 @@
 #SBATCH --job-name=ablation-visual_prompt_24_qwen3
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
-#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G|gpu_RTX_A5000_24G"
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --array=0-2
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -17,9 +16,11 @@
 # Un solo blocco video: nessuno split, struttura token identica alla baseline.
 # Vedi strategies/visual_prompt.py e docs/piano_visual_prompting.md.
 #
-# ⚠️ GATE PRIMA DI QUESTO JOB: scripts/probe_overlay_legibility.py (piano
-# §8.1) deve aver passato ≥9/10 — senza leggibilità l'arm misura occlusione,
-# non prompting, e nessuna accuracy di questo job significa niente.
+# GATE §8.1 PASSATA (2026-08-29): la corsa OCR-aperto dava 5/10, ma la
+# diagnosi (scripts/probe_overlay_diagnosis.py) ha mostrato pixel leggibili
+# su tutti i 5 MISS (`cell_only=IMPORTANT`) e regime named verde
+# (`painted+named=YES`, `clean+named=NO`): in forma arm-fedele — l'arm NOMINA
+# la parola in OVERLAY_INSTRUCTION — è 10/10 a height_frac=0.18.
 #
 # Preset: always_highlight=true (nessun gate), top_k=1 (ENTRAMBI i frame
 # della cella dipinti), query_rows=question, sink_filter=false (attenzione
@@ -30,25 +31,28 @@
 #     sbatch scripts/sbatch/ablation-videomme/visual_prompt_24_qwen3.sbatch \
 #         strategy.cell_select=random "wandb.tags=[ablation,video_mme,qwen3_vl_2b,visual_prompt_random_24]"
 #
-# ⚠️ `--constraint` SENZA `gpu_RTX6000_24G`. Su Turing (sm_75) Qwen3-VL-2B
-# costa ~44 s/sample contro i ~3.4 su L40S — un fattore 6 che ha già ucciso
-# per timeout l'array 76131. SLURM stampa un INFO consultivo suggerendo di
-# riaggiungere RTX6000 per ridurre l'attesa in coda: IGNORARLO.
+# NESSUN `--constraint` GPU (scelta 2026-08-29: attesa in coda minima a costo
+# di più tempo di calcolo). Se capita una RTX6000 (Turing, sm_75) Qwen3-VL-2B
+# va ~6x più lento (~44 s/sample il pass singolo contro ~3.4 su L40S — è ciò
+# che ha ucciso per timeout l'array 76131): la walltime a 24 h è dimensionata
+# su QUESTO caso peggiore (~80-90 s/sample a due pass → ~22 h/shard), non
+# sul caso tipico.
 #
 # COSTO ATTESO (stima, NON misura): stesso profilo di attention_marker —
 # estrazione PNG di tutti i 24 frame + secondo pass su TUTTI i sample
-# (always_highlight=true); la pittura è trascurabile. Sul sovraccosto
-# misurato il 2026-08-28 (10.5 s per sample intervenuto,
-# docs/260901-tabelle-risultati.md §2) si va verso ~14 s/sample: ~15 min per
-# una probe da 60, ~3.5 h/shard per un fullset a 3 shard — FUORI dalla
-# walltime a 4 h con poco margine. RITARARE su model_latency_mean della
-# probe prima di lanciare il fullset (più shard o più walltime), non lanciare
-# alla cieca su questa stima.
+# (always_highlight=true); la pittura è trascurabile. Su GPU Ampere/Ada:
+# ~14 s/sample (smoke 2026-08-28) → ~15 min per una probe da 60, ~3.5 h/shard
+# per un fullset a 3 shard. Su RTX6000: ~6x tutto. RITARARE su
+# model_latency_mean della probe (e sulla GPU capitata) prima di lanciare il
+# fullset, non lanciare alla cieca su questa stima.
 #
 # PROBE (piano §8 — 8.2–8.7 sono correttezza, non risultato):
 #
-#     LIMIT=60 sbatch --array=0 --time=00:40:00 \
+#     LIMIT=60 sbatch --array=0 --time=02:00:00 \
 #         scripts/sbatch/ablation-videomme/visual_prompt_24_qwen3.sbatch
+#
+#   (2 h e non 40 min: senza constraint la probe può finire su RTX6000,
+#   dove 60 sample a due pass costano ~80-90 min.)
 #
 #   1. n_query_rows < n_query_tokens su TUTTI i sample (se sono uguali la
 #      strategy solleva da sé: nessun sample deve fallire per questo);
