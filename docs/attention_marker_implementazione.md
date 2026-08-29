@@ -53,7 +53,7 @@ più nel gruppo di testo esistente: nessun `position_ids` da costruire a mano.
 Su Qwen2.5-VL il testo inserito spezzerebbe il gruppo video e servirebbe
 intervenire sui `position_ids` — fuori scope. Il vincolo è un fail-fast
 esplicito in
-[`answer`](../strategies/attention_marker.py#L255-L263) (`isinstance(vlm, Qwen3VL)`).
+[`answer`](../strategies/attention_marker.py#L254-L262) (`isinstance(vlm, Qwen3VL)`).
 
 ## 3. Il flusso in `answer()`
 
@@ -110,7 +110,7 @@ esplicito in
    confini di cella `2*ti` / `2*(ti+1)`:
 
    ```python
-   # strategies/attention_marker.py:132-143
+   # strategies/attention_marker.py:133-143
    blocks: list[tuple[int, int, bool]] = []
    prev = 0
    for a, b in runs:
@@ -149,7 +149,7 @@ esplicito in
 9. **Pass 2** —
    [`vlm.build_messages_from_parts(parts)`](../models/qwen.py#L175) e
    `generate`. La tmpdir viene ripulita nel `finally`
-   ([`:417-419`](../strategies/attention_marker.py#L417-L419)).
+   ([`:420-422`](../strategies/attention_marker.py#L420-L422)).
 
 Se il gate è chiuso o non c'è segnale, il pass 2 gira sugli stessi frame del
 pass 1 con prompt **invariato**: niente istruzione senza marcatori, sarebbe un
@@ -230,7 +230,7 @@ darebbe celle diverse a seconda dell'ordine di esecuzione, che con
 `Evaluation` concorrente non è garantito.
 
 ```python
-# strategies/attention_marker.py:226-232
+# strategies/attention_marker.py:228-232
 if self.cell_select == "random":
     return rng.sample(range(t), k=min(self.top_k, t))
 if all(c.pct <= 0 for c in ranked):
@@ -244,7 +244,7 @@ dove salta l'arm vero ne restringerebbe il campione senza motivo.
 
 ## 7. Campi emessi per-sample
 
-Il [dict di ritorno](../strategies/attention_marker.py#L424-L450) finisce in
+Il [dict di ritorno](../strategies/attention_marker.py#L424-L465) finisce in
 Weave. Oltre a `raw`/`pred`:
 
 - `n_query_rows`, `n_query_tokens` — check che `query_rows` tagli davvero.
