@@ -10,31 +10,33 @@
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%j.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%j.err
 
-# Misura (2) del piano-oracolo: il SOFFITTO del puntatore su LVBench.
-# Tre condizioni per sample (baseline / peak / oracle), stesso prompt, stesso
-# testo di puntatore dell'arm attention_highlight — cambia solo DOVE punta:
-# la cella di picco dell'attenzione o l'intervallo ANNOTATO quantizzato ai
-# confini di cella. Disegno completo in scripts/probe_oracle_ceiling.py.
+# Misure (2)+(3) del piano-oracolo: i SOFFITTI su LVBench.
+# Quattro condizioni per sample: baseline / peak / oracle (puntatore
+# TESTUALE dell'arm A alla cella di picco o alla finestra annotata) / zoom
+# (24 frame RICAMPIONATI dentro la finestra annotata, nessun puntatore) —
+# il soffitto della metà "marcare" e quello della metà "ricampionare" di
+# LoT nello stesso job. Disegno completo in scripts/probe_oracle_ceiling.py.
 #
-# È la misura che separa i due mondi che l'accuracy da sola confonde:
-#   acc_oracle ≈ acc_baseline  → puntare BENE non serve: la metà "COME" di
-#       LoT è morta per principio su questo benchmark (risultato di tesi);
-#   acc_oracle >> acc_baseline → il soffitto esiste, e acc_peak dice quanto
-#       ne recupera oggi il segnale d'attenzione (atteso ≈ baseline).
+# PRIMO GIRO (93614, senza zoom, 100 sample): baseline 32%, peak 29%,
+# oracle 30% — il canale di MARCATURA non ha soffitto. peak_in_window 30%
+# (~2x chance, coerente con la sonda (1)): segnale debole ma reale. Con 24
+# frame su video di ore la finestra quasi mai contiene un frame campionato:
+# la condizione `zoom` misura se portarci i FRAME (non il puntatore) paga.
 #
 # A parità di SEED condivide i sample con probe_peak_in_window (stessa
 # selezione deterministica): i risultati si incrociano per id.
 #
 # ⚠️ `--constraint` SENZA schede Turing (sm_75), come tutti gli sbatch qwen3.
 #
-# COSTO: 100 sample x (decode-once in PNG + 4 forward brevi a 24 frame)
-# ≈ 30-50 s/sample → ~1-1.5 h. 3 h è larga.
+# COSTO: 100 sample x (2 decode in PNG + 5 forward brevi a 24 frame)
+# ≈ 25-40 s/sample misurati (18 s/sample il giro a 3 condizioni) → ~1 h.
+# 3 h è larga.
 #
 # COSA GUARDARE (summary wandb, project lvbench, group probe-oracle-ceiling):
 #   1. n_skip ~0, n_fallback basso (risposte parseabili);
-#   2. acc_oracle vs acc_baseline, e i flip appaiati oracle_recovered /
-#      oracle_broken (più sensibili del saldo);
-#   3. acc_peak vs acc_baseline (atteso ≈, coerente coi null Video-MME);
+#   2. acc_zoom vs acc_baseline: È LA MISURA — flip zoom_recovered/broken;
+#   3. acc_oracle e acc_peak vs baseline (primo giro: nessun soffitto di
+#      marcatura, atteso di nuovo ≈);
 #   4. peak_in_window_rate: deve essere coerente col valore della sonda (1)
 #      sullo stesso rowset — è il cross-check fra le due misure;
 #   5. la Table `samples` per l'ispezione per-sample.

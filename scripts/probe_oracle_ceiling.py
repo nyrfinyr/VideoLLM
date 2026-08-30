@@ -7,8 +7,8 @@ o se non c'era niente da guadagnare. Qui si separa: LVBench annota la finestra
 dell'evidenza, quindi si può puntare il modello alla cella GIUSTA per
 costruzione e misurare quanto vale un puntatore perfetto.
 
-Tre condizioni per sample, stessi frame (24, uniformi, video intero), stesso
-prompt MCQ, cambia solo il prefisso:
+Quattro condizioni per sample, stesso prompt MCQ (le prime tre sugli stessi
+24 frame uniformi del video intero, la quarta su frame diversi):
 
     baseline  nessun puntatore
     peak      "Focus on the part of the video between a and b seconds..."
@@ -17,6 +17,14 @@ prompt MCQ, cambia solo il prefisso:
     oracle    stesso identico testo, ma sull'intervallo della finestra
               ANNOTATA, quantizzato ai confini di cella (la risoluzione vera
               del canale: un puntatore perfetto non può dire di più)
+    zoom      nessun puntatore: i 24 frame sono RICAMPIONATI dentro la
+              finestra annotata (l'oracolo della metà "ricampionare" di LoT,
+              come le tre sopra lo sono della metà "marcare"). Primo giro
+              (93614, senza zoom): oracle 30% ≈ baseline 32% — il canale di
+              marcatura non ha soffitto, e con 24 frame su video di ore la
+              finestra quasi mai contiene un frame campionato: se anche zoom
+              ≈ baseline, l'intera premessa muore su questo regime; se
+              zoom >> baseline, il guadagno vive SOLO nel ricampionamento.
 
 Il testo del puntatore è ESATTAMENTE quello dell'arm `attention_highlight`
 (POINTER_SPAN_SEC, prepend + "\\n\\n"): la differenza fra le condizioni è solo
@@ -25,10 +33,13 @@ DOVE punta, mai come parla. Parsing della risposta come negli arm:
 
 Lettura (accuracy appaiate, stessi sample):
 
-    oracle ≈ baseline  → il soffitto non esiste: la metà "COME" di LoT è
-        morta per principio su questo benchmark — risultato di tesi;
-    oracle >> baseline → il soffitto esiste; peak dice quanto del divario
-        l'attenzione recupera oggi (atteso ≈ baseline, coerente coi null).
+    oracle ≈ baseline  → la marcatura non ha soffitto (CONFERMATO dal primo
+        giro 93614: 30% vs 32%);
+    zoom ≈ baseline    → nemmeno il ricampionamento perfetto paga: la
+        premessa di LoT muore su questo regime — risultato di tesi;
+    zoom >> baseline   → il guadagno vive SOLO nel ricampionamento, e il
+        segnale (debole: picco-in-finestra ~2x chance) va giudicato come
+        selettore di DOVE ricampionare, non di cosa marcare.
 
 Costo per sample: 1 forward con cattura (per il picco + fallback) + 3
 generate brevi. Il campione è selezionato con la STESSA logica e lo stesso
@@ -68,7 +79,7 @@ from utils.attn_core import (question_rows, ranked_cells_from_attention,
 from utils.config import load_config
 from utils.mcq import parse_mcq_letter
 
-CONDITIONS = ("baseline", "peak", "oracle")
+CONDITIONS = ("baseline", "peak", "oracle", "zoom")
 
 
 def cell_span_sec(c0: int, c1: int, t: int, duration: float) -> tuple[float, float]:
@@ -143,8 +154,8 @@ def main() -> int:
         "fallbacks",
     ])
     correct = {c: 0 for c in CONDITIONS}
-    flips = {"oracle_recovered": 0, "oracle_broken": 0,
-             "peak_recovered": 0, "peak_broken": 0}
+    flips = {f"{c}_{k}": 0 for c in CONDITIONS if c != "baseline"
+             for k in ("recovered", "broken")}
     peak_in_win = 0
     n_done = n_skip = n_fallback = 0
     lat_sum = 0.0
@@ -163,6 +174,7 @@ def main() -> int:
             paths, tmp_dir = _extract_all_frames(r["video_path"], idx)
             media = VideoFrames(paths, max_pixels=max_pixels,
                                 frames_indices=[int(k) for k in idx], fps=fps)
+            zoom_tmp = None
             try:
                 signal = vlm.generate_with_signals(media, Text(prompt), gen_cfg,
                                                    answer_letters=letters)
@@ -191,14 +203,25 @@ def main() -> int:
                     "baseline": prompt,
                     "peak": f"{pointer_for(pa, pb)}\n\n{prompt}",
                     "oracle": f"{pointer_for(oa, ob)}\n\n{prompt}",
+                    "zoom": prompt,
                 }
+                # zoom: stessi 24 frame di BUDGET ma dentro la finestra
+                # annotata. frames_indices/fps veri → il modello vede i
+                # timestamp assoluti del punto del video da cui vengono.
+                zidx, zfps = reconstruct_frame_indices(
+                    r["video_path"], nframes, video_start=w0, video_end=w1)
+                zpaths, zoom_tmp = _extract_all_frames(r["video_path"], zidx)
+                media_by_cond = {c: media for c in CONDITIONS}
+                media_by_cond["zoom"] = VideoFrames(
+                    zpaths, max_pixels=max_pixels,
+                    frames_indices=[int(k) for k in zidx], fps=zfps)
                 # `pred_letter` del prefill = fallback quando la generazione
                 # non produce una lettera parseabile, come negli arm.
                 fb_idx = (ord(signal.pred_letter) - ord("A")
                           if signal.pred_letter else None)
                 preds, fbs = {}, []
                 for c in CONDITIONS:
-                    messages = vlm.build_messages(media, Text(prompts[c]))
+                    messages = vlm.build_messages(media_by_cond[c], Text(prompts[c]))
                     raw = vlm.generate(messages, generation_config=gen_cfg)
                     pred = parse_mcq_letter(raw, r["options"])
                     if pred is None:
@@ -210,16 +233,17 @@ def main() -> int:
             finally:
                 if tmp_dir is not None:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
+                if zoom_tmp is not None:
+                    shutil.rmtree(zoom_tmp, ignore_errors=True)
 
             ok = {c: preds[c] == r["answer"] for c in CONDITIONS}
-            if ok["oracle"] and not ok["baseline"]:
-                flips["oracle_recovered"] += 1
-            if ok["baseline"] and not ok["oracle"]:
-                flips["oracle_broken"] += 1
-            if ok["peak"] and not ok["baseline"]:
-                flips["peak_recovered"] += 1
-            if ok["baseline"] and not ok["peak"]:
-                flips["peak_broken"] += 1
+            for c in CONDITIONS:
+                if c == "baseline":
+                    continue
+                if ok[c] and not ok["baseline"]:
+                    flips[f"{c}_recovered"] += 1
+                if ok["baseline"] and not ok[c]:
+                    flips[f"{c}_broken"] += 1
 
             table.add_data(r["id"], r["question"], round(duration, 1), va.t,
                            round(w0, 1), round(w1, 1), peak, hit,
@@ -249,10 +273,11 @@ def main() -> int:
     print(f"\n=== soffitto su {n_done} sample (skip {n_skip}, fallback {n_fallback}) — rowset={rowset} ===")
     for c in CONDITIONS:
         print(f"  {c:9s}: {correct[c]}/{n_done} = {correct[c]/n_done:.3f}")
-    print(f"  oracle vs baseline: +{flips['oracle_recovered']} / -{flips['oracle_broken']}"
-          f"  (delta {correct['oracle']-correct['baseline']:+d})")
-    print(f"  peak   vs baseline: +{flips['peak_recovered']} / -{flips['peak_broken']}"
-          f"  (delta {correct['peak']-correct['baseline']:+d})")
+    for c in CONDITIONS:
+        if c == "baseline":
+            continue
+        print(f"  {c:8s} vs baseline: +{flips[f'{c}_recovered']} / -{flips[f'{c}_broken']}"
+              f"  (delta {correct[c]-correct['baseline']:+d})")
     print(f"  peak_in_window: {peak_in_win}/{n_done} = {peak_in_win/n_done:.3f}")
 
     run.summary.update({
