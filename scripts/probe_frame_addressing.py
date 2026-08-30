@@ -143,22 +143,52 @@ def _first_number(raw: str) -> float | None:
     return None if m is None else float(m.group())
 
 
-def _dump_timestamps(vlm, messages) -> None:
-    """Stampa i `<x.x seconds>` che il processor mette davvero nel prompt.
+def _dump_timestamps(vlm, messages, t_cell: list[float]) -> None:
+    """Stampa i `<x.x seconds>` che il modello vede DAVVERO, e li confronta
+    con la mappa cella→timestamp assunta dalla sonda (`t_c = idx[2c] / fps`).
 
-    Serve a VERIFICARE la mappa cella→timestamp che questa sonda assume
-    (`t_c = frame_indices[2c] / fps`): se diverge, le domande indirizzerebbero
-    la cella sbagliata e il risultato sarebbe un artefatto. Best-effort: un
-    fallimento qui non deve uccidere la sonda.
+    ⚠️ NON usare `apply_chat_template`: su Qwen3-VL i timestamp li scrive il
+    **processor** quando espande il placeholder visivo, non il chat template.
+    Dumpare il template dà 0 timestamp e fa credere che il canale non esista
+    — errore commesso nel job 93544. L'unica stringa fedele è la decodifica
+    degli `input_ids` che entrano nel modello, quindi si passa da
+    `_prepare_inputs` (non muta `messages`: `_extract_manual_video_metadata`
+    ricostruisce i dict invece di modificarli in place).
+
+    Il confronto valore-per-valore è il punto della funzione: sul job 93544 il
+    revlookup `native` ha mostrato una SOVRASTIMA sistematica del ~12%
+    (mediana pred/vero 1.116, 18/20 sovrastime). Se quel bias è già nei
+    timestamp STAMPATI sta nel processor; se sono esatti lo introduce il
+    modello. Sono due bug diversi con due fix diversi.
+
+    Best-effort: un fallimento qui non deve uccidere la sonda.
     """
     try:
-        text = vlm.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        stamps = re.findall(r"<([\d.]+) seconds?>", text)
-        print(f"  [verifica] il prompt contiene {len(stamps)} timestamp: {stamps}")
+        inputs = vlm._prepare_inputs(messages)
+        text = vlm.processor.batch_decode(inputs.input_ids, skip_special_tokens=False)[0]
     except Exception as exc:  # noqa: BLE001 — diagnostica, non correttezza
         print(f"  [verifica] dump timestamp non riuscito: {exc!r}")
+        return
+
+    stamps = [float(s) for s in re.findall(r"<([\d.]+) seconds?>", text)]
+    print(f"  [verifica] timestamp nel prompt: {len(stamps)} (celle attese: {len(t_cell)})")
+    if not stamps:
+        # Niente da confrontare: mostra il prompt compattato (i pad visivi
+        # sono migliaia e coprirebbero tutto il resto).
+        compact = re.sub(r"(<\|image_pad\|>){2,}", "<|image_pad|>×N", text)
+        print(f"  [verifica] nessun timestamp — prompt: {compact[:500]!r}")
+        return
+
+    print(f"  [verifica] stampati: {[round(s, 1) for s in stamps]}")
+    print(f"  [verifica] attesi:   {[round(s, 1) for s in t_cell]}")
+    if len(stamps) != len(t_cell):
+        print("  [verifica] ⚠️ conteggio diverso: la mappa cella→timestamp della "
+              "sonda NON è quella del processor, i numeri `native` sono un artefatto")
+        return
+    ratios = sorted(s / t for s, t in zip(stamps, t_cell) if t > 0)
+    if ratios:
+        print(f"  [verifica] stampato/atteso: mediana {ratios[len(ratios) // 2]:.3f} "
+              f"(min {ratios[0]:.3f}, max {ratios[-1]:.3f}) — atteso 1.000")
 
 
 def main() -> None:
@@ -231,7 +261,7 @@ def main() -> None:
                     )
 
                 if not dumped and cond == "native":
-                    _dump_timestamps(vlm, vlm.build_messages(media, Text(Q_DETECT)))
+                    _dump_timestamps(vlm, vlm.build_messages(media, Text(Q_DETECT)), t_cell)
                     dumped = True
 
                 r_det = ask(Q_DETECT)
