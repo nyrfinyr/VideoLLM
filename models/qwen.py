@@ -32,33 +32,40 @@ _VIDEO_METADATA_KEY = "_video_metadata"
 # Le opzioni sono nel contesto (aiutano a disambiguare la domanda) ma il
 # prompt vieta esplicitamente di attingervi parole. Costante di modulo e non
 # knob: è il testo dell'intervento, cambiarla cambia l'esperimento.
-# v3 dopo il probe 93525_0 (2026-08-30, 60 sample): la v1 (system prompt,
-# domanda+opzioni in input) falliva sul 2B in ~2 casi su 3 — il prior
-# "MCQ → rispondi" vinceva e il modello sputava un'opzione, oppure copiava
-# l'intera domanda. Da qui: (a) SOLO la domanda in input, niente opzioni —
-# il grilletto del prior sparisce alla fonte (taglio a monte in
-# utils/attn_core.py::resolve_query_rows); (b) divieti espliciti; (c) due
-# esempi few-shot sintetici (non da Video-MME) nello stesso formato
-# `Question:` del question_block reale: per un 2B il formato dimostrato
-# vale più dell'istruzione.
+# v4 (2026-08-30). Storia: la v1 (system prompt, domanda+opzioni in input)
+# falliva sul 2B in ~2 casi su 3 — il prior "MCQ → rispondi" vinceva e il
+# modello sputava un'opzione o copiava l'intera domanda (probe 93525_0:
+# 13% utile). La v3 (solo domanda + few-shot) mappava 60/60 (probe 93543_0)
+# ma elencava TUTTO il materiale della domanda ("rope, person, ice bucket
+# challenge" per "what color is the rope..."), rispalmando il segnale. La
+# v4 chiede UNA SOLA sequenza contigua — il puntatore d'attenzione vuole
+# un'ancora sola — oppure NONE quando la domanda non ha un soggetto
+# specifico ("What is this video about?"): meglio degradare onestamente a
+# `question` che mappare termini generici. Il taglio delle opzioni resta
+# a monte in utils/attn_core.py::resolve_query_rows; per un 2B il formato
+# dimostrato negli esempi vale più dell'istruzione.
 ENTITY_EXTRACTION_SYSTEM = (
-    "You extract the SUBJECT(S) of a question: the entity or entities the "
-    "question is about. A subject can be a thing, a person, or an action, and "
-    "can span multiple words; there may be more than one subject. "
-    "Do NOT answer the question. Do NOT repeat the whole question. Copy the "
-    "subject(s) EXACTLY as written in the question (same words, no synonyms, "
-    "no paraphrase, no extra words). Separate multiple subjects with commas. "
-    "Output only the subject words: a few words, nothing else."
+    "You extract THE SUBJECT of a question: the single entity or action the "
+    "question is about. Copy it EXACTLY as written in the question: ONE "
+    "contiguous sequence of one or more words (same words, same order, no "
+    "synonyms, no paraphrase, no extra words). Prefer the shortest sequence "
+    "that names the subject. Do NOT answer the question. Do NOT repeat the "
+    "whole question. If the question has no specific subject, output NONE. "
+    "Output only the subject words, or NONE: nothing else."
 )
 
 ENTITY_EXTRACTION_EXAMPLES = (
     (
         "Question: What color is the jacket worn by the man playing the guitar?",
-        "jacket, man playing the guitar",
+        "jacket",
     ),
     (
         "Question: Why does the dog run away at the beginning of the video?",
-        "dog, run away",
+        "dog run away",
+    ),
+    (
+        "Question: What is this video mainly about?",
+        "NONE",
     ),
 )
 
@@ -446,8 +453,9 @@ class Qwen(BaseVLM):
         boilerplate: le opzioni innescavano il prior "MCQ → rispondi" del
         2B, vedi ENTITY_EXTRACTION_EXAMPLES), tipicamente ricostruito dai
         `query_tokens` da `utils.attn_core.resolve_query_rows`. Ritorna la
-        stringa grezza del decoder (soggetti separati da virgola); il
-        mapping alle righe di attenzione avviene a valle, non qui.
+        stringa grezza del decoder (UNA sequenza contigua di parole della
+        domanda, oppure `NONE`); il mapping alle righe di attenzione — e la
+        gestione del `NONE` — avviene a valle, non qui.
         """
         messages = [
             {"role": "system", "content": [{"type": "text", "text": ENTITY_EXTRACTION_SYSTEM}]},

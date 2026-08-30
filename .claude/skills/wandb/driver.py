@@ -298,12 +298,20 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                 mapped = sum(1 for o in outs if o.get("entity_mapped"))
                 degen = sum(1 for o in outs if _entity_degenerate(o))
                 useful = mapped - degen
-                pct = 100 * useful / nm
+                nones = sum(1 for o in outs if not o.get("entity_mapped")
+                            and _norm_text(o.get("entity_raw")) == "none")
+                unmapped = nm - mapped - nones
+                # I NONE sono il decoder che dichiara "nessun soggetto
+                # specifico": fallback DELIBERATO, non un fallimento del
+                # prompt — la soglia si giudica sul resto.
+                base = nm - nones
+                pct = 100 * useful / base if base else 0.0
                 status = "PASS" if pct >= 80 else ("WARN" if pct >= 50 else "FAIL")
                 r.add(status, "entity",
-                      f"estrazione UTILE su {useful}/{nm} sample ({pct:.0f}%): "
+                      f"estrazione UTILE su {useful}/{base} sample non-NONE ({pct:.0f}%): "
                       f"{mapped} mappate verbatim, di cui {degen} copie integrali della "
-                      f"domanda (degeneri ≡ question), {nm - mapped} fallback a `question`"
+                      f"domanda (degeneri ≡ question), {unmapped} non mappate, "
+                      f"{nones} NONE deliberati (fallback onesto)"
                       + ("" if status == "PASS" else " — sotto questa soglia l'arm gira in "
                                                     "buona parte a query_rows=question")
                       + " | tabella domanda→estrazione: rilancia con --entities")
@@ -397,11 +405,12 @@ def dump_entities(outs: list[dict]) -> None:
         print("\nnessun campo entity per-sample: la run non gira a query_rows=entity "
               "(o la strategy sul cluster non emette i campi).")
         return
-    print(f"\n─── entity per sample ({len(rows)}) ─ ✓ mappata / "
-          "≈ copia integrale della domanda / ✗ fallback a `question` ───")
+    print(f"\n─── entity per sample ({len(rows)}) ─ ✓ mappata / ∅ NONE deliberato / "
+          "≈ copia integrale della domanda / ✗ non mappata → `question` ───")
     for i, o in enumerate(rows, 1):
         degen = _entity_degenerate(o)
-        mark = "≈" if degen else ("✓" if o.get("entity_mapped") else "✗")
+        is_none = not o.get("entity_mapped") and _norm_text(o.get("entity_raw")) == "none"
+        mark = "≈" if degen else ("✓" if o.get("entity_mapped") else ("∅" if is_none else "✗"))
         q = (o.get("_question") or "").strip() or "(domanda assente dagli input del call)"
         phr = o.get("entity_phrases")
         print(f"[{i:3}] {mark} Q: {q}")
@@ -410,6 +419,8 @@ def dump_entities(outs: list[dict]) -> None:
             line += f" | phrases: {list(phr)}"
         if degen:
             line += " | copia integrale della domanda (degenere)"
+        elif is_none:
+            line += " | NONE deliberato → righe della domanda intera"
         elif not o.get("entity_mapped"):
             line += " | NON mappata → righe della domanda intera"
         print(line)

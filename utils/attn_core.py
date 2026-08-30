@@ -217,14 +217,18 @@ def resolve_query_rows(
     qui, le strategy passano solo la stringa del knob): per i valori di
     `ROW_SELECTORS` delega al selettore puro; per `entity` chiama
     `extract_entities` (il metodo del modello GIÀ CARICATO, es.
-    `Qwen.extract_entities` — nessun secondo modello in memoria) sul blocco
-    domanda+opzioni ricostruito dai `query_tokens`, e mappa l'output alle
-    righe via `entity_rows`.
+    `Qwen.extract_entities` — nessun secondo modello in memoria) sulla SOLA
+    domanda, ricostruita dai `query_tokens` tagliando su "options:" (o sul
+    boilerplate), e mappa l'output alle righe via `entity_rows`. Le opzioni
+    restano fuori dall'input dell'estrattore di proposito: vedi il commento
+    al taglio, più sotto.
 
-    Fallback (deciso, non silenzioso): se NESSUNA frase estratta mappa
-    verbatim (parafrasi del decoder), si degrada a `question_rows` con
-    `entity_mapped=False` nei metadati — il sample non è perso e l'eval può
-    contare quanto spesso succede. Le righe risultanti restano soggette
+    Fallback (deciso, non silenzioso): se il decoder risponde `NONE`
+    (domanda senza soggetto specifico) o se la sequenza estratta non mappa
+    verbatim (parafrasi, o output multi-frase fuori formato), si degrada a
+    `question_rows` con `entity_mapped=False` nei metadati — il sample non è
+    perso e l'eval può contare quanto spesso succede e perché
+    (`entity_raw='NONE'` distingue i due casi). Le righe risultanti restano soggette
     all'asserzione anti-degrado delle strategy (`n_query_rows <
     n_query_tokens`), che copre anche il fallback-del-fallback di
     `question_rows` (prompt senza "options:").
@@ -253,7 +257,18 @@ def resolve_query_rows(
         cut = lowered.find(BOILERPLATE_MARKER)
     question_block = (text[:cut] if cut != -1 else text).strip()
     raw = str(extract_entities(question_block)).strip()
-    phrases = tuple(p.strip() for p in raw.split(",") if p.strip())
+    # v4: UNA sola sequenza contigua, nessuno split sulle virgole — un output
+    # multi-frase del decoder è una regressione dal formato e non mappa
+    # verbatim, quindi cade da sé nel fallback. `NONE` è l'uscita deliberata
+    # "questa domanda non ha un soggetto specifico": fallback esplicito, con
+    # `entity_raw='NONE'` nei metadati per distinguerlo a valle dal mancato
+    # mapping.
+    if raw.strip('.,;:!"\'').lower() == "none":
+        return QueryRowsResolution(
+            rows=question_rows(query_tokens), mode="question",
+            entity_raw=raw, entity_phrases=(), entity_mapped=False,
+        )
+    phrases = (raw,)
     rows = entity_rows(query_tokens, list(phrases))
     if rows:
         return QueryRowsResolution(
