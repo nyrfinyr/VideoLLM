@@ -19,6 +19,18 @@ Conseguenza: il nulla di `highlight_top1_24` va attribuito al **segnale**
 canale. Le direzioni "entity rows" e "double-frame" restano aperte;
 Qwen3-VL non serve più a stabilire se il modello ascolta.
 
+> **AGGIORNAMENTO 2026-08-30 — la dicotomia (A)/(B) qui sotto era
+> incompleta.** L'oracolo su LVBench (`docs/oracolo_lvbench.md`) aggiunge un
+> mondo (C): il puntatore viene letto (questo esperimento) e il picco porta
+> un segnale reale (~2× il caso, z = 4.21), ma indicare la cella **vera** non
+> cambia comunque l'accuracy (30% vs 32% di baseline) — il canale-prompt è
+> *sensibile* senza essere *utile*. Le due conclusioni non sono in
+> contraddizione: `antipeak` misura che un'istruzione sbagliata fa danno,
+> non che un'istruzione giusta faccia bene. Anche la lettura "picco ≈ cella
+> a caso" va corretta: sembrava tale perché misurata attraverso l'accuracy.
+> La direzione "entity rows" è stata poi implementata e misurata:
+> non sposta il picco (28.3% → 30.0% di hit nella finestra annotata).
+
 ## Il fatto di partenza
 
 Tre numeri su Video-MME intero (2700 sample, `qwen2_5_vl_3b_attn`,

@@ -19,6 +19,16 @@
 > (evidenza quantitativa dei sink); §7 di questo documento mappa
 > esplicitamente cosa è stato portato e cosa no.
 
+
+> **Stato sperimentale nel dominio video (2026-08-30).** Le due metà del
+> metodo non reggono allo stesso modo qui: misurato con un oracolo su
+> LVBench (`docs/oracolo_lvbench.md`), il "secondo sguardo" che **comunica**
+> la regione saliente al modello non paga nemmeno quando la regione è quella
+> vera (30% vs 32% di baseline), mentre **ricampionare** i frame dentro la
+> finestra vera vale +16 pp (48%). Nel video il collo di bottiglia è che
+> l'evidenza spesso non è tra i frame campionati affatto — non che il
+> modello non sappia dove guardare dentro ciò che vede.
+
 ## 1. Contesto e problema
 
 LoT si colloca nel **Knowledge-Based Visual Question Answering (KB-VQA)**

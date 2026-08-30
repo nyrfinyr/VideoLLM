@@ -239,14 +239,29 @@ strategy:
     always_highlight: true       # nessun gate: si interviene su tutti i sample
     top_k: 1                     # celle dipinte (ENTRAMBI i frame di ognuna)
     cell_select: attention       # (attention | random) random = arm di controllo
-    query_rows: question         # (all | qopts | question | entity) NON "all": appaiato con attention_marker;
-                                 # `entity` = sole righe del/i soggetto/i estratto/i dal decoder (vedi sopra)
-    sink_filter: false           # attenzione GREZZA, come attention_marker
+    query_rows: entity           # (all | qopts | question | entity) `entity` = sole righe del
+                                 # soggetto estratto dal decoder (UNA sequenza verbatim o NONE,
+                                 # vedi utils/attn_core.py::resolve_query_rows); sui sample in
+                                 # cui non mappa si degrada a `question`, tracciato per sample
+                                 # da `query_rows_mode`/`entity_mapped`.
+    sink_filter: true            # ⚠️ NON più appaiato con attention_marker (che gira a false,
+                                 # su attenzione grezza): un confronto diretto marker↔
+                                 # visual_prompt mescolerebbe due cambiamenti. Il confronto
+                                 # valido per questo arm resta quello INTERNO,
+                                 # cell_select=attention contro random, che condivide tutti
+                                 # questi knob. Vedi docs/260901-tabelle-risultati.md §5.
     sink_percentile: 25.0        # conta solo se sink_filter=true
     sink_border: 0
     random_seed: 0
-    overlay_position: top        # (top | bottom) geometria = knob, la parola no
-    overlay_height_frac: 0.18    # altezza banda in frazione dell'altezza frame
+    overlay_position: bottom     # (top | bottom) geometria = knob, la parola no
+    overlay_height_frac: 0.12    # altezza banda in frazione dell'altezza frame.
+                                 # ⚠️ il gate di leggibilità §8.1 è stato passato a
+                                 # top/0.18: bottom/0.12 lascia ~25px di testo dopo il
+                                 # downscale del processor (contro ~38px) — sotto 0.10
+                                 # su frame piccoli paint_important RIFIUTA di dipingere
+                                 # (RuntimeError, il sample fallisce, non degrada in
+                                 # silenzio). Ri-verificabile con
+                                 # scripts/probe_overlay_legibility.py.
     capture_attention: false     # opt-in: dump capture.pt/frames per attn_explorer
 
 wandb:

@@ -209,3 +209,76 @@ Letture dirette:
   interventi sul 2B rischia di ottimizzare margini che la scala assorbe.
 - coerente con la probe da 60 (job 93325_0): 40/60 sul 4B contro 36 e 37/60
   delle due probe 2B sugli stessi sample.
+
+---
+
+## 4. Perché i `marker_*` (e gli altri arm di puntamento) sono nulli
+
+Misurato a posteriori su LVBench, non su Video-MME:
+`docs/oracolo_lvbench.md` (job 94348). Marcare la cella **vera** invece del
+picco vale 30% contro 32% di baseline (appaiato +5/−7, p = 0.77): il canale
+di marcatura **non ha soffitto**, quindi il nulla di `marker_24` e degli arm
+di `260803 §1` non è attribuibile al segnale d'attenzione.
+
+Nello stesso esperimento, RICAMPIONARE i 24 frame dentro la finestra vera
+vale **48% contro 32%** (+22/−6, p = 0.0037). Le due metà di LoT si separano:
+il guadagno vive nel *dove guardare*, non nel *come dirlo*.
+
+---
+
+## 5. `visual_prompt` su Video-MME: nessun fullset, solo probe
+
+**Non esiste un full eval di `visual_prompt` (variante C, parola IMPORTANT
+dipinta sui pixel) su Video-MME.** Tutte le run sono probe da 60 sample sullo
+shard 0 (`limit=60 shuffle=true`, gruppo
+[`video_mme-qwen3vl2b-ablation-test`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation-test)),
+lanciate per verificare correttezza e overlay, **non l'accuracy**: su 60
+sample un sample vale 1.7 pp e l'SE è ~6 pp. Il fullset (3 shard × ~3 h) è
+stato deliberatamente **congelato** dopo l'oracolo su LVBench
+(`docs/oracolo_lvbench.md`), che mostra come il canale di marcatura non abbia
+soffitto: misurarlo sui 2700 avrebbe prodotto un quarto nullo già spiegato.
+
+| job | knob variato | acc (60) | note |
+|---|---|---:|---|
+| 93320_0 | `query_rows=question`, `sink_filter=false` | 61.67% (37/60) | preset dell'arm |
+| 93321_0 | `query_rows=question`, **`sink_filter=true`** | 63.33% (38/60) | appaiato col precedente |
+| 93524_0 | `query_rows=entity` (prompt estrazione v1) | — | ucciso (Turing, ~140 s/sample) |
+| 93525_0 | `query_rows=entity` v1 | 61.67% (37/60) | estrazione utile 8/60: il 2B risponde alla MCQ |
+| 93543_0 | `query_rows=entity` v3 (solo domanda + few-shot) | 63.33% (38/60) | 60/60 mappate, ma elenca più soggetti |
+| 93573_0 | `query_rows=entity` v4 (una sequenza o `NONE`) | 61.67% (37/60) | 40/50 utili sui non-NONE, 10 `NONE` corretti |
+
+Tutti i Δ qui sono di **1 sample**: nessuno è leggibile come risultato. Le
+probe servivano ai check di correttezza (overlay leggibile, `n_query_rows <
+n_query_tokens`, `pred_fallback=0`, metadati entity per-sample), che passano.
+Sull'estrazione entity, l'unica misura vera è il tasso di mapping, non
+l'accuracy — dettagli in `docs/oracolo_lvbench.md` § "Il segnale
+d'attenzione".
+
+### `sink_filter`: chi lo ha usato e come
+
+`ranked_cells_from_attention` accetta `sink_filter` (scarta i token con
+punteggio sink alto prima di classificare le celle). **Il default della
+funzione è `True`; il default delle strategy che espongono il knob è
+`False`.** Le tre strategy non si comportano allo stesso modo:
+
+| strategy | knob esposto | valore effettivo nelle run |
+|---|---|---|
+| `attention_highlight` | **no** — `sink_filter` non è un knob | **`true` implicito** (default della funzione) su tutte le 16 run, `highlight_top1_*`, `random_top1_*`, `antipeak_*` incluse |
+| `attention_marker` | sì (`cfg.get("sink_filter", False)`) | `false` sul fullset 2700 (92844 attention, 92845 random); `true` solo sulla probe 92829_0 |
+| `visual_prompt` | sì (`cfg.get("sink_filter", False)`) | `false` ovunque tranne la probe 93321_0 |
+
+⚠️ **Confondimento da tenere presente nei confronti fra arm** (già segnalato
+in `strategies/attention_marker.py` e in §1): `marker_*` e `visual_prompt`
+classificano le celle sull'attenzione **grezza**, gli arm `highlight_*` sul
+segnale **filtrato dai sink**. Un confronto diretto fra le due famiglie
+mescola due cambiamenti — per i marcatori e per il visual prompting il
+confronto valido resta quello **interno**, `attention` contro `random`.
+
+L'unica misura appaiata dell'effetto del filtro è la coppia di probe
+93320/93321 (`visual_prompt`, stessi 60 sample, cambia solo `sink_filter`):
+61.67% contro 63.33%, cioè **1 sample** — non distinguibile dal rumore. Un
+dato più informativo viene dai metadati per-sample delle probe: con
+`sink_filter=false` la cella scelta **differisce** da quella che il filtro
+avrebbe scelto nel 33-40% dei sample, quindi il knob arriva davvero al
+ranking e non è inerte; semplicemente non sposta l'accuracy.
+

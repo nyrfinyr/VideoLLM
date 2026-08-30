@@ -23,14 +23,15 @@
 # (`painted+named=YES`, `clean+named=NO`): in forma arm-fedele — l'arm NOMINA
 # la parola in OVERLAY_INSTRUCTION — è 10/10 a height_frac=0.18.
 #
-# Preset: always_highlight=true (nessun gate), top_k=1 (ENTRAMBI i frame
-# della cella dipinti), query_rows=question, sink_filter=false (attenzione
-# GREZZA) — appaiato con attention_marker. Il confronto da leggere è INTERNO
+# Preset (2026-08-30, scelta utente per il fullset): always_highlight=true
+# (nessun gate), top_k=1 (ENTRAMBI i frame della cella dipinti),
+# query_rows=entity, sink_filter=true, overlay bottom a height_frac=0.12.
+# ⚠️ NON più appaiato con attention_marker (question + attenzione grezza +
+# banda in alto): il confronto valido è quello INTERNO, attention vs random. Il confronto da leggere è INTERNO
 # al probe: cell_select=attention contro cell_select=random a parità di
 # tutto il resto — l'arm di controllo si lancia con:
 #
-#     sbatch scripts/sbatch/ablation-videomme/visual_prompt_24_qwen3.sbatch \
-#         strategy.cell_select=random "wandb.tags=[ablation,video_mme,qwen3_vl_2b,visual_prompt_random_24]"
+#     CELL=random sbatch scripts/sbatch/ablation-videomme/visual_prompt_24_qwen3.sbatch
 #
 # ⚠️ `--constraint` SENZA schede Turing (sm_75), come gli altri sbatch
 # _qwen3: su Turing Qwen3-VL-2B va ~6x più lento (è ciò che ha ucciso per
@@ -104,10 +105,20 @@ export PYTHONUNBUFFERED=1
 #       fallback — mai altro;
 #   e4. model_latency_mean vs la probe `question`: il costo della chiamata
 #       di estrazione (~32 token greedy, solo testo) dev'essere piccolo.
-QROWS="${QROWS:-question}"
+QROWS="${QROWS:-entity}"
+# `CELL` sceglie da dove viene la cella dipinta: `attention` (l'arm) o
+# `random` (il CONTROLLO appaiato, l'unico confronto valido per questo arm —
+# vedi sopra). Passa anche nel NOME della run: senza, i due arm producono
+# `wandb.name` identici e con 6 run concorrenti non si distinguono più (il
+# driver /wandb accoppia le Evaluation Weave per vicinanza temporale +
+# config, vedi docs/260901-tabelle-risultati.md §5).
+CELL="${CELL:-attention}"
 NAME="visual_prompt_24"
-if [ "${QROWS}" != "question" ]; then
+if [ "${QROWS}" != "entity" ]; then
   NAME="${NAME}_${QROWS}"
+fi
+if [ "${CELL}" != "attention" ]; then
+  NAME="${NAME}_${CELL}"
 fi
 
 # Probe: `limit` DOPO lo shard (prepare_samples applica shuffle → shard →
@@ -122,7 +133,7 @@ if [ -n "${LIMIT:-}" ]; then
   echo "PROBE: ${LIMIT} sample — verifica overlay/metadata/query_rows su Qwen3, non l'accuracy"
 fi
 
-echo "shard: ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}  group: ${GROUP}  query_rows: ${QROWS}"
+echo "shard: ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}  group: ${GROUP}  query_rows: ${QROWS}  cell_select: ${CELL}"
 
 uv run python main.py \
     model=qwen3_vl_2b_attn \
@@ -130,11 +141,12 @@ uv run python main.py \
     strategy=visual_prompt \
     dataset.nframes=24 \
     strategy.query_rows=${QROWS} \
+    strategy.cell_select=${CELL} \
     hf_home=/work/tesi_avalenza/hf \
     shard=${SLURM_ARRAY_TASK_ID} \
     num_shards=${SLURM_ARRAY_TASK_COUNT} \
     "${PROBE_ARGS[@]}" \
     wandb.group=${GROUP} \
     wandb.name=qwen3_vl_2b_attn-${NAME}-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
-    wandb.tags=[ablation,video_mme,qwen3_vl_2b,visual_prompt_24] \
+    wandb.tags=[ablation,video_mme,qwen3_vl_2b,${NAME}] \
     "$@"
