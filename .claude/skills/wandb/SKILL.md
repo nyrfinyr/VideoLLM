@@ -55,6 +55,10 @@ uv run python .claude/skills/wandb/driver.py <nome-run> --shard-size 900
 
 # solo summary, senza Weave (secondi invece di ~1 min)
 uv run python .claude/skills/wandb/driver.py <nome-run> --summary-only
+
+# run con query_rows=entity: tabella domanda → entity estratta, un blocco
+# per sample, per la verifica MANUALE (mostrala all'utente, non riassumerla)
+uv run python .claude/skills/wandb/driver.py <nome-run> --entities
 ```
 
 Entity di default letta da `conf/config.yaml` (`wandb.default.entity`).

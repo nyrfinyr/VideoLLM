@@ -199,12 +199,17 @@ strategy:
     pointer_position: prepend   # (prepend | append) puntatore prima della domanda (adiacente al video) o dopo
     sink_percentile: 25.0       # filtro sink identico a entropy_attention_resample (= tau del paper, 25° percentile)
     sink_border: 0
-    # (all | qopts | question) SU QUALI righe-query si calcola il picco.
+    # (all | qopts | question | entity) SU QUALI righe-query si calcola il picco.
     # `all` = tutto ciò che segue l'ultimo <|vision_end|>: domanda + le quattro
     # opzioni + "Answer with the letter..." + generation prompt. Su un prompt
     # Video-MME tipico sono 86 token di cui 21 di domanda, cioè il 76% delle
     # righe mediate NON è la domanda. `qopts` toglie solo il boilerplate,
     # `question` tiene la sola domanda (utils.attn_core.question_rows).
+    # `entity` restringe ancora: il decoder GIÀ caricato estrae il/i soggetto/i
+    # della domanda (Qwen.extract_entities, ~32 token per sample) e si mediano
+    # solo le loro righe; se l'estrazione non mappa verbatim si degrada a
+    # `question` (per-sample: entity_mapped=false). Vedi
+    # utils.attn_core.resolve_query_rows.
     # Default `all` perché è il regime di tutti gli arm già misurati: cambiarlo
     # renderebbe non appaiate le celle di controllo esistenti sui 2700.
     # Diagnostica offline dello stesso asse: attn_explorer.diag_query_rows.
@@ -220,7 +225,7 @@ strategy:
     always_highlight: true      # nessun gate: si interviene su tutti i sample
     top_k: 1                    # celle marcate
     cell_select: attention      # (attention | random) random = arm di controllo
-    query_rows: question        # NON "all": solo i token della domanda (piano §3)
+    query_rows: question        # (all | qopts | question | entity) NON "all": solo i token della domanda (piano §3)
     sink_filter: false          # attenzione GREZZA, niente filtro sink (piano §3bis)
     random_seed: 0
     capture_attention: false
@@ -234,7 +239,8 @@ strategy:
     always_highlight: true       # nessun gate: si interviene su tutti i sample
     top_k: 1                     # celle dipinte (ENTRAMBI i frame di ognuna)
     cell_select: attention       # (attention | random) random = arm di controllo
-    query_rows: question         # NON "all": appaiato con attention_marker
+    query_rows: question         # (all | qopts | question | entity) NON "all": appaiato con attention_marker;
+                                 # `entity` = sole righe del/i soggetto/i estratto/i dal decoder (vedi sopra)
     sink_filter: false           # attenzione GREZZA, come attention_marker
     sink_percentile: 25.0        # conta solo se sink_filter=true
     sink_border: 0

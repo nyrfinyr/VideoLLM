@@ -75,7 +75,7 @@ from typing import TYPE_CHECKING
 from models.media import Text, VideoFrames
 from models.qwen import Qwen3VL
 from models.signals import SupportsSignals
-from utils.attn_core import ROW_SELECTORS, RankedCell, ranked_cells_from_attention, reconstruct_frame_indices
+from utils.attn_core import QUERY_ROWS_CHOICES, RankedCell, ranked_cells_from_attention, reconstruct_frame_indices, resolve_query_rows
 from utils.mcq import parse_mcq_letter
 
 from .attention_highlight import _sample_rng
@@ -203,10 +203,10 @@ class AttentionMarkerStrategy(Strategy):
                 f"cell_select sconosciuto: {self.cell_select!r}. "
                 "Valide: 'attention', 'random'"
             )
-        if self.query_rows not in ROW_SELECTORS:
+        if self.query_rows not in QUERY_ROWS_CHOICES:
             raise ValueError(
                 f"query_rows sconosciuto: {self.query_rows!r}. "
-                f"Valide: {sorted(ROW_SELECTORS)}"
+                f"Valide: {sorted(QUERY_ROWS_CHOICES)}"
             )
         if self.sink_filter and self.sink_percentile <= 0:
             raise ValueError(
@@ -300,10 +300,18 @@ class AttentionMarkerStrategy(Strategy):
         # un'asserzione, non un ramo atteso: se scatta si fallisce il sample
         # in modo RUMOROSO (Weave lo cattura per sample), non si prosegue.
         n_query_rows = n_query_tokens = None
+        rows_res = None
         if va is not None:
             n_query_tokens = len(va.query_tokens)
-            rows = ROW_SELECTORS[self.query_rows](va.query_tokens)
-            n_query_rows = len(rows) if rows else n_query_tokens
+            # Risoluzione UNICA del knob (utils.attn_core.resolve_query_rows):
+            # per `entity` chiama il decoder già caricato e può degradare a
+            # `question` (entity_mapped=False nei metadati); per gli altri
+            # valori è il selettore puro di sempre.
+            rows_res = resolve_query_rows(
+                self.query_rows, va.query_tokens,
+                extract_entities=getattr(vlm, "extract_entities", None),
+            )
+            n_query_rows = len(rows_res.rows) if rows_res.rows else n_query_tokens
             if self.query_rows != "all" and n_query_rows >= n_query_tokens:
                 raise RuntimeError(
                     f"query_rows={self.query_rows!r} non ha tagliato nulla "
@@ -319,7 +327,7 @@ class AttentionMarkerStrategy(Strategy):
         if va is not None:
             ranked_cells = ranked_cells_from_attention(
                 va, percentile=self.sink_percentile, border=self.sink_border,
-                query_rows=self.query_rows, sink_filter=self.sink_filter,
+                rows=rows_res.rows, sink_filter=self.sink_filter,
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
             t_cells = va.t
@@ -330,7 +338,7 @@ class AttentionMarkerStrategy(Strategy):
             if not self.sink_filter:
                 peak_cell_sink_filtered = ranked_cells_from_attention(
                     va, percentile=self.sink_percentile, border=self.sink_border,
-                    query_rows=self.query_rows, sink_filter=True,
+                    rows=rows_res.rows, sink_filter=True,
                 )[0].cell
             else:
                 peak_cell_sink_filtered = peak_cell
@@ -442,6 +450,14 @@ class AttentionMarkerStrategy(Strategy):
             # query_rows != all (altrimenti `answer` ha già sollevato).
             "n_query_rows": n_query_rows,
             "n_query_tokens": n_query_tokens,
+            # Metadati della modalità `entity` (None negli altri casi):
+            # `query_rows_mode` è la selezione EFFETTIVA (= "question" quando
+            # l'entity non mappa verbatim), `entity_mapped` conta il tasso di
+            # mapping riuscito per-sample.
+            "query_rows_mode": rows_res.mode if rows_res is not None else None,
+            "entity_raw": rows_res.entity_raw if rows_res is not None else None,
+            "entity_phrases": list(rows_res.entity_phrases) if rows_res is not None and rows_res.entity_phrases is not None else None,
+            "entity_mapped": rows_res.entity_mapped if rows_res is not None else None,
             "cell_select": self.cell_select,
             "sink_filter": self.sink_filter,
         }

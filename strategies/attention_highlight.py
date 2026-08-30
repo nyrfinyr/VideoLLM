@@ -90,7 +90,7 @@ from typing import TYPE_CHECKING
 
 from models.media import Text
 from models.signals import SupportsSignals
-from utils.attn_core import RankedCell, ranked_cells_from_attention
+from utils.attn_core import QUERY_ROWS_CHOICES, RankedCell, ranked_cells_from_attention, resolve_query_rows
 from utils.mcq import parse_mcq_letter
 
 from .base import SamplingBudget, Strategy, video_duration_sec
@@ -279,8 +279,10 @@ class AttentionHighlightStrategy(Strategy):
         #
         # Diagnostica offline dello stesso asse, senza spendere una eval:
         # `attn_explorer.diag_query_rows` (misura il bias POSIZIONALE del
-        # picco sotto ognuna di queste selezioni, più un rowset `entity` che
-        # qui non c'è perché richiederebbe un estrattore in-linea).
+        # picco sotto ognuna di queste selezioni). Il quarto valore `entity`
+        # usa l'estrattore in-linea del decoder già caricato
+        # (`Qwen.extract_entities`, risolto da
+        # `utils.attn_core.resolve_query_rows`).
         self.query_rows = str(cfg.get("query_rows", "all"))
 
         # Knob rimossi (modalità `peak`/`window`, vedi docstring del modulo):
@@ -299,10 +301,10 @@ class AttentionHighlightStrategy(Strategy):
                 f"cell_select sconosciuto: {self.cell_select!r}. "
                 "Valide: 'attention', 'random', 'antipeak'"
             )
-        if self.query_rows not in ("all", "qopts", "question"):
+        if self.query_rows not in QUERY_ROWS_CHOICES:
             raise ValueError(
                 f"query_rows sconosciuto: {self.query_rows!r}. "
-                "Valide: 'all', 'qopts', 'question'"
+                f"Valide: {sorted(QUERY_ROWS_CHOICES)}"
             )
         if self.pointer_units not in ("seconds", "fraction"):
             raise ValueError(
@@ -481,10 +483,19 @@ class AttentionHighlightStrategy(Strategy):
         # alla decisione di evidenziare.
         top1_pct = peak_cell = t_cells = None
         ranked_cells: list[RankedCell] | None = None
+        rows_res = None
         if signal.visual_attention is not None:
+            # Risoluzione UNICA del knob (utils.attn_core.resolve_query_rows):
+            # per `entity` chiama il decoder già caricato e può degradare a
+            # `question` (entity_mapped=False nei metadati); per gli altri
+            # valori è il selettore puro di sempre.
+            rows_res = resolve_query_rows(
+                self.query_rows, signal.visual_attention.query_tokens,
+                extract_entities=getattr(vlm, "extract_entities", None),
+            )
             ranked_cells = ranked_cells_from_attention(
                 signal.visual_attention, percentile=self.sink_percentile, border=self.sink_border,
-                query_rows=self.query_rows,
+                rows=rows_res.rows,
             )
             top1_pct, peak_cell = ranked_cells[0].pct, ranked_cells[0].cell
             t_cells = signal.visual_attention.t
@@ -609,6 +620,14 @@ class AttentionHighlightStrategy(Strategy):
             "cell_select": self.cell_select,
             "highlight_units": highlight_units,
             "pointer": pointer,
+            # Metadati della modalità `entity` (None negli altri casi):
+            # `query_rows_mode` è la selezione EFFETTIVA (= "question" quando
+            # l'entity non mappa verbatim), `entity_mapped` conta il tasso di
+            # mapping riuscito per-sample.
+            "query_rows_mode": rows_res.mode if rows_res is not None else None,
+            "entity_raw": rows_res.entity_raw if rows_res is not None else None,
+            "entity_phrases": list(rows_res.entity_phrases) if rows_res is not None and rows_res.entity_phrases is not None else None,
+            "entity_mapped": rows_res.entity_mapped if rows_res is not None else None,
         }
         if options is not None:
             pred = parse_mcq_letter(raw, options)

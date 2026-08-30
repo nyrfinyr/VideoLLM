@@ -83,7 +83,32 @@ cd /homes/avalenza/video-language-model-playground
 source scripts/lib/notify.sh && tg_job_start   # notifica Telegram (no-op senza bot)
 export PYTHONUNBUFFERED=1
 
+# `QROWS` sceglie le righe-query del segnale (question | entity | qopts | all);
+# il default `question` è il preset dell'arm. `entity`: il decoder (già in
+# memoria, chiamata solo-testo) estrae il soggetto della domanda e si mediano
+# solo le sue righe — vedi utils/attn_core.py::resolve_query_rows. Probe di
+# validazione del mode `entity` (60 sample, shard 0):
+#
+#     QROWS=entity LIMIT=60 sbatch --array=0 --time=02:30:00 \
+#         scripts/sbatch/ablation-videomme/visual_prompt_24_qwen3.sbatch
+#
+#   Ai check 1-7 sopra si aggiungono, PRIMA dell'accuracy:
+#   e1. tasso `entity_mapped=true` per-sample su Weave (se basso, il segnale
+#       è di fatto `question`: il confronto col preset non misura nulla);
+#   e2. verifica MANUALE domanda→estrazione: parole VERBATIM della domanda,
+#       mai prese dalle opzioni (il mapping è ristretto alla porzione prima
+#       di "options:", ma l'estrazione va guardata a occhio). La tabella
+#       per-sample la stampa il driver wandb:
+#           uv run python .claude/skills/wandb/driver.py <nome-run> --entities;
+#   e3. `query_rows_mode` per-sample = "entity" dove mapped, "question" nei
+#       fallback — mai altro;
+#   e4. model_latency_mean vs la probe `question`: il costo della chiamata
+#       di estrazione (~32 token greedy, solo testo) dev'essere piccolo.
+QROWS="${QROWS:-question}"
 NAME="visual_prompt_24"
+if [ "${QROWS}" != "question" ]; then
+  NAME="${NAME}_${QROWS}"
+fi
 
 # Probe: `limit` DOPO lo shard (prepare_samples applica shuffle → shard →
 # limit), quindi i sample escono dallo shard 0, non dal set intero. Gruppo
@@ -97,13 +122,14 @@ if [ -n "${LIMIT:-}" ]; then
   echo "PROBE: ${LIMIT} sample — verifica overlay/metadata/query_rows su Qwen3, non l'accuracy"
 fi
 
-echo "shard: ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}  group: ${GROUP}"
+echo "shard: ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}  group: ${GROUP}  query_rows: ${QROWS}"
 
 uv run python main.py \
     model=qwen3_vl_2b_attn \
     dataset=video_mme \
     strategy=visual_prompt \
     dataset.nframes=24 \
+    strategy.query_rows=${QROWS} \
     hf_home=/work/tesi_avalenza/hf \
     shard=${SLURM_ARRAY_TASK_ID} \
     num_shards=${SLURM_ARRAY_TASK_COUNT} \

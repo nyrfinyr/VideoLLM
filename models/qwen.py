@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 # converte in un `transformers.video_utils.VideoMetadata` per blocco.
 _VIDEO_METADATA_KEY = "_video_metadata"
 
+# System prompt dell'estrazione entity (knob `query_rows=entity`, risolto da
+# `utils.attn_core.resolve_query_rows`). Derivato dal probe
+# `scripts/probe_entity_extraction.py`: soggetto/i + vincolo VERBATIM, perché
+# il mapping a valle (`utils.attn_core.entity_rows`) è uno string-match esatto
+# sul testo della domanda — una parafrasi non mappa e fa scattare il fallback.
+# Le opzioni sono nel contesto (aiutano a disambiguare la domanda) ma il
+# prompt vieta esplicitamente di attingervi parole. Costante di modulo e non
+# knob: è il testo dell'intervento, cambiarla cambia l'esperimento.
+ENTITY_EXTRACTION_SYSTEM = (
+    "You extract the SUBJECT(S) of a question: the entity or entities the "
+    "question is about. A subject can be a thing, a person, or an action, and "
+    "can span multiple words; there may be more than one subject. The answer "
+    "options, when present, are context to help you understand the question. "
+    "Report the subject(s) using EXACTLY the words as they appear in the "
+    "QUESTION (verbatim: the same words, no synonyms, no paraphrase, no extra "
+    "words, never words taken from the options). Separate multiple subjects "
+    "with commas. Output only the subject words."
+)
+
 
 class Qwen(BaseVLM):
     """Shared implementation for the Qwen-VL family (2.5 and 3.x).
@@ -393,6 +412,36 @@ class Qwen(BaseVLM):
         completion = self._decode_completion(inputs, generated_ids)
         logger.debug("Generated %d new tokens", generated_ids.shape[1] - inputs.input_ids.shape[1])
         return completion
+
+    @weave.op
+    def extract_entities(self, question_block: str) -> str:
+        """Estrae il/i soggetto/i di una domanda MCQ col decoder GIÀ caricato.
+
+        Chiamata SOLO-TESTO (nessun media, niente `process_vision_info`):
+        stesso modello e stessi pesi dell'inferenza video, quindi zero costo
+        di memoria aggiuntivo e ~32 token generati per sample. Greedy
+        (`do_sample=False`): l'estrazione deve essere deterministica a parità
+        di domanda, indipendente dalla `GenerationConfig` dell'arm.
+
+        `question_block` è il testo domanda+opzioni (senza boilerplate),
+        tipicamente ricostruito dai `query_tokens` da
+        `utils.attn_core.resolve_query_rows`. Ritorna la stringa grezza del
+        decoder (soggetti separati da virgola); il mapping alle righe di
+        attenzione avviene a valle, non qui.
+        """
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": ENTITY_EXTRACTION_SYSTEM}]},
+            {"role": "user", "content": [{"type": "text", "text": question_block}]},
+        ]
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.processor(text=[text], return_tensors="pt").to(self.model.device)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=32, do_sample=False
+            )
+        return self._decode_completion(inputs, generated_ids).strip()
 
 
 class Qwen25VL3B(Qwen):

@@ -145,6 +145,124 @@ ROW_SELECTORS = {
     "question": question_rows,
 }
 
+# Valori ammessi per il knob `query_rows` delle strategy: i selettori puri più
+# `entity`, che NON può stare in `ROW_SELECTORS` perché non è una funzione pura
+# di `query_tokens` — richiede una chiamata al decoder per-sample (vedi
+# `resolve_query_rows`). Le strategy validano contro QUESTO set, non contro
+# `ROW_SELECTORS`.
+QUERY_ROWS_CHOICES = frozenset(ROW_SELECTORS) | {"entity"}
+
+
+@dataclass(frozen=True)
+class QueryRowsResolution:
+    """Esito di `resolve_query_rows`: righe esplicite + metadati per-sample.
+
+    `rows` segue la convenzione di `AttentionCapture.aggregate`: `[]` = tutte
+    le righe. `mode` è la selezione EFFETTIVA (può differire dal knob: con
+    `entity` non mappata verbatim si degrada a `"question"`). I campi
+    `entity_*` sono valorizzati solo quando il knob era `entity` — vanno
+    loggati per-sample così l'eval quantifica il tasso di mapping riuscito.
+    """
+    rows: list[int]
+    mode: str
+    entity_raw: str | None = None
+    entity_phrases: tuple[str, ...] | None = None
+    entity_mapped: bool | None = None
+
+
+def entity_rows(query_tokens: tuple[QueryToken, ...], phrases: list[str]) -> list[int]:
+    """Righe dei token che coprono i match VERBATIM di `phrases` nella domanda.
+
+    Stesso string-match (case-insensitive, su offset di carattere) validato
+    dal probe `scripts/probe_entity_extraction.py`: se il decoder copia le
+    parole della domanda alla lettera, il mapping è esatto e gratuito. La
+    ricerca è ristretta alla porzione PRIMA di "options:" — le stesse parole
+    possono comparire anche nelle opzioni, e matchare lì selezionerebbe righe
+    fuori dalla domanda. Frasi che non matchano (parafrasi/sinonimi) vengono
+    semplicemente saltate; `[]` = nessuna frase mappata (il chiamante decide
+    il fallback, vedi `resolve_query_rows`).
+    """
+    text = ""
+    spans: list[tuple[int, int, int]] = []
+    for qt in query_tokens:
+        start = len(text)
+        text += qt.text
+        spans.append((start, len(text), qt.row))
+    lowered = text.lower()
+    q_end = lowered.find("options:")
+    if q_end == -1:
+        q_end = len(lowered)
+    rows: list[int] = []
+    for phrase in phrases:
+        ph = phrase.strip().strip(".,?!:;'\"").lower()
+        if not ph:
+            continue
+        i = lowered.find(ph, 0, q_end)
+        if i == -1:
+            continue
+        j = i + len(ph)
+        rows.extend(r for (s, e, r) in spans if s < j and e > i and r not in rows)
+    return sorted(rows)
+
+
+def resolve_query_rows(
+    query_rows: str,
+    query_tokens: tuple[QueryToken, ...],
+    *,
+    extract_entities=None,
+) -> QueryRowsResolution:
+    """Risolve il knob `query_rows` in righe esplicite, `entity` compreso.
+
+    Punto d'ingresso UNICO delle strategy (ortogonale all'arm: la logica vive
+    qui, le strategy passano solo la stringa del knob): per i valori di
+    `ROW_SELECTORS` delega al selettore puro; per `entity` chiama
+    `extract_entities` (il metodo del modello GIÀ CARICATO, es.
+    `Qwen.extract_entities` — nessun secondo modello in memoria) sul blocco
+    domanda+opzioni ricostruito dai `query_tokens`, e mappa l'output alle
+    righe via `entity_rows`.
+
+    Fallback (deciso, non silenzioso): se NESSUNA frase estratta mappa
+    verbatim (parafrasi del decoder), si degrada a `question_rows` con
+    `entity_mapped=False` nei metadati — il sample non è perso e l'eval può
+    contare quanto spesso succede. Le righe risultanti restano soggette
+    all'asserzione anti-degrado delle strategy (`n_query_rows <
+    n_query_tokens`), che copre anche il fallback-del-fallback di
+    `question_rows` (prompt senza "options:").
+    """
+    if query_rows in ROW_SELECTORS:
+        return QueryRowsResolution(rows=ROW_SELECTORS[query_rows](query_tokens), mode=query_rows)
+    if query_rows != "entity":
+        raise ValueError(
+            f"query_rows sconosciuto: {query_rows!r}. Valide: {sorted(QUERY_ROWS_CHOICES)}"
+        )
+    if extract_entities is None:
+        raise ValueError(
+            "query_rows='entity' richiede un estrattore (es. `vlm.extract_entities`): "
+            "il modello caricato non lo espone?"
+        )
+    # Blocco domanda+opzioni SENZA boilerplate né generation prompt: è il
+    # contesto che si dà al decoder (le opzioni aiutano a capire la domanda,
+    # ma le parole da riportare sono SOLO quelle della domanda — vedi il
+    # system prompt in models/qwen.py::ENTITY_EXTRACTION_SYSTEM).
+    text = "".join(qt.text for qt in query_tokens)
+    cut = text.lower().find(BOILERPLATE_MARKER)
+    question_block = (text[:cut] if cut != -1 else text).strip()
+    raw = str(extract_entities(question_block)).strip()
+    phrases = tuple(p.strip() for p in raw.split(",") if p.strip())
+    rows = entity_rows(query_tokens, list(phrases))
+    if rows:
+        return QueryRowsResolution(
+            rows=rows, mode="entity",
+            entity_raw=raw, entity_phrases=phrases, entity_mapped=True,
+        )
+    logger.warning(
+        "entity %r non mappata verbatim nella domanda: fallback a query_rows='question'", raw,
+    )
+    return QueryRowsResolution(
+        rows=question_rows(query_tokens), mode="question",
+        entity_raw=raw, entity_phrases=phrases, entity_mapped=False,
+    )
+
 
 def parse_answer_meta(obj: dict) -> dict:
     """Estrae la risposta corretta MCQ da un dict, per mostrarla in UI.
@@ -619,6 +737,7 @@ def ranked_cells_from_attention(
     percentile: float = 25.0,
     border: int = 0,
     query_rows: str = "all",
+    rows: list[int] | None = None,
     sink_filter: bool = True,
 ) -> list[RankedCell]:
     """Classifica TUTTE le celle temporali di un `VisualAttention` per massa
@@ -640,6 +759,12 @@ def ranked_cells_from_attention(
     con `all`, e spostarlo renderebbe le loro celle non più confrontabili con
     quelle nuove. Si cambia per arm, dal knob `query_rows` della strategy.
 
+    `rows` (esplicite) BYPASSA `query_rows`: è il canale per le selezioni che
+    un selettore puro non può calcolare — la modalità `entity`, risolta a
+    monte da `resolve_query_rows` (che copre anche i valori puri: le strategy
+    passano sempre `rows=resolution.rows`). Stessa convenzione di
+    `AttentionCapture.aggregate`: `[]` = tutte le righe.
+
     `sink_filter` (default `True`, e ANCHE QUESTO default non va cambiato,
     stessa ragione di `query_rows`): `True` = ranking sulla vista
     `view="nonsink"` (i token-sink azzerati, comportamento storico); `False`
@@ -655,13 +780,14 @@ def ranked_cells_from_attention(
     per-sample fra arm diversi misurerebbe anche la differenza di segnale,
     non solo quella di intervento.
     """
-    try:
-        selector = ROW_SELECTORS[query_rows]
-    except KeyError:
-        raise ValueError(
-            f"query_rows sconosciuto: {query_rows!r}. Valide: {sorted(ROW_SELECTORS)}"
-        ) from None
-    rows = selector(visual_attention.query_tokens)
+    if rows is None:
+        try:
+            selector = ROW_SELECTORS[query_rows]
+        except KeyError:
+            raise ValueError(
+                f"query_rows sconosciuto: {query_rows!r}. Valide: {sorted(ROW_SELECTORS)}"
+            ) from None
+        rows = selector(visual_attention.query_tokens)
     sel = visual_attention.attn if not rows else visual_attention.attn[rows]
     heat = sel.float().mean(dim=0)  # [t, grid_h, grid_w]
     grid = GridSpec(

@@ -152,7 +152,10 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
             filter={"op_names": [f"{prefix}/predict:*"], "trace_ids": [ev.trace_id]},
             limit=5000,
         ))
-        outs = [dict(c.output) for c in calls if c.output]
+        # `_question` viene dagli INPUT del call (la strategy non la ri-emette
+        # in output): serve a --entities per affiancare domanda ed estrazione.
+        outs = [{**dict(c.output), "_question": dict(c.inputs or {}).get("question")}
+                for c in calls if c.output]
         if not outs:
             continue
         ok, checked = True, []
@@ -266,6 +269,28 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                                             f"(query_rows={want!r}, in media il "
                                             f"{100*frac:.0f}% delle righe tenute)")
 
+        # --- estrazione entity (query_rows=entity) --------------------------
+        modes = [o["query_rows_mode"] for o in outs if o.get("query_rows_mode") is not None]
+        if strat.get("query_rows") == "entity":
+            if not modes:
+                r.add("FAIL", "entity", "query_rows=entity in config ma nessun "
+                                        "`query_rows_mode` per-sample: la strategy sul "
+                                        "cluster non emette i campi entity (codice vecchio?)")
+            else:
+                weird = set(modes) - {"entity", "question"}
+                if weird:
+                    r.add("FAIL", "entity", f"query_rows_mode inattesi: {sorted(weird)}")
+                nm = len(modes)
+                mapped = sum(1 for o in outs if o.get("entity_mapped"))
+                pct = 100 * mapped / nm
+                status = "PASS" if pct >= 80 else ("WARN" if pct >= 50 else "FAIL")
+                r.add(status, "entity",
+                      f"mappata verbatim su {mapped}/{nm} sample ({pct:.0f}%), fallback a "
+                      f"`question` sugli altri {nm - mapped}"
+                      + ("" if status == "PASS" else " — sotto questa soglia l'arm gira in "
+                                                    "buona parte a query_rows=question")
+                      + " | tabella domanda→estrazione: rilancia con --entities")
+
         # --- il filtro sink è davvero spento? -------------------------------
         pairs = [(o["peak_cell"], o["peak_cell_sink_filtered"]) for o in outs
                  if o.get("peak_cell") is not None and o.get("peak_cell_sink_filtered") is not None]
@@ -345,6 +370,31 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
     return r
 
 
+def dump_entities(outs: list[dict]) -> None:
+    """Tabella domanda → estrazione, un blocco per sample, per la verifica
+    MANUALE di query_rows=entity: l'unico giudice di "l'estrazione ha senso"
+    è un umano che legge le coppie. Funziona su qualsiasi run (probe o
+    fullset): i campi stanno nei trace Weave di ogni predict."""
+    rows = [o for o in outs if o.get("query_rows_mode") is not None]
+    if not rows:
+        print("\nnessun campo entity per-sample: la run non gira a query_rows=entity "
+              "(o la strategy sul cluster non emette i campi).")
+        return
+    print(f"\n─── entity per sample ({len(rows)}) "
+          "─ ✓ mappata verbatim / ✗ fallback a `question` ───")
+    for i, o in enumerate(rows, 1):
+        mark = "✓" if o.get("entity_mapped") else "✗"
+        q = (o.get("_question") or "").strip() or "(domanda assente dagli input del call)"
+        phr = o.get("entity_phrases")
+        print(f"[{i:3}] {mark} Q: {q}")
+        line = f"        raw: {o.get('entity_raw')!r}"
+        if phr and list(phr) != [o.get("entity_raw")]:
+            line += f" | phrases: {list(phr)}"
+        if not o.get("entity_mapped"):
+            line += " | NON mappata → righe della domanda intera"
+        print(line)
+
+
 def report_generic(run) -> int:
     """Run non-eval (prefetch, sweep, ...): non c'è nozione di sample né di
     accuracy, si mostrano config e summary così come sono."""
@@ -419,6 +469,9 @@ def main() -> int:
                    help="= dataset.name per le eval. Se omesso, la run viene cercata "
                         "in tutti i progetti")
     p.add_argument("--summary-only", action="store_true", help="salta Weave (veloce)")
+    p.add_argument("--entities", action="store_true",
+                   help="stampa per ogni sample domanda + entity estratta "
+                        "(run con query_rows=entity), per la verifica manuale")
     p.add_argument("--shard-size", type=int, default=None, metavar="N",
                    help="sample per shard del fullset, per estrapolare la walltime "
                         "da una probe (Video-MME a 3 shard: 900)")
@@ -444,10 +497,15 @@ def main() -> int:
     describe(run, project)
     if not is_eval_run(run):
         return report_generic(run)
+    if a.entities and a.summary_only:
+        p.error("--entities richiede i dati per-sample: incompatibile con --summary-only")
     outs = [] if a.summary_only else per_sample_outputs(entity, project, run)
     if a.summary_only:
         print("\n(--summary-only: check per-sample saltati)")
-    return check_eval(run, outs, shard_size=a.shard_size).render()
+    rc = check_eval(run, outs, shard_size=a.shard_size).render()
+    if a.entities:
+        dump_entities(outs)
+    return rc
 
 
 if __name__ == "__main__":
