@@ -1,8 +1,10 @@
-# Tabelle risultati — Qwen3-VL-2B su Video-MME
+# Tabelle risultati — Qwen3-VL su Video-MME
 
 Solo dati. Continua `260803-tabelle_risultati.md`, che copre lo stesso filone
-su **Qwen2.5-VL-3B** (3B parametri) e resta invariato. Qui il modello è
-**Qwen3-VL-2B** (2B): un terzo in meno di parametri, generazione successiva.
+su **Qwen2.5-VL-3B** (3B parametri) e resta invariato. Qui il modello di
+riferimento è **Qwen3-VL-2B** (2B): un terzo in meno di parametri,
+generazione successiva. `§3` aggiunge la baseline di **Qwen3-VL-4B**, stessa
+famiglia a scala doppia.
 
 **Setup.** `qwen3_vl_2b_attn`, decoding greedy (`generation=precise`),
 `seed=42`, `dataset.nframes=24`, Video-MME intero senza sottotitoli, 3 shard
@@ -11,7 +13,9 @@ Qwen3-VL i `video_metadata` reali sono sempre passati al processor: la
 distinzione `meta=false`/`meta=true` di `260803 §3` non esiste qui.
 Run: [`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b)
 (baseline, job 92353) e [`video_mme-qwen3vl2b-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation)
-(arm, job 92377 `entropy_shift`, 92844/92845 `marker`).
+(arm, job 92377 `entropy_shift`, 92844/92845 `marker`). Per il 4B:
+[`video_mme-qwen3vl4b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl4b)
+(baseline, job 93328).
 
 ---
 
@@ -153,3 +157,55 @@ segno, non l'ampiezza.
   (+4.10 → −1.12 e −1.44 → +4.32). Su Qwen2.5 `counting` era l'unica categoria
   dove tutti e 9 gli arm guadagnavano e `ocr` quella dove 7 su 9 perdevano:
   nessuna delle due regolarità sopravvive al cambio di modello.
+
+---
+
+## 3. Baseline Qwen3-VL-4B (2700 sample)
+
+Stessa famiglia, scala doppia: `qwen3_vl_4b_attn` = `Qwen/Qwen3-VL-4B-Instruct`.
+Tutto il resto è invariato rispetto al setup in testa al documento (greedy,
+`seed=42`, `nframes=24`, 3 shard da 900, nessun sottotitolo). Le tre shard
+hanno girato **tutte su L40S**, quindi anche le latenze sono confrontabili
+senza correzioni.
+
+Check di correttezza (driver `/wandb`, per shard): `mcq_accuracy` presente nel
+summary su 3/3, `pred_fallback` 0/900 su 3/3, nessuna run troncata dalla
+walltime (0.88–0.89 h osservate su 4 h richieste).
+
+| shard | corretti | acc | s/sample |
+|---|---:|---:|---:|
+| 0 | 532/900 | 59.11% | 3.50 |
+| 1 | 536/900 | 59.56% | 3.55 |
+| 2 | 521/900 | 57.89% | 3.58 |
+| **pooled** | **1589/2700** | **58.85%** | 3.54 |
+
+### 2B contro 4B, baseline contro baseline
+
+| | Qwen3-VL-2B | Qwen3-VL-4B | Δ |
+|---|---:|---:|---:|
+| `baseline_24` pooled | 54.44% (1470/2700) | **58.85%** (1589/2700) | **+4.41** |
+| short | 66.89% (602/900) | **69.00%** (621/900) | +2.11 |
+| medium | 52.33% (471/900) | **56.78%** (511/900) | +4.44 |
+| long | 44.11% (397/900) | **50.78%** (457/900) | +6.67 |
+| latenza (shard L40S) | 3.32 s | 3.54 s | +0.22 s |
+
+Letture dirette:
+
+- **+4.41 pp = +119 sample su 2700**, z non appaiato = 3.27 (p ≈ 0.0011). È
+  il primo Δ di questo documento che sta chiaramente fuori dal rumore: per
+  confronto, tutti gli arm di `§1` si muovono entro ±1.4 pp, cioè ~1 SE.
+- **il guadagno cresce monotonamente con la durata del video** (+2.11 short,
+  +4.44 medium, +6.67 long). I `long` erano il punto debole del 2B (44.11%,
+  22.8 pp sotto gli `short`); il 4B ne recupera 60, e la forbice
+  short−long si stringe da 22.8 a 18.2 pp. Metà del guadagno pooled viene
+  da lì.
+- **il 4B è quasi gratis in latenza**: 3.54 contro 3.32 s/sample a parità di
+  GPU, +6.6%. Il forward è dominato dai token visivi (24 frame), non dai
+  parametri del decoder, quindi raddoppiare la scala non raddoppia il costo.
+- **conseguenza operativa**: +4.41 pp per +6.6% di tempo è un rapporto che
+  nessun arm testato finora si avvicina a produrre — `entropy_shift_24` paga
+  2.70× il tempo per +0.56 pp, i `marker_*` pagano 3.2× per −1.4 pp. Il 4B
+  diventa la baseline di riferimento per gli arm successivi; misurare
+  interventi sul 2B rischia di ottimizzare margini che la scala assorbe.
+- coerente con la probe da 60 (job 93325_0): 40/60 sul 4B contro 36 e 37/60
+  delle due probe 2B sugli stessi sample.
