@@ -91,7 +91,7 @@ def main() -> int:
     nframes = int(os.environ.get("NFRAMES", 24))
     max_pixels = int(os.environ.get("MAX_PIXELS", 151200))
 
-    cfg = load_config(["dataset=lvbench"])
+    cfg = load_config(["dataset=lvbench", "model=qwen3_vl_2b_attn"])
     rows = LVBench().loader(cfg.dataset)
     usable = [r for r in rows
               if r["video_start"] is not None and r["video_end"] is not None
@@ -117,8 +117,17 @@ def main() -> int:
                 "sink_filter": False, "rowsets": list(ROWSETS)},
     )
 
-    vlm = Qwen3VL2BAttention(torch_dtype=torch.bfloat16, device_map="auto",
-                             max_pixels=max_pixels)
+    # Modello costruito DAL PRESET, come main.py: il preset `_attn` porta
+    # `attn_implementation.text_config=qwen_attn_capture`, che è ciò che
+    # attiva la cattura — senza, `full_visual_attention` muore con
+    # "'Qwen3VLTextAttention' object has no attribute '_last_attn'" (visto
+    # nel job 93610: 60/60 sample skippati).
+    model_cfg = dict(cfg.model)
+    model_cfg.pop("name")
+    model_cfg["torch_dtype"] = {"float16": torch.float16, "bfloat16": torch.bfloat16,
+                                "float32": torch.float32}[model_cfg["torch_dtype"]]
+    model_cfg["max_pixels"] = max_pixels
+    vlm = Qwen3VL2BAttention(**model_cfg)
     gen_cfg = GenerationConfig(do_sample=False, max_new_tokens=8)  # prefill-only, non usata
     budget = SamplingBudget(nframes=nframes, max_pixels=max_pixels,
                             min_pixels=None, double_frames=False)
