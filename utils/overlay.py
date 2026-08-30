@@ -121,6 +121,84 @@ def paint_important(
     return {"font": font_name, "text_px": text_px, "band_px": band_px, "size": (w, h)}
 
 
+# --- ViKey-style: etichetta d'indice in un angolo ------------------------
+#
+# `paint_frame_index` NON è l'overlay dell'arm `visual_prompt`: quello dipinge
+# un GIUDIZIO (la parola IMPORTANT su poche celle), questo dipinge un
+# INDIRIZZO (il numero su tutte). Sono due interventi diversi che condividono
+# solo il canale — vedi docs/260901-tabelle-risultati.md e il paper ViKey
+# (arXiv 2603.23186).
+#
+# Geometria dal paper: `fontsize = min(w, h) / s` con `s = 12`, testo rosso in
+# un angolo BASSO (la loro ablazione posizionale dà BL/BR nettamente meglio di
+# TL/TR). Lo sfondo pieno dietro il testo è nostro, per lo stesso motivo per
+# cui `paint_important` usa una banda e non un contorno: il contrasto non deve
+# dipendere dal contenuto del frame.
+INDEX_TEXT_FILL = (255, 40, 40)
+INDEX_BG_FILL = (0, 0, 0)
+
+_INDEX_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right")
+
+
+def paint_frame_index(
+    src: str | Path,
+    dst: str | Path,
+    label: str,
+    *,
+    position: str = "bottom-left",
+    size_div: int = 12,
+    pad_frac: float = 0.30,
+) -> dict:
+    """Dipinge `label` (es. "frame #07") in un angolo, su sfondo pieno.
+
+    Come `paint_important`: `src` e `dst` possono coincidere e la dimensione
+    dell'immagine NON cambia (asserito) — allargare il canvas cambierebbe
+    l'aspect ratio e quindi la griglia di `smart_resize`.
+
+    `pad_frac` è il padding attorno al testo in frazione del corpo.
+    Ritorna `{"font", "text_px", "box", "size"}`.
+    """
+    if position not in _INDEX_POSITIONS:
+        raise ValueError(f"position sconosciuta: {position!r}. Valide: {list(_INDEX_POSITIONS)}")
+    if size_div <= 0:
+        raise ValueError(f"size_div dev'essere > 0: {size_div!r}")
+
+    img = Image.open(src).convert("RGB")
+    w, h = img.size
+
+    text_px = max(1, int(min(w, h) / size_div))
+    font, font_name = _load_font(text_px)
+    draw = ImageDraw.Draw(img)
+
+    # Stessa difesa di `paint_important`: su frame stretti l'etichetta non ci
+    # sta in larghezza e va rimpicciolita finché entra.
+    while text_px > _MIN_TEXT_PX and draw.textlength(label, font=font) > _MAX_TEXT_WIDTH_FRAC * w:
+        text_px -= 2
+        font = font.font_variant(size=text_px)
+    if text_px <= _MIN_TEXT_PX:
+        raise RuntimeError(
+            f"etichetta illeggibile: corpo sceso a {text_px}px su un frame "
+            f"{w}x{h} (size_div={size_div}, label={label!r})."
+        )
+
+    bbox = draw.textbbox((0, 0), label, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad = max(1, round(pad_frac * text_px))
+    bw, bh = tw + 2 * pad, th + 2 * pad
+
+    x0 = pad if position.endswith("-left") else w - bw - pad
+    y0 = pad if position.startswith("top-") else h - bh - pad
+    x0, y0 = max(0, x0), max(0, y0)
+
+    draw.rectangle([x0, y0, x0 + bw, y0 + bh], fill=INDEX_BG_FILL)
+    draw.text((x0 + pad - bbox[0], y0 + pad - bbox[1]), label, font=font, fill=INDEX_TEXT_FILL)
+
+    if img.size != (w, h):
+        raise RuntimeError(f"etichetta ha cambiato la dimensione: {(w, h)} -> {img.size}")
+    img.save(dst)
+    return {"font": font_name, "text_px": text_px, "box": (x0, y0, bw, bh), "size": (w, h)}
+
+
 if __name__ == "__main__":
     # Verifica §8.0 del piano (docs/piano_visual_prompting.md, appendice A):
     # dipinge un frame ai tre height_frac candidati, applica lo smart_resize
