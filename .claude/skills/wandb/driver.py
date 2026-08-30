@@ -214,6 +214,20 @@ class Report:
         return 1 if n_fail else 0
 
 
+def _norm_text(t: str | None) -> str:
+    """Normalizzazione per confrontare entity_raw con la domanda: solo
+    alfanumerici+spazi, lowercase, spazi collassati."""
+    return " ".join("".join(ch for ch in (t or "").lower()
+                            if ch.isalnum() or ch.isspace()).split())
+
+
+def _entity_degenerate(o: dict) -> bool:
+    """Mappata ma copia integrale della domanda: righe ≡ `question`,
+    nessun guadagno di segnale rispetto al fallback."""
+    return bool(o.get("entity_mapped")) and bool(o.get("_question")) and \
+        _norm_text(o.get("entity_raw")) == _norm_text(o.get("_question"))
+
+
 def _vals(outs: list[dict], key: str) -> list:
     return [o[key] for o in outs if o.get(key) is not None]
 
@@ -282,11 +296,14 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                     r.add("FAIL", "entity", f"query_rows_mode inattesi: {sorted(weird)}")
                 nm = len(modes)
                 mapped = sum(1 for o in outs if o.get("entity_mapped"))
-                pct = 100 * mapped / nm
+                degen = sum(1 for o in outs if _entity_degenerate(o))
+                useful = mapped - degen
+                pct = 100 * useful / nm
                 status = "PASS" if pct >= 80 else ("WARN" if pct >= 50 else "FAIL")
                 r.add(status, "entity",
-                      f"mappata verbatim su {mapped}/{nm} sample ({pct:.0f}%), fallback a "
-                      f"`question` sugli altri {nm - mapped}"
+                      f"estrazione UTILE su {useful}/{nm} sample ({pct:.0f}%): "
+                      f"{mapped} mappate verbatim, di cui {degen} copie integrali della "
+                      f"domanda (degeneri ≡ question), {nm - mapped} fallback a `question`"
                       + ("" if status == "PASS" else " — sotto questa soglia l'arm gira in "
                                                     "buona parte a query_rows=question")
                       + " | tabella domanda→estrazione: rilancia con --entities")
@@ -380,17 +397,20 @@ def dump_entities(outs: list[dict]) -> None:
         print("\nnessun campo entity per-sample: la run non gira a query_rows=entity "
               "(o la strategy sul cluster non emette i campi).")
         return
-    print(f"\n─── entity per sample ({len(rows)}) "
-          "─ ✓ mappata verbatim / ✗ fallback a `question` ───")
+    print(f"\n─── entity per sample ({len(rows)}) ─ ✓ mappata / "
+          "≈ copia integrale della domanda / ✗ fallback a `question` ───")
     for i, o in enumerate(rows, 1):
-        mark = "✓" if o.get("entity_mapped") else "✗"
+        degen = _entity_degenerate(o)
+        mark = "≈" if degen else ("✓" if o.get("entity_mapped") else "✗")
         q = (o.get("_question") or "").strip() or "(domanda assente dagli input del call)"
         phr = o.get("entity_phrases")
         print(f"[{i:3}] {mark} Q: {q}")
         line = f"        raw: {o.get('entity_raw')!r}"
         if phr and list(phr) != [o.get("entity_raw")]:
             line += f" | phrases: {list(phr)}"
-        if not o.get("entity_mapped"):
+        if degen:
+            line += " | copia integrale della domanda (degenere)"
+        elif not o.get("entity_mapped"):
             line += " | NON mappata → righe della domanda intera"
         print(line)
 

@@ -240,12 +240,17 @@ def resolve_query_rows(
             "query_rows='entity' richiede un estrattore (es. `vlm.extract_entities`): "
             "il modello caricato non lo espone?"
         )
-    # Blocco domanda+opzioni SENZA boilerplate né generation prompt: è il
-    # contesto che si dà al decoder (le opzioni aiutano a capire la domanda,
-    # ma le parole da riportare sono SOLO quelle della domanda — vedi il
-    # system prompt in models/qwen.py::ENTITY_EXTRACTION_SYSTEM).
+    # SOLO la domanda al decoder, senza opzioni (scelta 2026-08-30, dopo il
+    # probe 93525_0): con le opzioni in input il prior "MCQ → rispondi" del
+    # 2B vinceva 2 volte su 3 e l'estrazione tornava un'opzione invece del
+    # soggetto. Togliere il grilletto batte qualsiasi istruzione — vedi il
+    # system prompt in models/qwen.py::ENTITY_EXTRACTION_SYSTEM. Fallback al
+    # taglio sul boilerplate per prompt senza "options:".
     text = "".join(qt.text for qt in query_tokens)
-    cut = text.lower().find(BOILERPLATE_MARKER)
+    lowered = text.lower()
+    cut = lowered.find("options:")
+    if cut == -1:
+        cut = lowered.find(BOILERPLATE_MARKER)
     question_block = (text[:cut] if cut != -1 else text).strip()
     raw = str(extract_entities(question_block)).strip()
     phrases = tuple(p.strip() for p in raw.split(",") if p.strip())

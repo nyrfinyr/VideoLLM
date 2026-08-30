@@ -32,15 +32,34 @@ _VIDEO_METADATA_KEY = "_video_metadata"
 # Le opzioni sono nel contesto (aiutano a disambiguare la domanda) ma il
 # prompt vieta esplicitamente di attingervi parole. Costante di modulo e non
 # knob: è il testo dell'intervento, cambiarla cambia l'esperimento.
+# v3 dopo il probe 93525_0 (2026-08-30, 60 sample): la v1 (system prompt,
+# domanda+opzioni in input) falliva sul 2B in ~2 casi su 3 — il prior
+# "MCQ → rispondi" vinceva e il modello sputava un'opzione, oppure copiava
+# l'intera domanda. Da qui: (a) SOLO la domanda in input, niente opzioni —
+# il grilletto del prior sparisce alla fonte (taglio a monte in
+# utils/attn_core.py::resolve_query_rows); (b) divieti espliciti; (c) due
+# esempi few-shot sintetici (non da Video-MME) nello stesso formato
+# `Question:` del question_block reale: per un 2B il formato dimostrato
+# vale più dell'istruzione.
 ENTITY_EXTRACTION_SYSTEM = (
     "You extract the SUBJECT(S) of a question: the entity or entities the "
     "question is about. A subject can be a thing, a person, or an action, and "
-    "can span multiple words; there may be more than one subject. The answer "
-    "options, when present, are context to help you understand the question. "
-    "Report the subject(s) using EXACTLY the words as they appear in the "
-    "QUESTION (verbatim: the same words, no synonyms, no paraphrase, no extra "
-    "words, never words taken from the options). Separate multiple subjects "
-    "with commas. Output only the subject words."
+    "can span multiple words; there may be more than one subject. "
+    "Do NOT answer the question. Do NOT repeat the whole question. Copy the "
+    "subject(s) EXACTLY as written in the question (same words, no synonyms, "
+    "no paraphrase, no extra words). Separate multiple subjects with commas. "
+    "Output only the subject words: a few words, nothing else."
+)
+
+ENTITY_EXTRACTION_EXAMPLES = (
+    (
+        "Question: What color is the jacket worn by the man playing the guitar?",
+        "jacket, man playing the guitar",
+    ),
+    (
+        "Question: Why does the dog run away at the beginning of the video?",
+        "dog, run away",
+    ),
 )
 
 
@@ -423,16 +442,20 @@ class Qwen(BaseVLM):
         (`do_sample=False`): l'estrazione deve essere deterministica a parità
         di domanda, indipendente dalla `GenerationConfig` dell'arm.
 
-        `question_block` è il testo domanda+opzioni (senza boilerplate),
-        tipicamente ricostruito dai `query_tokens` da
-        `utils.attn_core.resolve_query_rows`. Ritorna la stringa grezza del
-        decoder (soggetti separati da virgola); il mapping alle righe di
-        attenzione avviene a valle, non qui.
+        `question_block` è il testo della SOLA domanda (senza opzioni né
+        boilerplate: le opzioni innescavano il prior "MCQ → rispondi" del
+        2B, vedi ENTITY_EXTRACTION_EXAMPLES), tipicamente ricostruito dai
+        `query_tokens` da `utils.attn_core.resolve_query_rows`. Ritorna la
+        stringa grezza del decoder (soggetti separati da virgola); il
+        mapping alle righe di attenzione avviene a valle, non qui.
         """
         messages = [
             {"role": "system", "content": [{"type": "text", "text": ENTITY_EXTRACTION_SYSTEM}]},
-            {"role": "user", "content": [{"type": "text", "text": question_block}]},
         ]
+        for ex_q, ex_subjects in ENTITY_EXTRACTION_EXAMPLES:
+            messages.append({"role": "user", "content": [{"type": "text", "text": ex_q}]})
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": ex_subjects}]})
+        messages.append({"role": "user", "content": [{"type": "text", "text": question_block}]})
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
