@@ -283,6 +283,41 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                                             f"(query_rows={want!r}, in media il "
                                             f"{100*frac:.0f}% delle righe tenute)")
 
+        # --- coarse_to_fine: gate, discesa, costo ---------------------------
+        steps = _vals(outs, "n_steps")
+        if steps:
+            from collections import Counter as _C
+            dist = _C(steps)
+            closed = sum(1 for o in outs if o.get("gate_closed"))
+            zoomed = sum(1 for o in outs if o.get("zoomed"))
+            depths = [o["final_depth"] for o in outs if o.get("final_depth") is not None]
+            mx = max(steps)
+            at_max = sum(1 for x in steps if x == mx)
+            r.add("INFO", "c2f passi",
+                  ", ".join(f"{k}×{v}" for k, v in sorted(dist.items()))
+                  + f" (media {statistics.fmean(steps):.2f})")
+            pct_closed = 100 * closed / n
+            r.add("PASS" if 10 <= pct_closed <= 90 else "WARN", "c2f gate",
+                  f"chiuso su {closed}/{n} sample ({pct_closed:.0f}%)"
+                  + ("" if 10 <= pct_closed <= 90 else
+                     " — soglia da ricalibrare: a questo regime il gate non discrimina"))
+            if depths:
+                deep = sum(1 for d in depths if d > 0)
+                r.add("PASS" if deep else "FAIL", "c2f discesa",
+                      f"{zoomed}/{n} sample hanno zoomato, {deep}/{n} rispondono da una "
+                      f"vista zoomata (profondità media {statistics.fmean(depths):.2f})"
+                      + ("" if deep else " — NESSUNA risposta viene da uno zoom: è la baseline con più forward"))
+            spans = [o["final_span_sec"] for o in outs if o.get("final_span_sec")]
+            durs = [o["video_duration_sec"] for o in outs if o.get("video_duration_sec")]
+            if spans and durs:
+                r.add("INFO", "  c2f finestra finale",
+                      f"mediana {statistics.median(spans):.0f} s su video da "
+                      f"{statistics.median(durs):.0f} s "
+                      f"({100*statistics.median(spans)/statistics.median(durs):.1f}% del video)")
+            if at_max == n:
+                r.add("WARN", "  c2f costo", f"tutti i {n} sample usano {mx} passi: "
+                                             f"nessun risparmio dal gate")
+
         # --- estrazione entity (query_rows=entity) --------------------------
         modes = [o["query_rows_mode"] for o in outs if o.get("query_rows_mode") is not None]
         if strat.get("query_rows") == "entity":

@@ -4,6 +4,7 @@ per side-effect di registrazione (`Strategy.get` scansiona
 """
 from .attention_highlight import AttentionHighlightStrategy
 from .attention_marker import AttentionMarkerStrategy
+from .coarse_to_fine import CoarseToFineStrategy
 from .base import SamplingBudget, Strategy
 from .entropy_attention_resample import EntropyAttentionResampleStrategy
 from .entropy_shortcut import EntropyShortcutStrategy
@@ -13,6 +14,7 @@ from .visual_prompt import VisualPromptStrategy
 __all__ = [
     "AttentionHighlightStrategy",
     "AttentionMarkerStrategy",
+    "CoarseToFineStrategy",
     "EntropyAttentionResampleStrategy",
     "EntropyShortcutStrategy",
     "SamplingBudget",

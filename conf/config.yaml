@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt | coarse_to_fine)
 
 model:
   qwen2_5_vl_3b:
@@ -263,6 +263,21 @@ strategy:
                                  # silenzio). Ri-verificabile con
                                  # scripts/probe_overlay_legibility.py.
     capture_attention: false     # opt-in: dump capture.pt/frames per attn_explorer
+
+  coarse_to_fine:
+    name: coarse_to_fine
+    # Zoom iterativo: a ogni passo si ricampionano `nframes` frame DENTRO la
+    # regione più promettente del ranking accumulato, finché l'entropia della
+    # risposta scende sotto soglia. Vedi strategies/coarse_to_fine.py.
+    max_steps: 3                 # forward con cattura al massimo (1 = baseline)
+    entropy_threshold: 0.7       # gate: entropia <= soglia → accetta e rispondi
+    min_region_sec: 30.0         # sotto questa durata non si scende oltre
+    region_select: attention     # (attention | random) random = CONTROLLO appaiato
+    random_seed: 0
+    query_rows: question         # (all | qopts | question | entity)
+    sink_filter: false
+    sink_percentile: 25.0        # conta solo se sink_filter=true
+    sink_border: 0
 
 wandb:
   default:

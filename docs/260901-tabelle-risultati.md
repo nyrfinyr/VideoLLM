@@ -1,136 +1,200 @@
-# Tabelle risultati — Qwen3-VL su Video-MME
+# Risultati — Qwen3-VL su Video-MME e LVBench
 
-Solo dati. Continua `260803-tabelle_risultati.md`, che copre lo stesso filone
-su **Qwen2.5-VL-3B** (3B parametri) e resta invariato. Qui il modello di
-riferimento è **Qwen3-VL-2B** (2B): un terzo in meno di parametri,
-generazione successiva. `§3` aggiunge la baseline di **Qwen3-VL-4B**, stessa
-famiglia a scala doppia.
+Solo tabelle e schemi. Letture, caveat e ragionamenti in
+[`260901-comments.md`](260901-comments.md). Continua
+`260803-tabelle_risultati.md` (stesso filone su Qwen2.5-VL-3B, invariato).
 
-**Setup.** `qwen3_vl_2b_attn`, decoding greedy (`generation=precise`),
-`seed=42`, `dataset.nframes=24`, Video-MME intero senza sottotitoli, 3 shard
-SLURM da 900 sample — accuracy **pooled** (Σ corretti / Σ campioni). Su
-Qwen3-VL i `video_metadata` reali sono sempre passati al processor: la
-distinzione `meta=false`/`meta=true` di `260803 §3` non esiste qui.
-Run: [`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b)
-(baseline, job 92353) e [`video_mme-qwen3vl2b-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation)
-(arm, job 92377 `entropy_shift`, 92844/92845 `marker`). Per il 4B:
+**Setup.** `qwen3_vl_2b_attn`, greedy (`generation=precise`), `seed=42`,
+`nframes=24`, Video-MME intero senza sottotitoli, 3 shard da 900 — accuracy
+**pooled** (Σ corretti / Σ campioni). Run wandb:
+[`video_mme-qwen3vl2b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b)
+(baseline, job 92353),
+[`video_mme-qwen3vl2b-ablation`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation)
+(arm: 92377 `entropy_shift`, 92844/92845 `marker`, 94528/94532
+`visual_prompt`),
 [`video_mme-qwen3vl4b`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl4b)
-(baseline, job 93328).
+(baseline 4B, job 93328).
 
 ---
 
-## 1. Arm su Qwen3-VL-2B (2700 sample)
+## 1. Il quadro: due modi di usare il segnale
 
-Colonne come in `260803 §1`. `% resampling` = quota di sample su cui è
-scattato il gate d'entropia al pass 1; `acc | high/low ans entropy` = accuracy
-condizionata al gate — vuote per i `marker_*`, che girano con
-`always_highlight=true` e quindi intervengono su tutti i sample, senza gate.
-`entropy_shift_24` instrada nel ramo `phase_shift` il 100% dei sample
-ricampionati (`concentration_threshold=101`), quindi le colonne di ramo di
-`260803` qui non aggiungono nulla.
-
-`marker_24` / `marker_random_24` = arm `attention_marker`
-(`docs/piano_marcatori_frame_qwen3.md`; implementazione in
-`docs/attention_marker_implementazione.md`): la cella di picco è racchiusa fra
-`<START_IMPORTANT_FRAME>`/`<END_IMPORTANT_FRAME>` inseriti DENTRO il flusso
-visivo, più un'istruzione fissa che li spiega. `top_k=1`,
-`query_rows=question`, `sink_filter=false`; job 92844 (`cell_select=attention`)
-e 92845 (`cell_select=random`).
-
-⚠️ `query_rows`/`sink_filter` dei due `marker_*` differiscono dagli altri arm
-di questa tabella e di `260803`, che classificano le celle CON filtro sink su
-tutte le righe: un confronto `marker_*` contro `entropy_shift_24` mescolerebbe
-due cambiamenti. Per i marcatori il confronto valido è quello **interno**,
-`attention` contro `random`. La baseline resta comparabile con tutti perché
-`uniform` non classifica celle.
-
-| arm | pooled | Δ vs `baseline_24` | short | medium | long | % resampling | acc \| high ans entropy | acc \| low ans entropy |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `baseline_24` | **54.44%** (1470/2700) | — (riferimento) | 66.89% (602/900) | 52.33% (471/900) | 44.11% (397/900) | — | — | — |
-| `entropy_shift_24` | **55.00%** (1485/2700) | **+0.56** | 67.78% (610/900) | 52.11% (469/900) | 45.11% (406/900) | 53.70% (1450/2700) | 37.86% (549/1450) | 74.88% (936/1250) |
-| `marker_24` (attention) | **53.04%** (1432/2700) | **−1.41** | 66.33% (597/900) | 49.56% (446/900) | 43.22% (389/900) | — | — | — |
-| `marker_random_24` (random) | **53.11%** (1434/2700) | **−1.33** | 66.44% (598/900) | 49.89% (449/900) | 43.00% (387/900) | — | — | — |
-
-Letture dirette:
-
-- **`entropy_shift_24`: +0.56 pp = 15 sample su 2700**, e la N effettiva è
-  1450, non 2700: sui 1250 sample con gate chiuso l'arm restituisce la
-  risposta del pass 1, cioè quella della baseline. Il z non appaiato vale
-  +0.41 (p ≈ 0.68); il test appaiato sui 1450 ricampionati richiede le righe
-  Weave, non i summary.
-- il salto 37.86% → 74.88% fra gate aperto e chiuso è **effetto di selezione**
-  (il gate manda al pass 2 i sample intrinsecamente più difficili), non una
-  misura di efficacia del ricampionamento — stessa lettura di `260803 §1`.
-- **`marker_24` − `marker_random_24` = −2 sample su 2700 (−0.07 pp)**: i due
-  arm sono indistinguibili. Non è mancata applicazione — `marked` 900/900 su
-  tutte e sei le eval, e le celle scelte dai due criteri differiscono nel
-  35–40% dei sample (`peak_cell` vs `peak_cell_sink_filtered`). **Marcare il
-  frame "giusto" non vale più che marcarne uno a caso**: il segnale
-  d'attenzione non è ciò che manca al modello.
-- **entrambi i `marker_*` stanno sotto la baseline** di 1.3–1.4 pp. La SE non
-  appaiata su una differenza fra proporzioni a n=2700 vale ≈1.36 pp, quindi il
-  calo è ~1 SE: suggestivo, non stabilito. Il test appaiato contro
-  `baseline_24` non è fattibile — `uniform` non ri-emette campi per-sample,
-  quindi le sue Evaluation Weave non sono attribuibili ai singoli shard.
-- **costo dei `marker_*` ~3.2× la baseline** (10.7 contro 3.1–3.4 s/sample):
-  con `always_highlight=true` ogni sample paga estrazione PNG di tutti i 24
-  frame + secondo pass, nessuno è esente. Il calo si concentra su **`medium`**
-  (52.33 → 49.56, −25 sample); `short` e `long` si muovono di meno di 1 pp.
-- correttezza dei `marker_*` verificata sulle 6 Evaluation Weave distinte
-  (5400 sample): `marked` 900/900, `n_query_rows < n_query_tokens` 900/900,
-  blocchi pari con `somma(block_sizes)/2 == t_cells` 900/900, `pred_fallback`
-  4/5400 (0.07%).
-- **esito dei marcatori: arm chiuso.** Il controllo pareggia il treatment,
-  quindi non è la scelta della cella a essere sbagliata ma il canale: non ha
-  senso spendere GPU su varianti dei knob (`sink_filter`, `top_k`) dello
-  stesso intervento.
+```mermaid
+flowchart LR
+    S["segnale di attenzione<br/>domanda → token visivi<br/>= cella di picco"]
+    S --> M["MARCARE<br/>dire al modello dove guardare<br/>frame invariati"]
+    S --> R["RICAMPIONARE<br/>cambiare i frame che vede"]
+    M --> M1["A · attention_highlight<br/>puntatore testuale"]
+    M --> M2["B · attention_marker<br/>token nel flusso visivo"]
+    M --> M3["C · visual_prompt<br/>pixel dipinti"]
+    R --> R1["entropy_shift<br/>ricampionamento a fase spostata"]
+    M1 --> X["≈ 0 contro il controllo random"]
+    M2 --> X
+    M3 --> X
+    R1 --> Y["+0.56 pp · soffitto +16 pp<br/>oracolo §5"]
+    style X fill:#fde2e2,stroke:#c0392b
+    style Y fill:#e2f6e2,stroke:#27ae60
+```
 
 ---
 
-## 2. Stesso arm sui due modelli
+## 2. Arm su Qwen3-VL-2B (2700 sample)
 
-`entropy_shift_24` con knob identici (`entropy_threshold=0.7`,
-`branch_selector=concentration`, `concentration_threshold=101`), stesso
-benchmark, stesso `nframes`. Righe Qwen2.5 da `260803 §1`.
+`query_rows`/`sink_filter` = su quale segnale l'arm classifica le celle.
+Fra parentesi il Δ contro la baseline della stessa fascia.
+**SE della differenza: ±1.36 pp sul pooled, ±2.35 pp per fascia.**
+
+| arm | `query_rows` | `sink_filter` | pooled | Δ | short | medium | long |
+|---|---|---|---:|---:|---:|---:|---:|
+| `baseline_24` | — | — | **54.44%** (1470/2700) | — | 66.89% | 52.33% | 44.11% |
+| `entropy_shift_24` | `all` | `true` | **55.00%** (1485/2700) | **+0.56** | 67.78% (+0.89) | 52.11% (−0.22) | 45.11% (+1.00) |
+| `marker_24` (attention) | `question` | `false` | **53.04%** (1432/2700) | −1.41 | 66.33% (−0.56) | 49.56% (−2.78) | 43.22% (−0.89) |
+| `marker_random_24` (random) | `question` | `false` | **53.11%** (1434/2700) | −1.33 | 66.44% (−0.44) | 49.89% (−2.44) | 43.00% (−1.11) |
+| `visual_prompt_24` (attention) | `entity` | `true` | **53.48%** (1444/2700) | −0.96 | 65.89% (−1.00) | 51.44% (−0.89) | 43.11% (−1.00) |
+| `visual_prompt_24_random` (random) | `entity` | `true` | **53.52%** (1445/2700) | −0.92 | 66.22% (−0.67) | 50.78% (−1.56) | 43.56% (−0.56) |
+
+**Il confronto che conta è interno** — treatment contro il proprio controllo,
+a parità di ogni knob:
+
+| coppia | Δ | in sample |
+|---|---:|---:|
+| `marker_24` − `marker_random_24` | −0.07 pp | **−2 / 2700** |
+| `visual_prompt_24` − `visual_prompt_24_random` | −0.04 pp | **−1 / 2700** |
+
+Gate d'entropia (solo `entropy_shift_24`; gli altri arm girano con
+`always_highlight=true`, nessun gate): % resampling **53.70%** (1450/2700),
+acc | high ans entropy 37.86%, acc | low ans entropy 74.88%.
+
+### 2.1 Dove vanno le risposte — `visual_prompt` (2700)
+
+| | rotti | recuperati | netto |
+|---|---:|---:|---:|
+| `visual_prompt_24` (attention) | 156 / 1476 (10.6%) | 123 / 1223 (10.1%) | −33 |
+| `visual_prompt_24_random` | 151 / 1477 (10.2%) | 119 / 1223 (9.7%) | −32 |
+
+---
+
+## 3. I tre meccanismi
+
+### 3.1 Selezione delle righe-query: `query_rows=entity`
+
+Quali righe della domanda entrano nella media dell'attenzione.
+
+```mermaid
+flowchart TD
+    Q["prompt MCQ<br/>domanda + 4 opzioni + boilerplate"] --> CUT["taglio a 'options:'<br/>resta la SOLA domanda"]
+    CUT --> DEC["decoder già in memoria<br/>chiamata solo-testo, greedy, 32 token<br/>system prompt + 3 esempi few-shot"]
+    DEC --> OUT{"output"}
+    OUT -->|"UNA sequenza contigua<br/>es. 'rope'"| MATCH{"match verbatim<br/>nella domanda"}
+    OUT -->|"NONE · domanda senza soggetto · 18%"| FB["righe della domanda intera<br/>fallback tracciato per sample"]
+    MATCH -->|"trovata · 63%"| ROWS["righe-query = token del soggetto<br/>11% delle righe del prompt"]
+    MATCH -->|"non mappa · 19%"| FB
+    ROWS --> AGG["media attenzione su quelle righe<br/>→ cella di picco"]
+    FB --> AGG
+    style ROWS fill:#e2f6e2,stroke:#27ae60
+    style FB fill:#fdf3e2,stroke:#e67e22
+```
+
+| `query_rows` | righe mediate |
+|---|---|
+| `all` (regime storico) | 100% del prompt |
+| `question` | ~24% |
+| `entity` (v4) | **~11%** |
+
+Percentuali di esito misurate sul fullset (shard 0, 900 sample). Tre
+iterazioni del prompt di estrazione: v1 → 8/60 utili; v3 → 60/60 mappate ma
+prolisse; **v4** → 40/50 utili sui non-NONE (`260901-comments.md` §6.2).
+
+### 3.2 `attention_marker` — segnale consegnato come token
+
+```mermaid
+flowchart LR
+    subgraph P1["pass 1"]
+        A["24 frame uniformi"] --> B["forward con cattura"]
+        B --> C["attenzione domanda → token visivi"]
+        C --> D["cella di picco = 2 frame"]
+    end
+    subgraph P2["pass 2 · stessi frame"]
+        E["token START/END IMPORTANT_FRAME<br/>inseriti DENTRO il flusso visivo"]
+        E --> F["+ istruzione fissa che li spiega"]
+        F --> G["risposta"]
+    end
+    D --> E
+    D -.->|"arm di controllo"| H["cella a caso"]
+    H -.-> E
+    style H fill:#eef0f2,stroke:#7f8c8d
+```
+
+### 3.3 `visual_prompt` — stesso segnale consegnato come pixel
+
+```mermaid
+flowchart LR
+    subgraph P1["pass 1"]
+        A["24 frame uniformi"] --> B["forward con cattura"]
+        B --> C["cella di picco = 2 frame"]
+    end
+    subgraph P2["pass 2 · stessa struttura token"]
+        D["estrazione PNG dei 24 frame"]
+        D --> E["parola IMPORTANT dipinta sui 2 frame<br/>banda in basso, 12% dell'altezza"]
+        E --> F["+ istruzione che nomina la parola"]
+        F --> G["risposta"]
+    end
+    C --> D
+    C -.->|"arm di controllo"| H["cella a caso"]
+    H -.-> E
+    style H fill:#eef0f2,stroke:#7f8c8d
+```
+
+Nessuno split del blocco video, dimensione dei frame invariata: **struttura
+dei token identica alla baseline**, cambia solo il contenuto dei pixel.
+
+| | `marker_*` | `visual_prompt_*` |
+|---|---|---|
+| canale | token inline | pixel dipinti |
+| `query_rows` | `question` | `entity` |
+| `sink_filter` | `false` | `true` |
+| `top_k` / `always_highlight` | 1 / `true` | 1 / `true` |
+| geometria overlay | — | `bottom`, `height_frac=0.12` |
+| costo vs baseline | 3.2× | 3.5× |
+
+---
+
+## 4. Scala del modello: 2B contro 4B (baseline, 2700)
+
+| | Qwen3-VL-2B | Qwen3-VL-4B | Δ |
+|---|---:|---:|---:|
+| pooled | 54.44% (1470/2700) | **58.85%** (1589/2700) | **+4.41** |
+| short | 66.89% | **69.00%** | +2.11 |
+| medium | 52.33% | **56.78%** | +4.44 |
+| long | 44.11% | **50.78%** | **+6.67** |
+| latenza (shard L40S) | 3.32 s | 3.54 s | +6.6% |
+
+z = 3.27 (p ≈ 0.0011) — **l'unico Δ del filone fuori dal rumore**.
+
+| intervento | Δ accuracy | costo |
+|---|---:|---:|
+| `entropy_shift_24` (2B) | +0.56 pp | 2.70× |
+| `marker_*` (2B) | −1.4 pp | 3.2× |
+| `visual_prompt_*` (2B) | −0.9 pp | 3.5× |
+| **passare al 4B** | **+4.41 pp** | **1.07×** |
+
+### 4.1 Stesso arm sui due modelli (`entropy_shift_24`)
 
 | | Qwen2.5-VL-3B | Qwen3-VL-2B |
 |---|---:|---:|
-| parametri | 3B | **2B** |
-| `baseline_24` pooled | 55.04% (1486/2700) | 54.44% (1470/2700) |
-| `entropy_shift_24` pooled | 55.63% (1502/2700) | 55.00% (1485/2700) |
+| `baseline_24` | 55.04% | 54.44% |
+| `entropy_shift_24` | 55.63% | 55.00% |
 | **Δ arm − baseline** | **+0.59** | **+0.56** |
-| % resampling | 73.15% (1975/2700) | **53.70%** (1450/2700) |
-| acc \| high ans entropy | 43.59% | 37.86% |
-| acc \| low ans entropy | 88.41% | 74.88% |
-| latenza baseline (solo shard L40S) | 3.77 s | 3.32 s |
-| latenza arm (solo shard L40S) | 6.36 s | 8.97 s |
+| % resampling | 73.15% | **53.70%** |
 | costo arm / baseline | 1.69× | **2.70×** |
 | sovraccosto per sample ricampionato | 3.54 s | **10.5 s** |
 
-1. **Il Δ è replicato quasi esattamente (+0.59 → +0.56)**: il nulla misurato
-   su Qwen2.5 non era una proprietà di quel modello. Vale anche per le
-   baseline — il 2B sta a −0.60 pp dal 3B con un terzo dei parametri in meno.
-2. **Il gate non si trasferisce.** A soglia invariata si apre sul 53.70% dei
-   sample invece che sul 73.15%, e separa meno (37.86/74.88 contro
-   43.59/88.41). I due arm **non sono compute-matched fra modelli**: per
-   appaiare la frazione ricampionata la soglia va ricalibrata su Qwen3, non
-   riusata.
-3. **Il costo relativo è più alto nonostante meno sample al pass 2.** Le
-   latenze sono a parità di GPU (solo shard L40S; su Qwen2.5 lo shard 0 girava
-   su Quadro RTX 6000 ed è escluso). I forward di base sono quasi uguali, la
-   differenza sta tutta nell'intervento: `6.36 = 3.77 + 0.7315·x → x = 3.54 s`
-   contro `8.97 = 3.32 + 0.5370·x → x = 10.5 s`, cioè **~3× per sample
-   ricampionato**. Causa non misurata (cattura d'attenzione o estrazione PNG
-   del ramo `phase_shift`): da profilare prima di altri arm signal-driven su
-   Qwen3.
+### 4.2 Breakdown per task type (`entropy_shift_24`)
 
-### Breakdown per task type
+In grassetto ogni arm sopra la **propria** baseline. Cinque categorie stanno
+sotto i 180 sample, dove 2 pp è un sample solo: conta il segno.
 
-In grassetto ogni arm sopra la **propria** baseline. `Δ` in pp; a queste N
-(cinque categorie sotto i 180 sample, dove 2 pp è un sample solo) conta il
-segno, non l'ampiezza.
-
-| task type | n | Qwen2.5-3B `baseline_24` | Qwen2.5-3B `entropy_shift_24` | Δ | Qwen3-2B `baseline_24` | Qwen3-2B `entropy_shift_24` | Δ |
+| task type | n | 2.5-3B base | 2.5-3B arm | Δ | 3-2B base | 3-2B arm | Δ |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | action reasoning | 285 | 52.98 | **53.33** | +0.35 | 44.21 | **46.32** | +2.11 |
 | action recognition | 313 | 51.76 | 51.12 | −0.64 | 53.04 | **54.31** | +1.28 |
@@ -146,139 +210,81 @@ segno, non l'ampiezza.
 | temporal reasoning | 177 | 38.98 | 36.72 | −2.26 | 36.16 | **37.85** | +1.69 |
 | **↑ / ↓ vs baseline** | | | | **7 / 5** | | | **7 / 5** |
 
-- **Il segno concorda su 6 categorie su 12**: appena sopra il caso. Il Δ
-  pooled quasi identico fra i due modelli non nasce dallo stesso pattern per
-  task, ma da compensazioni diverse.
-- **`temporal perception` è l'unica categoria che perde su entrambi**, con lo
-  stesso Δ (−7.27 pp, −4 sample): la categoria che dovrebbe beneficiare di più
-  del ricampionamento temporale è quella che peggiora di più. Su Qwen2.5 era
-  0 arm su 9 sopra la baseline (`260803 §1b`), qui il segno si ripete.
-- **`counting problem` e `ocr problems` si invertono fra i due modelli**
-  (+4.10 → −1.12 e −1.44 → +4.32). Su Qwen2.5 `counting` era l'unica categoria
-  dove tutti e 9 gli arm guadagnavano e `ocr` quella dove 7 su 9 perdevano:
-  nessuna delle due regolarità sopravvive al cambio di modello.
-
 ---
 
-## 3. Baseline Qwen3-VL-4B (2700 sample)
+## 5. Oracolo su LVBench: marcare o ricampionare?
 
-Stessa famiglia, scala doppia: `qwen3_vl_4b_attn` = `Qwen/Qwen3-VL-4B-Instruct`.
-Tutto il resto è invariato rispetto al setup in testa al documento (greedy,
-`seed=42`, `nframes=24`, 3 shard da 900, nessun sottotitolo). Le tre shard
-hanno girato **tutte su L40S**, quindi anche le latenze sono confrontabili
-senza correzioni.
+Benchmark con la **finestra d'evidenza annotata**: si punta / si ricampiona
+sul posto giusto per costruzione, e si misura il soffitto. 100 sample,
+`qwen3_vl_2b_attn`, 24 frame (job 94348; dettagli in
+[`oracolo_lvbench.md`](oracolo_lvbench.md)).
 
-Check di correttezza (driver `/wandb`, per shard): `mcq_accuracy` presente nel
-summary su 3/3, `pred_fallback` 0/900 su 3/3, nessuna run troncata dalla
-walltime (0.88–0.89 h osservate su 4 h richieste).
+```mermaid
+flowchart TD
+    V["video LVBench<br/>durata mediana 71 min<br/>finestra evidenza mediana 30 s = 0.8%"]
+    V --> B["baseline<br/>24 frame uniformi"]
+    V --> P["peak<br/>puntatore alla cella di picco"]
+    V --> O["oracle<br/>puntatore alla finestra VERA"]
+    V --> Z["zoom<br/>24 frame DENTRO la finestra vera"]
+    B --> B1["32%"]
+    P --> P1["29%"]
+    O --> O1["30%<br/>marcare non paga<br/>nemmeno sapendo dove"]
+    Z --> Z1["48%<br/>+16 pp"]
+    style O1 fill:#fde2e2,stroke:#c0392b
+    style Z1 fill:#e2f6e2,stroke:#27ae60
+```
 
-| shard | corretti | acc | s/sample |
+| condizione | accuracy | Δ | appaiato | p (McNemar) |
+|---|---:|---:|---:|---:|
+| `baseline` — 24 frame uniformi | 32% | — | — | — |
+| `peak` — puntatore alla cella di picco | 29% | −3 | +4/−7 | 0.55 |
+| `oracle` — puntatore alla finestra **vera** | 30% | −2 | +5/−7 | 0.77 |
+| **`zoom`** — 24 frame **dentro** la finestra vera | **48%** | **+16** | **+22/−6** | **0.0037** |
+
+`zoom` contro `oracle` — stessa informazione, due modi di consegnarla:
+**+23/−5, p = 0.0009**.
+
+### 5.1 Perché: l'evidenza non è nei frame campionati
+
+| | n | baseline | zoom |
 |---|---:|---:|---:|
-| 0 | 532/900 | 59.11% | 3.50 |
-| 1 | 536/900 | 59.56% | 3.55 |
-| 2 | 521/900 | 57.89% | 3.58 |
-| **pooled** | **1589/2700** | **58.85%** | 3.54 |
+| finestra con **< 1** frame atteso nel campione uniforme | 77 | 27% | **49%** |
+| finestra con **≥ 1** frame atteso | 23 | 48% | 43% |
 
-### 2B contro 4B, baseline contro baseline
+Tutti e 22 i sample recuperati da `zoom` stanno nel primo gruppo.
 
-| | Qwen3-VL-2B | Qwen3-VL-4B | Δ |
-|---|---:|---:|---:|
-| `baseline_24` pooled | 54.44% (1470/2700) | **58.85%** (1589/2700) | **+4.41** |
-| short | 66.89% (602/900) | **69.00%** (621/900) | +2.11 |
-| medium | 52.33% (471/900) | **56.78%** (511/900) | +4.44 |
-| long | 44.11% (397/900) | **50.78%** (457/900) | +6.67 |
-| latenza (shard L40S) | 3.32 s | 3.54 s | +0.22 s |
+### 5.2 Il segnale d'attenzione, misurato senza passare dall'accuracy
 
-Letture dirette:
+Hit = la cella di picco interseca la finestra annotata (job 93613, 60 sample).
 
-- **+4.41 pp = +119 sample su 2700**, z non appaiato = 3.27 (p ≈ 0.0011). È
-  il primo Δ di questo documento che sta chiaramente fuori dal rumore: per
-  confronto, tutti gli arm di `§1` si muovono entro ±1.4 pp, cioè ~1 SE.
-- **il guadagno cresce monotonamente con la durata del video** (+2.11 short,
-  +4.44 medium, +6.67 long). I `long` erano il punto debole del 2B (44.11%,
-  22.8 pp sotto gli `short`); il 4B ne recupera 60, e la forbice
-  short−long si stringe da 22.8 a 18.2 pp. Metà del guadagno pooled viene
-  da lì.
-- **il 4B è quasi gratis in latenza**: 3.54 contro 3.32 s/sample a parità di
-  GPU, +6.6%. Il forward è dominato dai token visivi (24 frame), non dai
-  parametri del decoder, quindi raddoppiare la scala non raddoppia il costo.
-- **conseguenza operativa**: +4.41 pp per +6.6% di tempo è un rapporto che
-  nessun arm testato finora si avvicina a produrre — `entropy_shift_24` paga
-  2.70× il tempo per +0.56 pp, i `marker_*` pagano 3.2× per −1.4 pp. Il 4B
-  diventa la baseline di riferimento per gli arm successivi; misurare
-  interventi sul 2B rischia di ottimizzare margini che la scala assorbe.
-- coerente con la probe da 60 (job 93325_0): 40/60 sul 4B contro 36 e 37/60
-  delle due probe 2B sugli stessi sample.
+| rowset | hit | livello di caso |
+|---|---:|---:|
+| `all` | 28.3% | 15.8% |
+| `question` | 28.3% | 15.8% |
+| `entity` | 30.0% | 15.8% |
+
+Confermato su 100 sample: 31% contro 18.8% atteso, **z = 4.21**. Il segnale
+esiste (~2× il caso) ma **sui 22 sample in cui `zoom` recupera la risposta il
+picco cade nella finestra solo 4 volte (18%)**.
 
 ---
 
-## 4. Perché i `marker_*` (e gli altri arm di puntamento) sono nulli
+## 6. Sintesi
 
-Misurato a posteriori su LVBench, non su Video-MME:
-`docs/oracolo_lvbench.md` (job 94348). Marcare la cella **vera** invece del
-picco vale 30% contro 32% di baseline (appaiato +5/−7, p = 0.77): il canale
-di marcatura **non ha soffitto**, quindi il nulla di `marker_24` e degli arm
-di `260803 §1` non è attribuibile al segnale d'attenzione.
-
-Nello stesso esperimento, RICAMPIONARE i 24 frame dentro la finestra vera
-vale **48% contro 32%** (+22/−6, p = 0.0037). Le due metà di LoT si separano:
-il guadagno vive nel *dove guardare*, non nel *come dirlo*.
-
----
-
-## 5. `visual_prompt` su Video-MME: nessun fullset, solo probe
-
-**Non esiste un full eval di `visual_prompt` (variante C, parola IMPORTANT
-dipinta sui pixel) su Video-MME.** Tutte le run sono probe da 60 sample sullo
-shard 0 (`limit=60 shuffle=true`, gruppo
-[`video_mme-qwen3vl2b-ablation-test`](https://wandb.ai/alesvale97-unimore/video_mme/groups/video_mme-qwen3vl2b-ablation-test)),
-lanciate per verificare correttezza e overlay, **non l'accuracy**: su 60
-sample un sample vale 1.7 pp e l'SE è ~6 pp. Il fullset (3 shard × ~3 h) è
-stato deliberatamente **congelato** dopo l'oracolo su LVBench
-(`docs/oracolo_lvbench.md`), che mostra come il canale di marcatura non abbia
-soffitto: misurarlo sui 2700 avrebbe prodotto un quarto nullo già spiegato.
-
-| job | knob variato | acc (60) | note |
-|---|---|---:|---|
-| 93320_0 | `query_rows=question`, `sink_filter=false` | 61.67% (37/60) | preset dell'arm |
-| 93321_0 | `query_rows=question`, **`sink_filter=true`** | 63.33% (38/60) | appaiato col precedente |
-| 93524_0 | `query_rows=entity` (prompt estrazione v1) | — | ucciso (Turing, ~140 s/sample) |
-| 93525_0 | `query_rows=entity` v1 | 61.67% (37/60) | estrazione utile 8/60: il 2B risponde alla MCQ |
-| 93543_0 | `query_rows=entity` v3 (solo domanda + few-shot) | 63.33% (38/60) | 60/60 mappate, ma elenca più soggetti |
-| 93573_0 | `query_rows=entity` v4 (una sequenza o `NONE`) | 61.67% (37/60) | 40/50 utili sui non-NONE, 10 `NONE` corretti |
-
-Tutti i Δ qui sono di **1 sample**: nessuno è leggibile come risultato. Le
-probe servivano ai check di correttezza (overlay leggibile, `n_query_rows <
-n_query_tokens`, `pred_fallback=0`, metadati entity per-sample), che passano.
-Sull'estrazione entity, l'unica misura vera è il tasso di mapping, non
-l'accuracy — dettagli in `docs/oracolo_lvbench.md` § "Il segnale
-d'attenzione".
-
-### `sink_filter`: chi lo ha usato e come
-
-`ranked_cells_from_attention` accetta `sink_filter` (scarta i token con
-punteggio sink alto prima di classificare le celle). **Il default della
-funzione è `True`; il default delle strategy che espongono il knob è
-`False`.** Le tre strategy non si comportano allo stesso modo:
-
-| strategy | knob esposto | valore effettivo nelle run |
+| direzione | stato | evidenza |
 |---|---|---|
-| `attention_highlight` | **no** — `sink_filter` non è un knob | **`true` implicito** (default della funzione) su tutte le 16 run, `highlight_top1_*`, `random_top1_*`, `antipeak_*` incluse |
-| `attention_marker` | sì (`cfg.get("sink_filter", False)`) | `false` sul fullset 2700 (92844 attention, 92845 random); `true` solo sulla probe 92829_0 |
-| `visual_prompt` | sì (`cfg.get("sink_filter", False)`) | `false` ovunque tranne la probe 93321_0 |
+| **marcare** (A / B / C) | **chiuso** | 3 canali, 3 controlli random, tutti a ≈0; oracolo 30% contro baseline 32% |
+| affilare il segnale (`query_rows`, `sink_filter`) | **esaurito** | grezzo e raffinato pareggiano entrambi il controllo; hit-rate invariato fra rowset |
+| **ricampionare** | **aperto** | unico arm sopra baseline (+0.56 pp); soffitto **+16 pp** |
+| localizzare la finestra | **collo di bottiglia** | il picco la trova nel 18% dei casi in cui il guadagno vive |
+| scala del modello | **riferimento** | +4.41 pp per +6.6% di costo |
 
-⚠️ **Confondimento da tenere presente nei confronti fra arm** (già segnalato
-in `strategies/attention_marker.py` e in §1): `marker_*` e `visual_prompt`
-classificano le celle sull'attenzione **grezza**, gli arm `highlight_*` sul
-segnale **filtrato dai sink**. Un confronto diretto fra le due famiglie
-mescola due cambiamenti — per i marcatori e per il visual prompting il
-confronto valido resta quello **interno**, `attention` contro `random`.
-
-L'unica misura appaiata dell'effetto del filtro è la coppia di probe
-93320/93321 (`visual_prompt`, stessi 60 sample, cambia solo `sink_filter`):
-61.67% contro 63.33%, cioè **1 sample** — non distinguibile dal rumore. Un
-dato più informativo viene dai metadati per-sample delle probe: con
-`sink_filter=false` la cella scelta **differisce** da quella che il filtro
-avrebbe scelto nel 33-40% dei sample, quindi il knob arriva davvero al
-ranking e non è inerte; semplicemente non sposta l'accuracy.
-
+```mermaid
+flowchart LR
+    A["oggi<br/>il picco trova la finestra<br/>nel 18% dei casi che contano"]
+    B["arm realistico<br/>ricampionare sulla cella di picco"]
+    C["soffitto misurato<br/>ricampionare sulla finestra vera<br/>+16 pp"]
+    A --> B
+    B -.->|"quanto se ne cattura?<br/>prossimo esperimento"| C
+    style C fill:#e2f6e2,stroke:#27ae60
+```
