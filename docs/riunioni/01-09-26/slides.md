@@ -14,7 +14,7 @@ transition: slide-left
 mdc: true
 ---
 
-# Marcare o ricampionare
+# Avanzamento esperimenti
 
 Qwen3-VL su Video-MME e LVBench
 
@@ -27,8 +27,195 @@ Video-MME intero senza sottotitoli, 3 shard da 900 — accuracy <b>pooled</b> (�
 ---
 layout: default
 ---
+# 1 · `marker_24` — il segnale consegnato come **token**
 
-# 1 · Arm su Video-MME — Qwen3-VL-2B (2700 sample)
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
+
+**pass 1** · 24 frame uniformi, un forward con cattura
+attenzione *domanda → token visivi* → **cella di picco**
+
+**pass 2** · gli **stessi** frame, blocco video spezzato sui confini di cella
+
+<div class="pt-3" style="display:flex;gap:2px;align-items:center">
+<div v-for="i in 10" :key="'a'+i" style="width:14px;height:22px;border-radius:2px;background:#e3e6ea;border:1px solid #d0d4d9"></div>
+<div style="width:3px;height:30px;background:#c0392b;margin:0 3px"></div>
+<div v-for="i in 2" :key="'b'+i" style="width:14px;height:22px;border-radius:2px;background:#f5c6c6;border:1.5px solid #c0392b"></div>
+<div style="width:3px;height:30px;background:#c0392b;margin:0 3px"></div>
+<div v-for="i in 12" :key="'c'+i" style="width:14px;height:22px;border-radius:2px;background:#e3e6ea;border:1px solid #d0d4d9"></div>
+</div>
+
+<div class="pt-1 text-xs opacity-60">
+24 frame = 12 celle. I marcatori racchiudono <b>la cella</b> — cioè <b>2 frame</b>, non uno: è la risoluzione reale del segnale, e i tagli devono cadere su confini di cella o il processor padda e sfasa tutti i timestamp.
+</div>
+
+</div>
+
+<div class="text-sm">
+
+| knob | valore |
+|---|---|
+| `query_rows` | `question` |
+| `sink_filter` | `false` — attenzione **grezza** |
+| `top_k` | 1 cella |
+| `always_highlight` | `true` — nessun gate |
+| costo vs baseline | **3.2×** |
+
+<div class="pt-3 text-xs opacity-60">
+Solo Qwen3-VL: il video è già <i>t</i> isole visive separate dai timestamp, quindi un marcatore in più viene assorbito dal gruppo di testo esistente — nessun <code>position_ids</code> da ricostruire.
+</div>
+
+</div>
+
+</div>
+
+<div class="pt-3" style="font-family:ui-monospace,monospace;font-size:0.66rem;line-height:1.7;background:#f6f7f9;border:1px solid #e3e6ea;border-radius:4px;padding:8px 10px;word-break:break-word">
+…&lt;|vision_end|&gt;<span style="color:#c0392b;font-weight:600">&lt;START_IMPORTANT_FRAME&gt;</span><span style="background:#fdeaea;padding:1px 0">&lt;4.5 seconds&gt;&lt;|vision_start|&gt;[frame]&lt;|vision_end|&gt;&nbsp;&lt;5.5 seconds&gt;&lt;|vision_start|&gt;[frame]&lt;|vision_end|&gt;</span><span style="color:#c0392b;font-weight:600">&lt;END_IMPORTANT_FRAME&gt;</span>&lt;6.5 seconds&gt;…
+</div>
+
+<div class="pt-1 text-xs opacity-60">
+In rosa <b>una cella</b>: su Qwen3-VL ogni frame è un'isola visiva preceduta dal proprio timestamp. I marcatori sono testo ordinario (~6 token l'uno), non token speciali del vocabolario.
+</div>
+
+<div class="pt-3" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.78rem">
+<i>Focus on the frames enclosed between &lt;START_IMPORTANT_FRAME&gt; and &lt;END_IMPORTANT_FRAME&gt;: that is where the visual evidence relevant to the question is.</i>
+</div>
+
+<div class="pt-1 text-xs opacity-60">
+Anteposta al prompt MCQ. Il controllo <code>random</code> riceve la stessa identica istruzione, con la cella scelta a sorte.
+</div>
+
+---
+layout: default
+---
+# 2 · `visual_prompt_24` — lo stesso segnale come **pixel**
+
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
+
+**pass 1** · identico
+
+**pass 2** · i 24 frame estratti in PNG, la parola `IMPORTANT` **dipinta** sui 2 frame della cella
+
+<div class="pt-3" style="display:flex;gap:2px;align-items:flex-end">
+<div v-for="i in 24" :key="i" :style="`width:14px;height:22px;border-radius:2px;background:#e3e6ea;border:1px solid #d0d4d9;position:relative;overflow:hidden`">
+<div v-if="i===11||i===12" style="position:absolute;left:0;right:0;bottom:0;height:26%;background:#c0392b"></div>
+</div>
+</div>
+
+<div class="pt-1 text-xs opacity-60">
+Banda piena, non contorno: il contrasto non deve dipendere dal contenuto del video. <b>Entrambi</b> i frame della cella, perché il patch embedding è 3D e i due si fondono in una riga di token.
+</div>
+
+</div>
+
+<div class="text-sm">
+
+| knob | valore |
+|---|---|
+| `query_rows` | **`entity`** — sole righe del soggetto |
+| `sink_filter` | **`true`** — token-sink azzerati |
+| `top_k` | 1 cella |
+| geometria | `bottom`, 12% dell'altezza |
+| costo vs baseline | **3.5×** |
+
+<div class="pt-3 text-xs opacity-60">
+<code>entity</code>: il decoder già in memoria estrae il soggetto della domanda (una sequenza verbatim, o <code>NONE</code>) e si mediano solo quelle righe — <b>~11%</b> del prompt contro il 24% di <code>question</code>.
+</div>
+
+</div>
+
+</div>
+
+<div class="grid grid-cols-2 gap-6 pt-3" style="align-items:start">
+
+<div>
+<img src="/assets/preview_bottom_012.png" style="max-height:186px;width:auto;border-radius:4px;border:1px solid #e3e6ea" />
+<div class="pt-1 text-xs opacity-60">
+Frame dipinto alla geometria del fullset: <code>bottom</code>, <code>height_frac=0.12</code>.
+</div>
+</div>
+
+<div>
+<div style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.78rem;line-height:1.5">
+<i>Some frames have the word IMPORTANT written on them: those frames contain the visual evidence relevant to the question. Do not mention the word in your answer.</i>
+</div>
+<div class="pt-1 text-xs opacity-60">
+Anteposta al prompt MCQ. L'ultima frase evita che la parola finisca nella risposta e sporchi il parsing MCQ.
+</div>
+</div>
+
+</div>
+
+---
+layout: default
+---
+# 3 · Il knob `query_rows=entity`
+
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
+
+**Quali righe della domanda entrano nella media dell'attenzione**
+
+| passo | cosa fa |
+|---|---|
+| 1 | taglio del prompt a `options:` → resta la **sola domanda** |
+| 2 | chiamata **solo-testo al decoder già in memoria** — greedy, 32 token, system + 3 esempi few-shot |
+| 3 | output atteso: **una sequenza contigua verbatim**, oppure `NONE` |
+| 4 | match verbatim nella domanda → righe di quei token |
+
+<div class="pt-3">
+
+| esito (900 sample) | quota | righe usate |
+|---|---:|---|
+| entity mappata | **63%** | token del soggetto |
+| `NONE` — domanda senza soggetto | 18% | fallback → `question` |
+| non mappa verbatim | 19% | fallback → `question` |
+
+</div>
+
+</div>
+
+<div class="text-sm">
+
+<div style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.72rem;line-height:1.45">
+<i>You extract THE SUBJECT of a question: the single entity or action the question is about. Copy it EXACTLY as written in the question: ONE contiguous sequence of one or more words. Prefer the shortest sequence that names the subject. Do NOT answer the question. If the question has no specific subject, output NONE.</i>
+</div>
+
+<div class="pt-1 text-xs opacity-60">
++ 3 esempi few-shot: <code>"…jacket worn by the man playing the guitar?"</code> → <code>jacket</code> · <code>"What is this video mainly about?"</code> → <code>NONE</code>
+</div>
+
+<div class="pt-4">
+
+| `query_rows` | righe mediate |
+|---|---|
+| `all` (regime storico) | 100% del prompt |
+| `question` | ~24% |
+| **`entity`** | **~11%** |
+
+</div>
+
+<div class="pt-3 text-xs opacity-60">
+Le <b>opzioni restano fuori</b> dall'input dell'estrattore: con le opzioni in contesto il prior "MCQ → rispondi" di un 2B domina qualsiasi istruzione, e il modello sputava un'opzione invece del soggetto (8/60 utili). Togliere il grilletto batte l'istruzione.
+</div>
+
+</div>
+
+</div>
+
+<div class="pt-3 text-xs opacity-60">
+Nessun secondo modello in memoria, nessun costo di caricamento. Il fallback è <b>tracciato per sample</b> (<code>query_rows_mode</code>, <code>entity_mapped</code>, <code>entity_raw</code>): l'effetto entity è quindi misurato <b>diluito</b> — su 900 sample solo 566 girano davvero a righe-entità. Il confronto interno attention/random non ne soffre: entrambi i rami usano lo stesso mix.
+</div>
+
+---
+layout: default
+---
+
+# 4 · Arm su Video-MME — Qwen3-VL-2B (2700 sample)
 
 <div class="text-xs">
 
@@ -71,7 +258,7 @@ SE della differenza: ±1.36 pp sul pooled, ±2.35 pp per fascia.
 layout: default
 ---
 
-# 2 · Scala del modello — baseline 2B vs 4B (2700 sample)
+# 5 · Scala del modello — baseline 2B vs 4B (2700 sample)
 
 <div class="grid grid-cols-2 gap-6 pt-2">
 
@@ -121,7 +308,7 @@ z = 3.27 (p ≈ 0.0011)
 layout: default
 ---
 
-# 3 · Oracolo su LVBench (100 sample, 24 frame)
+# 6 · Oracolo su LVBench (100 sample, 24 frame)
 
 <div class="text-sm pt-2">
 
@@ -150,7 +337,7 @@ layout: default
 layout: default
 ---
 
-# 4 · Dove vive il guadagno di `zoom`
+# 7 · Dove vive il guadagno di `zoom`
 
 <div class="text-sm pt-2">
 
@@ -181,7 +368,7 @@ Tutti e 22 i sample recuperati da <code>zoom</code> stanno nel primo gruppo.
 layout: default
 ---
 
-# 5 · Il segnale d'attenzione, misurato senza accuracy
+# 8 · Il segnale d'attenzione, misurato senza accuracy
 
 <div class="grid grid-cols-2 gap-6 pt-2">
 
@@ -231,7 +418,7 @@ Sui 22 sample recuperati da <code>zoom</code>: <b>4 / 22 (18%)</b>.
 layout: default
 ---
 
-# 6 · Sintesi
+# 9 · Sintesi
 
 <div class="text-sm pt-2">
 
@@ -245,14 +432,95 @@ layout: default
 
 </div>
 
-<div class="pt-8 text-sm">
 
-**Prossimo giro — `coarse_to_fine` su LVBench**, tre lanci
+---
+layout: default
+---
+# 10 · Prossimo giro — `coarse_to_fine`: il disegno
+
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
+
+**Perché zoom e non più frame**
+
+La copertura cresce *linearmente* nel budget, la risoluzione *moltiplicativamente*.
+
+| | 24 frame | 48 frame | 24 frame in **1 cella** |
+|---|---:|---:|---:|
+| copertura della finestra | 45% | 51% | — |
+| spacing fra frame | 177 s | 89 s | **15 s** |
+
+<div class="pt-2 text-xs opacity-60">
+Per il 90% di copertura con frame uniformi servirebbero ~128 frame. Una cella = 1/12 del video; la finestra d'evidenza mediana dura 30 s.
+</div>
+
+</div>
+
+<div class="text-sm">
+
+**Il ciclo** — il budget per forward resta 24 frame: non si guarda *più* video, si guarda *più volte* in posti diversi
+
+| passo | cosa fa |
+|---|---|
+| 0 | 24 frame uniformi → risposta, entropia, ranking celle |
+| *gate* | entropia ≤ 0.7 → **accetta e rispondi** |
+| k | scendi nella regione migliore del ranking **accumulato**, ricampiona 24 frame lì dentro, ricalcola tutto |
+| fine | esaurito `max_steps = 3` → vista a **entropia minima** |
+
+</div>
+
+</div>
+
+<div class="pt-4 text-sm">
+
+Attenzione dice **dove** scendere, entropia dice **quando fermarsi**. I punteggi sono normalizzati (`pct × t`, lift sul livello uniforme) per essere confrontabili fra viste di lunghezza diversa; accumularli su tutti i passi dà **backtracking** — se il passo *k* scende nella cella sbagliata l'entropia non cala, e al passo *k+1* la regione migliore rimasta è tipicamente al livello sopra: si risale invece di affondare nell'errore.
+
+</div>
+
+---
+layout: default
+---
+# 11 · `coarse_to_fine`: come si legge
+
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
+
+**Tre lanci, tutti necessari** — il primo da solo non è leggibile
 
 | lancio | ruolo |
 |---|---|
-| arm | zoom iterativo guidato da attenzione (dove) ed entropia (quando fermarsi) |
-| controllo `random` | stessa struttura, stessi passi, stesso budget: cambia solo da dove viene la regione |
-| `uniform` a 48 frame | controllo a budget pari: se l'arm lo pareggia, il guadagno è budget e non segnale |
+| **arm** `c2f_s3_g0.7` | zoom guidato dal segnale |
+| **controllo** `region_select=random` | stessi passi, stesso gate, stesso budget: cambia **solo** da dove viene la regione |
+| **budget pari** `uniform` a 48 frame | se l'arm lo pareggia, il guadagno è compute, non segnale |
+
+<div class="pt-3 text-xs opacity-60">
+Il controllo random è la lezione dei tre arm di marcatura, dove pareggiava sempre il treatment: contro la baseline a 24 frame un +N pp non direbbe nulla.
+</div>
+
+</div>
+
+<div class="text-sm">
+
+**Cosa conta come risultato**
+
+| confronto | soglia |
+|---|---|
+| arm − controllo `random` | **> 0**, altrimenti è la storia dei marcatori |
+| arm − `baseline_48` | **> 0**, altrimenti è solo budget |
+| costo | `n_steps` per sample: se quasi tutti fanno 3 passi il gate non filtra, e l'arm costa 4× |
+
+<div class="pt-3 text-xs opacity-60">
+Diagnostica <b>prima</b> dell'accuracy: <code>gate_closed</code> (se ~0 o ~1 la soglia va ricalibrata), <code>final_depth</code> (se 0 ovunque l'arm non ha mai zoomato), <code>final_span_sec</code>. Probe da 100 sample prima del fullset.
+</div>
+
+</div>
+
+</div>
+
+<div class="pt-6 text-sm">
+
+**Il soffitto da inseguire**, e l'aspettativa onesta: `zoom` d'oracolo vale 48% contro 32% di baseline. Il picco cade nella finestra vera nel **31%** dei casi → guadagno lordo dell'ordine di **~5 pp**, **meno** il danno sui sample dove il picco sbaglia e lo zoom perde il contesto (nei 23 sample già coperti dal campione uniforme, lo zoom d'oracolo *peggiora*: 48% → 43%).
 
 </div>
