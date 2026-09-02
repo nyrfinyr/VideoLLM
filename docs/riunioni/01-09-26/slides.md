@@ -18,12 +18,6 @@ mdc: true
 
 Qwen3-VL su Video-MME e LVBench
 
-<div class="pt-6 text-xs opacity-60 leading-relaxed">
-<code>qwen3_vl_2b_attn</code> · greedy (<code>generation=precise</code>) · <code>seed=42</code> · <code>nframes=24</code><br/>
-Video-MME intero senza sottotitoli, 3 shard da 900 — accuracy <b>pooled</b> (Σ corretti / Σ campioni)<br/>
-2026-09-01
-</div>
-
 ---
 layout: default
 ---
@@ -62,9 +56,6 @@ attenzione *domanda → token visivi* → **cella di picco**
 | `always_highlight` | `true` — nessun gate |
 | costo vs baseline | **3.2×** |
 
-<div class="pt-3 text-xs opacity-60">
-Solo Qwen3-VL: il video è già <i>t</i> isole visive separate dai timestamp, quindi un marcatore in più viene assorbito dal gruppo di testo esistente — nessun <code>position_ids</code> da ricostruire.
-</div>
 
 </div>
 
@@ -75,7 +66,7 @@ Solo Qwen3-VL: il video è già <i>t</i> isole visive separate dai timestamp, qu
 </div>
 
 <div class="pt-1 text-xs opacity-60">
-In rosa <b>una cella</b>: su Qwen3-VL ogni frame è un'isola visiva preceduta dal proprio timestamp. I marcatori sono testo ordinario (~6 token l'uno), non token speciali del vocabolario.
+Prompt:
 </div>
 
 <div class="pt-3" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.78rem">
@@ -106,7 +97,7 @@ layout: default
 </div>
 
 <div class="pt-1 text-xs opacity-60">
-Banda piena, non contorno: il contrasto non deve dipendere dal contenuto del video. <b>Entrambi</b> i frame della cella, perché il patch embedding è 3D e i due si fondono in una riga di token.
+<b>Entrambi</b> i frame della cella, perché il patch embedding è 3D e i due si fondono in una riga di token.
 </div>
 
 </div>
@@ -122,7 +113,7 @@ Banda piena, non contorno: il contrasto non deve dipendere dal contenuto del vid
 | costo vs baseline | **3.5×** |
 
 <div class="pt-3 text-xs opacity-60">
-<code>entity</code>: il decoder già in memoria estrae il soggetto della domanda (una sequenza verbatim, o <code>NONE</code>) e si mediano solo quelle righe — <b>~11%</b> del prompt contro il 24% di <code>question</code>.
+<code>entity</code>: Vedi slide successiva
 </div>
 
 </div>
@@ -139,6 +130,11 @@ Frame dipinto alla geometria del fullset: <code>bottom</code>, <code>height_frac
 </div>
 
 <div>
+
+<div class="pt-1 text-xs opacity-60">
+Prompt:
+</div>
+
 <div style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.78rem;line-height:1.5">
 <i>Some frames have the word IMPORTANT written on them: those frames contain the visual evidence relevant to the question. Do not mention the word in your answer.</i>
 </div>
@@ -219,23 +215,40 @@ layout: default
 
 <div class="text-xs">
 
-| arm | `query_rows` | `sink_filter` | pooled | Δ | short | medium | long |
-|---|---|---|---:|---:|---:|---:|---:|
-| `baseline_24` | — | — | **54.44%** (1470/2700) | — | 66.89% | 52.33% | 44.11% |
-| `entropy_shift_24` | `all` | `true` | **55.00%** (1485/2700) | **+0.56** | 67.78% | 52.11% | 45.11% |
-| `marker_24` (attention) | `question` | `false` | **53.04%** (1432/2700) | −1.41 | 66.33% | 49.56% | 43.22% |
-| `marker_random_24` (random) | `question` | `false` | **53.11%** (1434/2700) | −1.33 | 66.44% | 49.89% | 43.00% |
-| `visual_prompt_24` (attention) | `entity` | `true` | **53.48%** (1444/2700) | −0.96 | 65.89% | 51.44% | 43.11% |
-| `visual_prompt_24_random` (random) | `entity` | `true` | **53.52%** (1445/2700) | −0.92 | 66.22% | 50.78% | 43.56% |
+| arm | gate | `query_rows` | `sink_filter` | pooled | Δ | short | medium | long |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| `baseline_24` | — | — | — | **54.44%** (1470) | — | 66.89% | 52.33% | 44.11% |
+| `entropy_shift_24` | **`> 0.7`** | `all` | `true` | **55.00%** (1485) | **+0.56** | 67.78% | 52.11% | 45.11% |
+| `marker_24` (attention) | nessuno | `question` | `false` | **53.04%** (1432) | −1.41 | 66.33% | 49.56% | 43.22% |
+| `marker_random_24` (random) | nessuno | `question` | `false` | **53.11%** (1434) | −1.33 | 66.44% | 49.89% | 43.00% |
+| `visual_prompt_24` (attention) | nessuno | `entity` | `true` | **53.48%** (1444) | −0.96 | 65.89% | 51.44% | 43.11% |
+| `visual_prompt_24_rand` (random) | nessuno | `entity` | `true` | **53.52%** (1445) | −0.92 | 66.22% | 50.78% | 43.56% |
 
 </div>
 
-<div class="pt-2 text-sm">
+<div class="pt-1 text-xs opacity-60">
+<b>nessuno</b> = <code>always_highlight: true</code>: si interviene sul <b>100%</b> dei sample, nessuno è esente (da cui il costo 3.2× / 3.5×).
+</div>
+
+<div class="grid grid-cols-2 gap-6 pt-2">
+
+<div class="text-sm">
 
 | coppia treatment − controllo | Δ | in sample |
 |---|---:|---:|
 | `marker_24` − `marker_random_24` | −0.07 pp | **−2 / 2700** |
 | `visual_prompt_24` − `visual_prompt_24_random` | −0.04 pp | **−1 / 2700** |
+
+</div>
+
+<div class="text-sm">
+
+| `entropy_shift_24` — il solo con gate | quota | accuracy |
+|---|---:|---:|
+| gate **aperto** (entropia > 0.7) → pass 2 | 53.70% (1450) | **37.86%** |
+| gate **chiuso** → risposta del pass 1 | 46.30% (1250) | **74.88%** |
+
+</div>
 
 </div>
 
@@ -253,6 +266,12 @@ layout: default
 <div class="pt-2 text-xs opacity-60">
 SE della differenza: ±1.36 pp sul pooled, ±2.35 pp per fascia.
 </div>
+
+<style scoped>
+.slidev-layout table th,
+.slidev-layout table td { padding: 0.14rem 0.4rem; }
+.slidev-layout table { margin: 0.2rem 0; }
+</style>
 
 ---
 layout: default
@@ -312,215 +331,38 @@ layout: default
 
 <div class="text-sm pt-2">
 
-| condizione | accuracy | Δ | appaiato | p (McNemar esatto) |
-|---|---:|---:|---:|---:|
-| `baseline` — 24 frame uniformi | 32% | — | — | — |
-| `peak` — puntatore alla cella di picco | 29% | −3 | +4 / −7 | 0.55 |
-| `oracle` — puntatore alla finestra **vera** | 30% | −2 | +5 / −7 | 0.77 |
-| **`zoom`** — 24 frame **dentro** la finestra vera | **48%** | **+16** | **+22 / −6** | **0.0037** |
+| condizione | quali frame vede | come riceve l'indicazione | da dove viene l'indicazione | accuracy | Δ | appaiato |
+|---|---|---|---|---:|---:|---:|
+| `baseline` | 24 uniformi | — | — | 32% | — | — |
+| `peak` | 24 uniformi | puntatore nel prompt | cella di **picco** (segnale del modello) | 29% | −3 | +4 / −7 |
+| `oracle` | 24 uniformi | puntatore nel prompt | finestra **annotata** (verità) | 30% | −2 | +5 / −7 |
+| **`zoom`** | **24 dentro la finestra** | **i frame stessi** | finestra **annotata** (verità) | **48%** | **+16** | **+22 / −6** |
 
 </div>
 
-<div class="pt-6 text-sm">
+<div class="pt-3" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.76rem">
+<i>Focus on the part of the video between 880 and 1100 seconds: that is where the visual evidence relevant to the question is.</i>
+</div>
 
-| confronto diretto fra le due metà | appaiato | p |
-|---|---:|---:|
-| `zoom` − `oracle` (stessa informazione, due consegne) | **+23 / −5** | **0.0009** |
+<div class="pt-1 text-xs opacity-60">
+Il puntatore di <code>peak</code> e <code>oracle</code>: una frase anteposta al prompt MCQ, frame invariati. Si indica <b>l'intervallo</b> della cella (~220 s a <code>nframes=24</code>), non un istante: è la risoluzione vera del segnale.
+</div>
+
+<div class="pt-3 text-sm">
+
+Due assi, non quattro condizioni sparse: **quale informazione** (il picco che il modello stima, contro la finestra vera annotata) × **come gliela consegni** (dirglielo, contro cambiare i frame che vede).
+
+</div>
+
+<div class="pt-2 text-sm">
+
+| confronto | isola | esito |
+|---|---|---|
+| `peak` → `oracle` | informazione migliore, stessa consegna | 29% → 30%: **l'informazione perfetta non paga** |
+| `oracle` → `zoom` | stessa informazione, consegna diversa | 30% → 48%: **paga la consegna** |
 
 </div>
 
 <div class="pt-6 text-xs opacity-60">
-<code>qwen3_vl_2b_attn</code> · job 94348 · MCQ a 4 opzioni (livello di caso 25%) · dettagli in <code>docs/oracolo_lvbench.md</code>
-</div>
-
----
-layout: default
----
-
-# 7 · Dove vive il guadagno di `zoom`
-
-<div class="text-sm pt-2">
-
-| | n | baseline | zoom |
-|---|---:|---:|---:|
-| finestra con **< 1** frame atteso nel campione uniforme | 77 | 27% | **49%** |
-| finestra con **≥ 1** frame atteso | 23 | 48% | 43% |
-
-<div class="pt-2 text-xs opacity-60">
-Tutti e 22 i sample recuperati da <code>zoom</code> stanno nel primo gruppo.
-</div>
-
-</div>
-
-<div class="pt-6 text-sm">
-
-| regime LVBench | valore |
-|---|---:|
-| durata mediana del video | 71 min |
-| finestra d'evidenza annotata, mediana | 30 s (**0.8%** del video) |
-| frame attesi dentro la finestra con 24 frame uniformi (mediana) | **0.20** |
-| sample con < 1 frame atteso | **77 / 100** |
-| copertura della finestra — 24 frame / 48 frame | 45% / 51% |
-
-</div>
-
----
-layout: default
----
-
-# 8 · Il segnale d'attenzione, misurato senza accuracy
-
-<div class="grid grid-cols-2 gap-6 pt-2">
-
-<div class="text-sm">
-
-**Hit = la cella di picco interseca la finestra annotata** (job 93613, 60 sample)
-
-| rowset | hit | livello di caso |
-|---|---:|---:|
-| `all` | 28.3% | 15.8% |
-| `question` | 28.3% | 15.8% |
-| `entity` | 30.0% | 15.8% |
-
-<div class="pt-2 text-xs opacity-60">
-Su 100 sample: 31% contro 18.8% atteso, <b>z = 4.21</b>.<br/>
-Sui 22 sample recuperati da <code>zoom</code>: <b>4 / 22 (18%)</b>.
-</div>
-
-<div class="pt-4">
-
-**Distanza picco → finestra** (100 sample, job 94348)
-
-| distanza (celle) | 0 | 1 | 2 | 3 | 4 | 5+ |
-|---|---:|---:|---:|---:|---:|---:|
-| sample | 31 | 10 | 13 | 5 | 3 | 38 |
-
-</div>
-
-</div>
-
-<div class="text-sm">
-
-**Allargare la finestra attorno al picco**
-
-| finestra | % del video | copre | caso | lift | frame nell'evidenza |
-|---|---:|---:|---:|---:|---:|
-| ±0 (solo picco) | 8% | 31% | 18% | **1.68×** | **2.4** |
-| ±1 | 25% | 41% | 32% | 1.27× | 0.8 |
-| ±2 | 42% | 54% | 45% | 1.21× | 0.5 |
-| ±3 | 58% | 59% | 55% | 1.07× | — |
-
-</div>
-
-</div>
-
----
-layout: default
----
-
-# 9 · Sintesi
-
-<div class="text-sm pt-2">
-
-| direzione | stato | evidenza |
-|---|---|---|
-| **marcare** (`attention_highlight` / `attention_marker` / `visual_prompt`) | **chiuso** | 3 canali, 3 controlli random, tutti a ≈0 (−2 e −1 sample su 2700); oracolo 30% contro baseline 32% |
-| affilare il segnale (`query_rows`, `sink_filter`) | **esaurito** | grezzo e raffinato pareggiano entrambi il proprio controllo; hit-rate invariato fra rowset (28.3 / 28.3 / 30.0) |
-| **ricampionare** | **aperto** | unico arm sopra baseline (+0.56 pp); soffitto misurato **+16 pp** (p = 0.0037) |
-| localizzare la finestra | **collo di bottiglia** | il picco la trova nel **18%** dei casi in cui il guadagno vive; oltre 1 cella la distanza è quasi piatta |
-| scala del modello | **riferimento** | **+4.41 pp** (z = 3.27) per **+6.6%** di costo |
-
-</div>
-
-
----
-layout: default
----
-# 10 · Prossimo giro — `coarse_to_fine`: il disegno
-
-<div class="grid grid-cols-2 gap-6 pt-2">
-
-<div class="text-sm">
-
-**Perché zoom e non più frame**
-
-La copertura cresce *linearmente* nel budget, la risoluzione *moltiplicativamente*.
-
-| | 24 frame | 48 frame | 24 frame in **1 cella** |
-|---|---:|---:|---:|
-| copertura della finestra | 45% | 51% | — |
-| spacing fra frame | 177 s | 89 s | **15 s** |
-
-<div class="pt-2 text-xs opacity-60">
-Per il 90% di copertura con frame uniformi servirebbero ~128 frame. Una cella = 1/12 del video; la finestra d'evidenza mediana dura 30 s.
-</div>
-
-</div>
-
-<div class="text-sm">
-
-**Il ciclo** — il budget per forward resta 24 frame: non si guarda *più* video, si guarda *più volte* in posti diversi
-
-| passo | cosa fa |
-|---|---|
-| 0 | 24 frame uniformi → risposta, entropia, ranking celle |
-| *gate* | entropia ≤ 0.7 → **accetta e rispondi** |
-| k | scendi nella regione migliore del ranking **accumulato**, ricampiona 24 frame lì dentro, ricalcola tutto |
-| fine | esaurito `max_steps = 3` → vista a **entropia minima** |
-
-</div>
-
-</div>
-
-<div class="pt-4 text-sm">
-
-Attenzione dice **dove** scendere, entropia dice **quando fermarsi**. I punteggi sono normalizzati (`pct × t`, lift sul livello uniforme) per essere confrontabili fra viste di lunghezza diversa; accumularli su tutti i passi dà **backtracking** — se il passo *k* scende nella cella sbagliata l'entropia non cala, e al passo *k+1* la regione migliore rimasta è tipicamente al livello sopra: si risale invece di affondare nell'errore.
-
-</div>
-
----
-layout: default
----
-# 11 · `coarse_to_fine`: come si legge
-
-<div class="grid grid-cols-2 gap-6 pt-2">
-
-<div class="text-sm">
-
-**Tre lanci, tutti necessari** — il primo da solo non è leggibile
-
-| lancio | ruolo |
-|---|---|
-| **arm** `c2f_s3_g0.7` | zoom guidato dal segnale |
-| **controllo** `region_select=random` | stessi passi, stesso gate, stesso budget: cambia **solo** da dove viene la regione |
-| **budget pari** `uniform` a 48 frame | se l'arm lo pareggia, il guadagno è compute, non segnale |
-
-<div class="pt-3 text-xs opacity-60">
-Il controllo random è la lezione dei tre arm di marcatura, dove pareggiava sempre il treatment: contro la baseline a 24 frame un +N pp non direbbe nulla.
-</div>
-
-</div>
-
-<div class="text-sm">
-
-**Cosa conta come risultato**
-
-| confronto | soglia |
-|---|---|
-| arm − controllo `random` | **> 0**, altrimenti è la storia dei marcatori |
-| arm − `baseline_48` | **> 0**, altrimenti è solo budget |
-| costo | `n_steps` per sample: se quasi tutti fanno 3 passi il gate non filtra, e l'arm costa 4× |
-
-<div class="pt-3 text-xs opacity-60">
-Diagnostica <b>prima</b> dell'accuracy: <code>gate_closed</code> (se ~0 o ~1 la soglia va ricalibrata), <code>final_depth</code> (se 0 ovunque l'arm non ha mai zoomato), <code>final_span_sec</code>. Probe da 100 sample prima del fullset.
-</div>
-
-</div>
-
-</div>
-
-<div class="pt-6 text-sm">
-
-**Il soffitto da inseguire**, e l'aspettativa onesta: `zoom` d'oracolo vale 48% contro 32% di baseline. Il picco cade nella finestra vera nel **31%** dei casi → guadagno lordo dell'ordine di **~5 pp**, **meno** il danno sui sample dove il picco sbaglia e lo zoom perde il contesto (nei 23 sample già coperti dal campione uniforme, lo zoom d'oracolo *peggiora*: 48% → 43%).
-
+<code>qwen3_vl_2b_attn</code> · job 94348 · MCQ a 4 opzioni (livello di caso 25%) · <code>peak</code> e <code>oracle</code> usano lo <b>stesso identico testo</b> di puntatore (<code>POINTER_SPAN_SEC</code>): fra loro cambia solo <i>dove</i> punta, mai <i>come</i> parla · dettagli in <code>docs/oracolo_lvbench.md</code>
 </div>
