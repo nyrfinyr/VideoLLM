@@ -22,9 +22,12 @@
 # senza le A5000 da 24G: la parte a 512 frame misura il picco di memoria e il
 # vecchio path impila ~1.3 GB su host — serve la stessa classe di GPU della run.
 #
+# Il modello gira con `fix_videoframes_resize=true` (impostato dallo script):
+# i frame passano come `VideoFrames`, come nel campionamento a coppie della
+# run, ma con lo stesso resize del path `Video`.
+#
 # COSTO: 5 sample x 2 forward a 24 frame + 3 forward a 512 frame (ref, new,
-# profiler), ognuno con la sua decodifica dal video lungo (path `Video`, vedi
-# la docstring per il perché non `VideoFrames`): ~20-40 min.
+# profiler), più l'estrazione PNG dai video lunghi: ~20-40 min.
 #
 # COSA GUARDARE (summary wandb, project lvbench, group probe-capture-equiv):
 #   1. equiv_ok=true, equiv_n_skip=0: attenzione, sink map, entropia e ranking

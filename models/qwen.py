@@ -10,6 +10,7 @@ from transformers import (
     Qwen3VLProcessor,
 )
 from qwen_vl_utils import process_vision_info
+from qwen_vl_utils import vision_process as qvu
 from .base import BaseVLM
 from .media import MediaItem, Text, VideoFrames, to_content_dict
 import weave
@@ -70,6 +71,77 @@ ENTITY_EXTRACTION_EXAMPLES = (
 )
 
 
+def _fetch_videoframes(ele: dict, image_patch_size: int) -> tuple[torch.Tensor, dict, float]:
+    """`qwen_vl_utils.fetch_video` per una LISTA di frame, senza il bug del fattore.
+
+    Nel ramo lista di `fetch_video` (qwen-vl-utils 0.0.14) ogni frame passa da
+    `fetch_image(..., image_factor)`: `image_factor` finisce nel parametro
+    `image_patch_size` e viene moltiplicato di nuovo per il merge, quindi le
+    dimensioni si arrotondano a multipli di 64 invece che di 32 (640x360 a
+    50176 px → 4x8 token per cella invece di 5x9). Qui i frame saltano quel
+    resize e vanno direttamente a quello a livello video — stessi
+    `min_pixels`/`max_pixels`/`total_pixels`, stesso `smart_resize` al fattore
+    `image_patch_size * merge`, stesso bicubico con antialias: il trattamento
+    che il path `Video` riserva ai frame decodificati.
+
+    Il resize è fatto frame per frame invece che sul tensore impilato: il
+    risultato è identico (l'interpolazione non mescola i frame) e non si
+    tengono in memoria tutti i frame a risoluzione nativa (512 frame 1080p
+    ≈ 3 GB).
+
+    Ritorna `(video [T, C, H, W] float, fake metadata, sample_fps)`, come
+    `fetch_video(..., return_video_sample_fps=True, return_video_metadata=True)`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    import numpy as np
+    from PIL import Image
+    from torchvision.transforms import InterpolationMode
+    from torchvision.transforms import functional as TF
+
+    paths = list(ele["video"])
+    image_factor = image_patch_size * qvu.SPATIAL_MERGE_SIZE
+    nframes = qvu.ceil_by_factor(len(paths), qvu.FRAME_FACTOR)
+    with Image.open(paths[0]) as im:
+        width, height = im.size
+    min_pixels = ele.get("min_pixels", qvu.VIDEO_MIN_TOKEN_NUM * image_factor * image_factor)
+    total_pixels = ele.get("total_pixels", qvu.MODEL_SEQ_LEN * image_factor * image_factor * 0.9)
+    max_pixels = max(
+        min(qvu.VIDEO_MAX_TOKEN_NUM * image_factor * image_factor,
+            total_pixels / nframes * qvu.FRAME_FACTOR),
+        int(min_pixels * 1.05),
+    )
+    max_pixels = min(ele.get("max_pixels", max_pixels), max_pixels)
+    resized_height, resized_width = qvu.smart_resize(
+        height, width, factor=image_factor, min_pixels=min_pixels, max_pixels=max_pixels,
+    )
+
+    def load(path: str) -> torch.Tensor:
+        with Image.open(path) as im:
+            if im.size != (width, height):
+                raise ValueError(
+                    f"frame {path} è {im.size[0]}x{im.size[1]}, il primo è {width}x{height}: "
+                    "i frame di un blocco video devono avere la stessa risoluzione"
+                )
+            frame = torch.from_numpy(np.array(qvu.to_rgb(im)).transpose(2, 0, 1))
+        return TF.resize(frame, [resized_height, resized_width],
+                         interpolation=InterpolationMode.BICUBIC, antialias=True)
+
+    with ThreadPoolExecutor(max_workers=min(qvu.MAX_NUM_WORKERS_FETCH_VIDEO, len(paths))) as ex:
+        frames = list(ex.map(load, paths))
+    frames.extend([frames[-1]] * (nframes - len(frames)))
+    video = torch.stack(frames).float()
+
+    sample_fps = ele.get("sample_fps", 2.0)
+    raw_fps = ele.get("raw_fps", sample_fps)
+    metadata = dict(
+        fps=raw_fps,
+        frames_indices=list(range(len(video))),
+        total_num_frames=(nframes / sample_fps) * raw_fps,
+    )
+    return video, metadata, sample_fps
+
+
 class Qwen(BaseVLM):
     """Shared implementation for the Qwen-VL family (2.5 and 3.x).
 
@@ -92,6 +164,14 @@ class Qwen(BaseVLM):
     # Qwen3-VL, dove senza è insensato (i timestamp finiscono nel prompt).
     pass_video_metadata: bool = False
 
+    # Se le liste di frame (`VideoFrames`) aggirano il bug di qwen-vl-utils che
+    # le arrotonda a multipli di 64 invece che di 32 (vedi `_fetch_videoframes`).
+    # Default `False`: tutti gli arm già misurati che passano da `VideoFrames`
+    # (viste zoom di `coarse_to_fine`, pass 2 di `visual_prompt`/
+    # `attention_marker`, ricampionamenti di `entropy_attention_resample`) sono
+    # girati col bug, e correggerlo ne cambia la risoluzione.
+    fix_videoframes_resize: bool = False
+
     def _load(
         self,
         torch_dtype,
@@ -101,6 +181,7 @@ class Qwen(BaseVLM):
         num_text_layers: int | None = None,
         num_vision_layers: int | None = None,
         pass_video_metadata: bool | None = None,
+        fix_videoframes_resize: bool | None = None,
         **kwargs,
     ):
         """Load the Qwen-VL processor + model.
@@ -109,9 +190,9 @@ class Qwen(BaseVLM):
         (forwarded to `processor_cls`); leave as `None` to keep the model's
         default range.
 
-        `pass_video_metadata` (`None` = lascia il default della classe)
-        sovrascrive l'attributo omonimo dal preset yaml — knob per-run, vedi
-        `_prepare_inputs`.
+        `pass_video_metadata` e `fix_videoframes_resize` (`None` = lascia il
+        default della classe) sovrascrivono gli attributi omonimi dal preset
+        yaml — knob per-run, vedi `_prepare_inputs` e `_fetch_videoframes`.
 
         `num_text_layers` / `num_vision_layers` (entrambi `None` di default)
         sono knob per **smoke test su GPU piccola**: troncano il decoder
@@ -128,6 +209,8 @@ class Qwen(BaseVLM):
             # `BaseVLM.__init__`, quindi `self` esiste già ed è l'unico punto
             # in cui i knob del preset yaml sono visibili.
             self.pass_video_metadata = bool(pass_video_metadata)
+        if fix_videoframes_resize is not None:
+            self.fix_videoframes_resize = bool(fix_videoframes_resize)
 
         processor_kwargs = {}
         if min_pixels is not None:
@@ -292,6 +375,46 @@ class Qwen(BaseVLM):
             return messages, {}
         return clean_messages, manual
 
+    def _process_vision_info(self, messages: list[dict], *, return_video_metadata: bool):
+        """`qwen_vl_utils.process_vision_info`, con le liste di frame corrette se richiesto.
+
+        Con `fix_videoframes_resize=False` delega e basta (regime storico). Con
+        `True` rifà lo stesso giro di `process_vision_info` — stesso ordine dei
+        media, stesso formato di ritorno — ma i `VideoFrames` passano da
+        `_fetch_videoframes`; immagini e `Video` da file restano alle funzioni
+        di qwen-vl-utils.
+        """
+        if not self.fix_videoframes_resize:
+            return process_vision_info(
+                messages,
+                return_video_kwargs=True,
+                return_video_metadata=return_video_metadata,
+                image_patch_size=self.image_patch_size,
+            )
+        image_inputs, video_inputs, sample_fps_list = [], [], []
+        for info in qvu.extract_vision_info(messages):
+            if "image" in info or "image_url" in info:
+                image_inputs.append(qvu.fetch_image(info, image_patch_size=self.image_patch_size))
+            elif "video" in info:
+                if isinstance(info["video"], (list, tuple)):
+                    video, metadata, sample_fps = _fetch_videoframes(info, self.image_patch_size)
+                    video_input = (video, metadata) if return_video_metadata else video
+                else:
+                    video_input, sample_fps = qvu.fetch_video(
+                        info,
+                        image_patch_size=self.image_patch_size,
+                        return_video_sample_fps=True,
+                        return_video_metadata=return_video_metadata,
+                    )
+                video_inputs.append(video_input)
+                sample_fps_list.append(sample_fps)
+            else:
+                raise ValueError("image, image_url or video should in content.")
+        video_kwargs = {"do_sample_frames": False}
+        if not return_video_metadata:  # stesso BC per Qwen2.5-VL di process_vision_info
+            video_kwargs["fps"] = sample_fps_list
+        return image_inputs or None, video_inputs or None, video_kwargs
+
     def _prepare_inputs(self, messages: list[dict]) -> BatchFeature:
         """Turn chat `messages` into a model-ready `BatchFeature` on device.
 
@@ -350,8 +473,8 @@ class Qwen(BaseVLM):
                     "default): nel regime storico i metadata non vengono "
                     "inoltrati al processor e andrebbero persi in silenzio."
                 )
-            image_inputs, video_inputs, video_kwargs = process_vision_info(
-                messages, return_video_kwargs=True, image_patch_size=self.image_patch_size,
+            image_inputs, video_inputs, video_kwargs = self._process_vision_info(
+                messages, return_video_metadata=False,
             )
             return self.processor(
                 text=[text],
@@ -362,11 +485,8 @@ class Qwen(BaseVLM):
                 video_kwargs=video_kwargs,
             ).to(self.model.device)
 
-        image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages,
-            return_video_kwargs=True,
-            return_video_metadata=True,
-            image_patch_size=self.image_patch_size,
+        image_inputs, video_inputs, video_kwargs = self._process_vision_info(
+            messages, return_video_metadata=True,
         )
         # Con `return_video_metadata=True` ogni elemento è `(video, metadata)`.
         videos = video_metadata = None

@@ -20,6 +20,13 @@ model:
     # sulla stessa posizione temporale M-RoPE. true = timestamp reali, corretto
     # ma NON confrontabile con i numeri esistenti. Vedi `Qwen._prepare_inputs`.
     pass_video_metadata: false   # (true | false)
+    # false = regime storico: con una LISTA di frame (VideoFrames) qwen-vl-utils
+    # 0.0.14 arrotonda a multipli di 2x il fattore giusto (56 qui, 64 su Qwen3-VL)
+    # → meno token per cella del path Video (640x360 a 50176 px su Qwen3: 4x8
+    # invece di 5x9). true = stesso resize del path Video. Tocca solo gli arm che
+    # passano da VideoFrames, e cambiarlo li rende NON confrontabili con le run
+    # esistenti. Vedi `models/qwen.py::_fetch_videoframes`.
+    fix_videoframes_resize: false   # (true | false)
 
   qwen2_5_vl_3b_attn:
     name: qwen25_vl_3b_attn
@@ -30,6 +37,7 @@ model:
     num_text_layers: null
     num_vision_layers: null
     pass_video_metadata: false   # (true | false) vedi qwen2_5_vl_3b
+    fix_videoframes_resize: false   # (true | false) vedi qwen2_5_vl_3b
     attn_implementation:
       text_config: qwen25_attn_capture   # alias storico di qwen_attn_capture
       vision_config: sdpa
@@ -42,6 +50,7 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    fix_videoframes_resize: false   # (true | false) vedi qwen2_5_vl_3b
 
   # Varianti con cattura dei segnali (SupportsSignals): richieste dalle
   # strategy signal-driven (entropy_shortcut, entropy_attention_resample,
@@ -55,6 +64,7 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    fix_videoframes_resize: false   # (true | false) vedi qwen2_5_vl_3b
     attn_implementation:
       text_config: qwen_attn_capture
       vision_config: sdpa
@@ -67,6 +77,7 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    fix_videoframes_resize: false   # (true | false) vedi qwen2_5_vl_3b
 
   qwen3_vl_4b_attn:
     name: qwen3_vl_4b_attn
@@ -76,6 +87,7 @@ model:
     max_pixels: 802816
     num_text_layers: null
     num_vision_layers: null
+    fix_videoframes_resize: false   # (true | false) vedi qwen2_5_vl_3b
     attn_implementation:
       text_config: qwen_attn_capture
       vision_config: sdpa

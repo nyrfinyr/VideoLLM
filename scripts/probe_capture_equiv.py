@@ -27,12 +27,13 @@ Il riferimento è `models/qwen_attn.py` al commit `REF_COMMIT` (default
 22be7cc, l'ultimo prima del fix), letto con `git show`: il codice che ha
 prodotto le run passate, non una sua trascrizione.
 
-Il media è un `Video` (decodifica di qwen-vl-utils), NON `VideoFrames`: con una
-lista di frame qwen-vl-utils 0.0.14 passa `image_factor` come
-`image_patch_size` a `fetch_image` e arrotonda le dimensioni a multipli di 64
-invece che di 32 (640x360 a 50176 px → 4x8 token per cella invece di 5x9). Per
-misurare il costo al budget della run serve il path che lo rispetta. La
-decodifica entra quindi nelle latenze, identica per i due kernel.
+Il media è `VideoFrames` (PNG estratti una volta, `frames_indices`/`fps`
+reali) — lo stesso canale del campionamento a coppie della run — col modello a
+`fix_videoframes_resize=true`: senza, qwen-vl-utils 0.0.14 arrotonda le liste
+di frame a multipli di 64 (640x360 a 50176 px → 4x8 token per cella invece di
+5x9) e il costo misurato non sarebbe quello della run. `big_grid` nel summary
+conferma il budget. L'estrazione dei PNG sta fuori dalle latenze; la loro
+lettura entra, identica per i due kernel.
 
 Log: wandb (project lvbench, group probe-capture-equiv), summary + Table
 per-sample; stdout replica tutto. Exit code 2 se l'equivalenza fallisce.
@@ -43,10 +44,12 @@ Uso:
 """
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,8 +66,9 @@ from transformers import AttentionInterface
 import models.qwen_attn as new_attn
 from evals.base import format_mcq_prompt
 from evals.lvbench import LVBench
-from models.media import Text, Video
-from utils.attn_core import ranked_cells_from_attention, resolve_query_rows
+from models.media import Text, VideoFrames
+from strategies.attention_marker import _extract_all_frames
+from utils.attn_core import ranked_cells_from_attention, reconstruct_frame_indices, resolve_query_rows
 from utils.config import load_config
 
 ROWSETS = ("all", "question")
@@ -97,10 +101,26 @@ def load_reference_module(commit: str):
 
 
 def share(cls, vlm):
-    """Istanza di `cls` che riusa processor e pesi di `vlm`: un solo modello in memoria."""
+    """Istanza di `cls` con lo stato di `vlm` (processor, pesi e knob d'istanza
+    come `fix_videoframes_resize`): un solo modello in memoria, stesso input."""
     other = cls.__new__(cls)
-    other.processor, other.model = vlm.processor, vlm.model
+    other.__dict__.update(vlm.__dict__)
     return other
+
+
+def frames_media(video_path: str, nframes: int, max_pixels: int,
+                 min_pixels: int | None) -> VideoFrames:
+    """`nframes` frame uniformi estratti in PNG, con metadata reali.
+
+    La cartella dei PNG si cancella a fine processo, anche se una parte
+    successiva della sonda solleva.
+    """
+    idx, fps = reconstruct_frame_indices(video_path, nframes)
+    idx = [int(i) for i in idx]
+    paths, tmp_dir = _extract_all_frames(video_path, idx)
+    atexit.register(shutil.rmtree, tmp_dir, ignore_errors=True)
+    return VideoFrames(paths, max_pixels=max_pixels, min_pixels=min_pixels,
+                       frames_indices=idx, fps=fps)
 
 
 def capture(mod, vlm, media, text, letters):
@@ -195,7 +215,8 @@ def main() -> int:
         config={"n_samples": len(picked), "seed": seed, "ref_commit": ref_commit,
                 "nframes": nframes, "max_pixels": max_pixels, "big_nframes": big_nframes,
                 "big_max_pixels": big_max_pixels, "big_min_pixels": big_min_pixels,
-                "model": "qwen3_vl_2b_attn", "rel_tol": REL_TOL},
+                "model": "qwen3_vl_2b_attn", "fix_videoframes_resize": True,
+                "rel_tol": REL_TOL},
     )
 
     # Modello costruito DAL PRESET, come main.py: è il preset `_attn` che attiva
@@ -204,6 +225,8 @@ def main() -> int:
     model_cfg.pop("name")
     model_cfg["torch_dtype"] = {"float16": torch.float16, "bfloat16": torch.bfloat16,
                                 "float32": torch.float32}[model_cfg["torch_dtype"]]
+    # Liste di frame allo stesso resize del path `Video`, come nella run.
+    model_cfg["fix_videoframes_resize"] = True
     vlm_new = new_attn.Qwen3VL2BAttention(**model_cfg)
     vlm_ref = share(ref_attn.Qwen3VL2BAttention, vlm_new)
     n_layers = len(vlm_new.model.model.language_model.layers)
@@ -222,7 +245,7 @@ def main() -> int:
         try:
             text = Text(format_mcq_prompt(r["question"], r["options"]))
             letters = [chr(ord("A") + k) for k in range(len(r["options"]))]
-            media = Video(r["video_path"], nframes=nframes, max_pixels=max_pixels)
+            media = frames_media(r["video_path"], nframes, max_pixels, None)
             a_ref, lat_ref, peak_ref = capture(ref_attn, vlm_ref, media, text, letters)
             a_new, lat_new, peak_new = capture(new_attn, vlm_new, media, text, letters)
             c = compare(a_ref, a_new)
@@ -254,8 +277,7 @@ def main() -> int:
     r = picked[0]
     text = Text(format_mcq_prompt(r["question"], r["options"]))
     letters = [chr(ord("A") + k) for k in range(len(r["options"]))]
-    media = Video(r["video_path"], nframes=big_nframes, max_pixels=big_max_pixels,
-                  min_pixels=big_min_pixels)
+    media = frames_media(r["video_path"], big_nframes, big_max_pixels, big_min_pixels)
     a_new, lat_new, peak_new = capture(new_attn, vlm_new, media, text, letters)
     torch.cuda.empty_cache()
     a_ref, lat_ref, peak_ref = capture(ref_attn, vlm_ref, media, text, letters)
