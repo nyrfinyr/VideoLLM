@@ -62,17 +62,33 @@ def sink_dims_for(model_id: str) -> tuple[int, ...]:
 # testuale prima di ogni frame, quindi i token visivi sono `t` isole separate
 # (vedi `QwenAttentionCapture._capture_spans`). Su Qwen2.5-VL gli indici sono
 # semplicemente contigui e il risultato è identico allo slice di prima.
+#
+#   LAYER_RANGE = [lo, hi)  layer del decoder da catturare (`None` = tutti).
+#                 Solo quelli entrano nella media di `full_visual_attention`:
+#                 catturare anche gli altri era lavoro buttato (matmul +
+#                 softmax fp32 per layer).
+#   ATTN_SUM    = somma SU GPU dei pesi `[n_q, n_vis]` dei layer catturati,
+#                 ATTN_COUNT = quanti. Accumulare sul device invece di un
+#                 `.cpu()` per layer evita una sincronizzazione GPU→CPU a ogni
+#                 layer e tiene in memoria una matrice sola invece di L (a 512
+#                 frame ~46 MB contro ~1.3 GB).
 QUERY_SPAN: tuple[int, int] | None = None
 VIS_INDEX: torch.Tensor | None = None
+LAYER_RANGE: tuple[int, int] | None = None
+ATTN_SUM: torch.Tensor | None = None
+ATTN_COUNT: int = 0
 
 
 def set_capture_spans(
     query_span: tuple[int, int] | None,
     vis_index: torch.Tensor | None = None,
+    layer_range: tuple[int, int] | None = None,
 ) -> None:
-    """Imposta righe-query e colonne visive per il prossimo forward."""
-    global QUERY_SPAN, VIS_INDEX
-    QUERY_SPAN, VIS_INDEX = query_span, vis_index
+    """Imposta righe-query, colonne visive e layer per il prossimo forward, e
+    azzera l'accumulatore dei pesi."""
+    global QUERY_SPAN, VIS_INDEX, LAYER_RANGE, ATTN_SUM, ATTN_COUNT
+    QUERY_SPAN, VIS_INDEX, LAYER_RANGE = query_span, vis_index, layer_range
+    ATTN_SUM, ATTN_COUNT = None, 0
 
 
 def qwen_attn_capture(
@@ -89,15 +105,17 @@ def qwen_attn_capture(
     """Attention interface che, oltre all'output SDPA, stasha i pesi softmax.
 
     Cattura `softmax(q·kᵀ)` per le SOLE righe-query in `QUERY_SPAN`, ne tiene le
-    SOLE colonne visive in `VIS_INDEX`, fa la media sulle teste e stasha
-    `[n_q, n_vis]` (cpu) in `module._last_attn`. Entity-agnostico: conserva una
-    riga per OGNI token della domanda, non per una singola entity.
+    SOLE colonne visive in `VIS_INDEX`, fa la media sulle teste e somma
+    `[n_q, n_vis]` in `ATTN_SUM` (sul device, niente `.cpu()`), solo per i layer
+    in `LAYER_RANGE`. Entity-agnostico: conserva una riga per OGNI token della
+    domanda, non per una singola entity.
 
     Indipendente dalla versione: la firma dell'attention interface è la stessa
     per Qwen2.5-VL e Qwen3-VL, e su Qwen3 `q_norm`/`k_norm` sono già applicate
     dal chiamante (`modeling_qwen3_vl.py:478-480`), quindi il matmul qui sotto
     ricalcola gli stessi pesi che userebbe il kernel.
     """
+    global ATTN_SUM, ATTN_COUNT
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
@@ -112,7 +130,9 @@ def qwen_attn_capture(
     )
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    if QUERY_SPAN is not None and VIS_INDEX is not None:
+    if QUERY_SPAN is not None and VIS_INDEX is not None and (
+        LAYER_RANGE is None or LAYER_RANGE[0] <= module.layer_idx < LAYER_RANGE[1]
+    ):
         q_lo, q_hi = QUERY_SPAN
         query_rows = query[:, :, q_lo:q_hi, :]
         attn_weights = torch.matmul(query_rows, key_states.transpose(2, 3)) * scaling
@@ -120,8 +140,12 @@ def qwen_attn_capture(
             attn_weights = attn_weights + attention_mask[:, :, q_lo:q_hi, : key_states.shape[-2]]
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
         # colonne visive + media sulle teste → [n_q, n_vis] (batch=1).
-        vis = attn_weights.index_select(-1, VIS_INDEX.to(attn_weights.device)).mean(dim=1)
-        module._last_attn = vis[0].detach().cpu()
+        vis = attn_weights.index_select(-1, VIS_INDEX.to(attn_weights.device)).mean(dim=1)[0]
+        if ATTN_SUM is None:
+            ATTN_SUM = vis
+        else:
+            ATTN_SUM.add_(vis.to(ATTN_SUM.device))
+        ATTN_COUNT += 1
 
     return attn_output, None
 
@@ -146,7 +170,7 @@ class QwenAttentionCapture(SupportsSignals):
     L'interface `qwen_attn_capture` (registrata sopra, attivata via
     `attn_implementation.text_config` nello yaml — scoped al solo decoder
     testuale) calcola `softmax(q·kᵀ)` per le righe-query del testo della domanda
-    e stasha i pesi sui token visivi per layer in `self_attn._last_attn`.
+    e accumula sul device i pesi sui token visivi dei layer centrali.
     `full_visual_attention` orchestra il giro completo: span domanda/visivo →
     forward di prefill → media sui layer centrali → mappa 2D per ogni token
     della domanda. `entity_visual_attention` è un wrapper che seleziona le righe
@@ -276,14 +300,17 @@ class QwenAttentionCapture(SupportsSignals):
 
         layers = self.model.model.language_model.layers
         n_layers = len(layers)
+        if layer_range is None:
+            layer_range = (n_layers // 4, 3 * n_layers // 4)
+        lo, hi = layer_range
 
-        # Forward hook su ogni layer (output hidden states) per calcolare il
-        # sink score dei token visivi. Stasha [n_vis] su CPU in `layer._sink`.
-        # Simmetrico a `_last_attn` dell'attention interface, separato per
-        # tenere pulito il path di capture.
-        sink_per_layer: dict[int, torch.Tensor] = {}
+        # Forward hook sui SOLI layer di `layer_range` (output hidden states)
+        # per il sink score dei token visivi. Come i pesi d'attenzione, lo
+        # score si somma sul device: nessun `.cpu()` per layer. Separato
+        # dall'attention interface per tenere pulito il path di capture.
+        sink_acc: dict = {"sum": None, "count": 0}
 
-        def make_sink_hook(layer_idx: int, columns: torch.Tensor, dims: torch.Tensor):
+        def make_sink_hook(columns: torch.Tensor, dims: torch.Tensor):
             def _hook(_module, _inputs, output):
                 # output è un tuple; il primo è l'hidden state.
                 hs = output[0] if isinstance(output, tuple) else output
@@ -291,16 +318,20 @@ class QwenAttentionCapture(SupportsSignals):
                 sink_vals = vis_hidden[:, dims.to(hs.device)]  # [n_vis, n_sink_dims]
                 max_sink_val = sink_vals.abs().max(dim=1).values
                 rms = torch.sqrt(vis_hidden.pow(2).mean(dim=1))
-                score = max_sink_val / (rms + 1e-6)  # [n_vis]
-                sink_per_layer[layer_idx] = score.detach().cpu().float()
+                score = (max_sink_val / (rms + 1e-6)).float()  # [n_vis]
+                if sink_acc["sum"] is None:
+                    sink_acc["sum"] = score
+                else:
+                    sink_acc["sum"].add_(score.to(sink_acc["sum"].device))
+                sink_acc["count"] += 1
             return _hook
 
         hooks = [
-            layers[i].register_forward_hook(make_sink_hook(i, vis_index, sink_dims_t))
-            for i in range(n_layers)
+            layers[i].register_forward_hook(make_sink_hook(vis_index, sink_dims_t))
+            for i in range(lo, hi)
         ]
 
-        set_capture_spans(query_span, vis_index)
+        set_capture_spans(query_span, vis_index, layer_range)
         try:
             with torch.no_grad():
                 # use_cache=False: questo è un prefill isolato (nessuna
@@ -310,6 +341,7 @@ class QwenAttentionCapture(SupportsSignals):
                 # nframes alti (es. Video-MME 128) risparmia memoria
                 # sufficiente a evitare OOM sulle GPU da 24G.
                 outputs = self.model(**inputs, logits_to_keep=1, use_cache=False)
+            attn_sum, attn_count = ATTN_SUM, ATTN_COUNT
         finally:
             for h in hooks:
                 h.remove()
@@ -323,19 +355,21 @@ class QwenAttentionCapture(SupportsSignals):
             # cascata su tutti i sample dopo il primo OOM).
             torch.cuda.empty_cache()
 
-        # [L, n_q, n_vis]: pesi (già mediati sulle teste) per layer.
-        attn = torch.stack([layer.self_attn._last_attn for layer in layers])
-
-        if layer_range is None:
-            layer_range = (attn.shape[0] // 4, 3 * attn.shape[0] // 4)
-        lo, hi = layer_range
-        attn = attn[lo:hi].mean(dim=0)  # [n_q, n_vis]
-
-        # Sink score: media sui layer centrali (stesso range di attn).
-        sorted_sink = sorted(sink_per_layer.keys())
-        sink_scores = torch.stack([
-            sink_per_layer[i] for i in sorted_sink if lo <= i < hi
-        ]).mean(dim=0)  # [n_vis]
+        # Ogni layer del range deve essere passato dal kernel di cattura: meno
+        # layer = preset senza `attn_implementation.text_config=
+        # qwen_attn_capture` (il kernel non gira mai) o range oltre i layer
+        # esistenti. Meglio fermarsi che mediare su un sottoinsieme.
+        if attn_count != hi - lo or sink_acc["count"] != hi - lo:
+            raise RuntimeError(
+                f"catturati {attn_count} layer d'attenzione e {sink_acc['count']} "
+                f"di sink score, attesi {hi - lo} (layer_range={layer_range}): "
+                "il modello gira senza `attn_implementation.text_config="
+                "qwen_attn_capture`? Usa un preset `_attn`."
+            )
+        # Un solo trasferimento GPU→CPU per forward: media sui layer centrali
+        # dei pesi (già mediati sulle teste) e dei sink score.
+        attn = (attn_sum / attn_count).cpu()  # [n_q, n_vis]
+        sink_scores = (sink_acc["sum"] / sink_acc["count"]).cpu()  # [n_vis]
 
         # mappa 1D → griglia 2D: grid_thw è in patch PRE-merger, la griglia
         # dei token è divisa per spatial_merge_size (2) su h e w.
@@ -458,7 +492,7 @@ class QwenAttentionCapture(SupportsSignals):
 # cattura (il mixin), il resto — pesi, processor, preprocessing — è quello
 # della classe base. Vanno selezionate con il preset yaml corrispondente, che
 # è ciò che attiva davvero l'interface (`attn_implementation.text_config`):
-# senza, `_last_attn` non verrebbe mai popolato.
+# senza, il kernel di cattura non gira e `full_visual_attention` solleva.
 class Qwen25VLAttention(Qwen25VL3B, QwenAttentionCapture):
     """Qwen2.5-VL-3B con cattura dell'attenzione (preset `qwen2_5_vl_3b_attn`)."""
 
