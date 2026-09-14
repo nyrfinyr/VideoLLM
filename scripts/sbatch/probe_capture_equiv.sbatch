@@ -3,7 +3,7 @@
 #SBATCH --account=tesi_avalenza
 #SBATCH --partition=all_usr_prod
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G"
+#SBATCH --constraint="gpu_A40_45G|gpu_L40S_45G|gpu_RTX_A5000_24G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=01:30:00
@@ -18,9 +18,11 @@
 # Il riferimento è la cattura al commit REF_COMMIT (default 22be7cc), letta con
 # `git show`: il clone su cui gira il job deve avere quel commit.
 #
-# ⚠️ `--constraint` SENZA schede Turing (sm_75), come tutti gli sbatch qwen3, e
-# senza le A5000 da 24G: la parte a 512 frame misura il picco di memoria e il
-# vecchio path impila ~1.3 GB su host — serve la stessa classe di GPU della run.
+# ⚠️ `--constraint` SENZA schede Turing (sm_75), come tutti gli sbatch qwen3.
+# Su all_usr_prod non si può restringere alle 45G: il job può finire su una
+# A5000 da 24G. Il picco di memoria della parte a 512 frame va quindi letto
+# insieme a `gpu_name` nel config wandb — e se la A5000 regge, la run regge
+# su tutte e tre.
 #
 # Il modello gira con `fix_videoframes_resize=true` (impostato dallo script):
 # i frame passano come `VideoFrames`, come nel campionamento a coppie della

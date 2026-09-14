@@ -216,7 +216,8 @@ def main() -> int:
                 "nframes": nframes, "max_pixels": max_pixels, "big_nframes": big_nframes,
                 "big_max_pixels": big_max_pixels, "big_min_pixels": big_min_pixels,
                 "model": "qwen3_vl_2b_attn", "fix_videoframes_resize": True,
-                "rel_tol": REL_TOL},
+                "rel_tol": REL_TOL,
+                "gpu_name": torch.cuda.get_device_name() if torch.cuda.is_available() else None},
     )
 
     # Modello costruito DAL PRESET, come main.py: è il preset `_attn` che attiva
