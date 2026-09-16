@@ -71,6 +71,46 @@ ENTITY_EXTRACTION_EXAMPLES = (
 )
 
 
+def videoframes_target_size(
+    n_frames: int,
+    height: int,
+    width: int,
+    image_patch_size: int,
+    *,
+    max_pixels: int | None = None,
+    min_pixels: int | None = None,
+    total_pixels: int | None = None,
+) -> tuple[int, int]:
+    """Dimensioni a cui un blocco di `n_frames` frame `height x width` finisce.
+
+    È il calcolo che `qwen_vl_utils.fetch_video` fa a livello VIDEO (floor per
+    frame, tetto per frame, tetto sul totale dei pixel del blocco, poi
+    `smart_resize` al fattore `image_patch_size * merge`), isolato qui perché
+    serve a due chiamanti: `_fetch_videoframes` (che ridimensiona davvero) e
+    `utils.pair_sampling`, che estrae i PNG GIÀ a questa dimensione — scrivere
+    512 frame 1080p a risoluzione nativa costa ~230 s per sample contro ~6 s,
+    e il ridimensionamento a valle sarebbe comunque lo stesso. Un'unica
+    implementazione perché le due devono coincidere esattamente: se
+    divergessero, i frame passerebbero per DUE resize invece di uno e i pixel
+    visti dal modello cambierebbero in silenzio.
+    """
+    image_factor = image_patch_size * qvu.SPATIAL_MERGE_SIZE
+    nframes = qvu.ceil_by_factor(n_frames, qvu.FRAME_FACTOR)
+    if min_pixels is None:
+        min_pixels = qvu.VIDEO_MIN_TOKEN_NUM * image_factor * image_factor
+    if total_pixels is None:
+        total_pixels = qvu.MODEL_SEQ_LEN * image_factor * image_factor * 0.9
+    cap = max(
+        min(qvu.VIDEO_MAX_TOKEN_NUM * image_factor * image_factor,
+            total_pixels / nframes * qvu.FRAME_FACTOR),
+        int(min_pixels * 1.05),
+    )
+    max_pixels = cap if max_pixels is None else min(max_pixels, cap)
+    return qvu.smart_resize(
+        height, width, factor=image_factor, min_pixels=min_pixels, max_pixels=max_pixels,
+    )
+
+
 def _fetch_videoframes(ele: dict, image_patch_size: int) -> tuple[torch.Tensor, dict, float]:
     """`qwen_vl_utils.fetch_video` per una LISTA di frame, senza il bug del fattore.
 
@@ -100,20 +140,15 @@ def _fetch_videoframes(ele: dict, image_patch_size: int) -> tuple[torch.Tensor, 
     from torchvision.transforms import functional as TF
 
     paths = list(ele["video"])
-    image_factor = image_patch_size * qvu.SPATIAL_MERGE_SIZE
+    # Conteggio PARI come nel ramo lista di `fetch_video`: sotto si padda con
+    # l'ultimo frame, e `nframes` entra anche nei fake metadata.
     nframes = qvu.ceil_by_factor(len(paths), qvu.FRAME_FACTOR)
     with Image.open(paths[0]) as im:
         width, height = im.size
-    min_pixels = ele.get("min_pixels", qvu.VIDEO_MIN_TOKEN_NUM * image_factor * image_factor)
-    total_pixels = ele.get("total_pixels", qvu.MODEL_SEQ_LEN * image_factor * image_factor * 0.9)
-    max_pixels = max(
-        min(qvu.VIDEO_MAX_TOKEN_NUM * image_factor * image_factor,
-            total_pixels / nframes * qvu.FRAME_FACTOR),
-        int(min_pixels * 1.05),
-    )
-    max_pixels = min(ele.get("max_pixels", max_pixels), max_pixels)
-    resized_height, resized_width = qvu.smart_resize(
-        height, width, factor=image_factor, min_pixels=min_pixels, max_pixels=max_pixels,
+    resized_height, resized_width = videoframes_target_size(
+        len(paths), height, width, image_patch_size,
+        max_pixels=ele.get("max_pixels"), min_pixels=ele.get("min_pixels"),
+        total_pixels=ele.get("total_pixels"),
     )
 
     def load(path: str) -> torch.Tensor:

@@ -27,8 +27,13 @@ segmento rilevante, e passare GT start/end è cheating. Override con
 `cfg.use_time_reference=true` per fare eval "open-book" (utile per
 debug / oracle baseline).
 
-Scorer: `evals.base.mcq_accuracy` (condiviso). Breakdown per
-`question_type` in UI Weave via la colonna.
+Scorer: `evals.base.mcq_accuracy` (condiviso). `predict` ri-emette
+`question_type` nell'output, lo scorer ne fa il breakdown aggregato
+(`correct_question_type_<slug>`/`seen_question_type_<slug>`, poi
+`mcq_accuracy_question_type_<slug>` & co. nel summary wandb via
+`utils.obs.log_eval_summary`). Multi-label: un sample conta in ognuna
+delle sue categorie, quindi le fasce si sovrappongono e la somma dei
+`n_samples_question_type_*` supera il totale.
 """
 
 from __future__ import annotations
@@ -110,7 +115,7 @@ class LVBench(Dataset):
             question:       str           # solo lo stem, senza option
             options:        list[str]     # 4 stringhe (A..D ordinate)
             answer:         int           # indice in `options`
-            question_type:  list[str]     # multi-label (UI breakdown)
+            question_type:  list[str]     # multi-label (breakdown scorer)
             video_start:    float | None  # secondi, da time_reference
             video_end:      float | None  # secondi, da time_reference
 
@@ -192,6 +197,14 @@ class LVBench(Dataset):
         passato a `strategy.answer` — eval "open-book" / oracle baseline,
         utile per misurare l'upper bound se il modello sapesse già dove
         guardare.
+
+        `question_type` NON serve alla predizione: come `duration`/
+        `task_type` in `VideoMME.predict_factory`, è nella signature solo
+        perché Weave passa a `predict` le colonne che matchano per nome, e
+        viene RI-EMESSO nel dict di output. `evals.base.mcq_accuracy` lo
+        legge (è in `BREAKDOWN_KEYS`) e, essendo una lista, emette una
+        coppia `correct_question_type_<slug>`/`seen_question_type_<slug>`
+        per etichetta — fasce sovrapposte, non una partizione.
         """
         from strategies.base import SamplingBudget
 
@@ -209,16 +222,24 @@ class LVBench(Dataset):
                 options: list[str],
                 video_start: float | None,
                 video_end: float | None,
+                question_type: list[str],
             ) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                return strategy.answer(
+                out = strategy.answer(
                     vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg,
                     budget=budget, video_start=video_start, video_end=video_end,
                 )
+                return {**out, "question_type": question_type}
         else:
             @weave.op
-            def predict(video_path: str, question: str, options: list[str]) -> dict:
+            def predict(
+                video_path: str,
+                question: str,
+                options: list[str],
+                question_type: list[str],
+            ) -> dict:
                 prompt = format_mcq_prompt(question, options)
-                return strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                out = strategy.answer(vlm, video_path=video_path, prompt=prompt, options=options, gen_cfg=gen_cfg, budget=budget)
+                return {**out, "question_type": question_type}
 
         return predict

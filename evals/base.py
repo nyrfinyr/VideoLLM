@@ -117,9 +117,16 @@ def extract_mcq_letters(prompt: str) -> list[str]:
 # in `fraction` (vedi `strategies/attention_highlight.py`). Senza questo
 # breakdown, un delta fra l'arm a 12 celle e quello a 24 mescolerebbe
 # l'effetto della RISOLUZIONE del puntatore con quello del cambio di UNITÀ.
+#
+# `question_type` (LVBench, ri-emesso da `LVBench.predict_factory`) è l'unica
+# chiave a valore LISTA: multi-label, 1-3 etichette per sample. Il sample
+# conta in OGNUNA delle sue categorie, quindi — a differenza di `task_type`
+# di Video-MME — le fasce NON partizionano i sample: la somma dei
+# `seen_question_type_*` supera n, e le accuracy per tipo non si ricombinano
+# nella complessiva con una media pesata.
 BREAKDOWN_KEYS = (
     "duration", "task_type", "resampled", "resample_kind", "pred_fallback",
-    "highlighted", "highlight_units",
+    "highlighted", "highlight_units", "question_type",
 )
 
 _SLUG_RE = re.compile(r"\W+")
@@ -148,6 +155,11 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
     numero di sample che superano il gate d'entropia e
     `correct_resampled_true.true_fraction` la loro accuracy condizionata.
 
+    Le chiavi a valore LISTA (`question_type` di LVBench) emettono una
+    coppia per etichetta: `correct_question_type_<slug>` /
+    `seen_question_type_<slug>`. Il sample finisce in tutte le sue fasce,
+    che quindi si sovrappongono (somma dei `seen_*` > n).
+
     Funziona perché `weave.flow.scorer.auto_summarize` scarta i None prima
     di aggregare (`data = [x for x in data if x is not None]`) e unisce le
     chiavi di TUTTI i sample: ogni sample emette solo le chiavi della
@@ -171,9 +183,16 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
         value = output.get(key)
         if value is None:
             continue
-        slug = f"{key}_{_slug(value)}"
-        scores[f"correct_{slug}"] = correct
-        scores[f"seen_{slug}"] = True
+        # Valore lista (multi-label, es. `question_type` di LVBench): una
+        # coppia per etichetta. Le etichette ripetute collassano sulla stessa
+        # chiave del dict, quindi un sample conta al più una volta per fascia;
+        # lista vuota → nessuno score. Gli scalari passano dal ramo originale
+        # (lista di un solo elemento), stesse chiavi e stessi valori di prima.
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for v in values:
+            slug = f"{key}_{_slug(v)}"
+            scores[f"correct_{slug}"] = correct
+            scores[f"seen_{slug}"] = True
 
     # Breakdown DERIVATO, non un passthrough come quelli sopra: la strategy
     # logga `pred_pass1` (la risposta prima dell'intervento) ma non può

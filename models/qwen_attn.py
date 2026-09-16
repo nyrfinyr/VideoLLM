@@ -4,7 +4,7 @@ from transformers import AttentionInterface, GenerationConfig
 from transformers.integrations.sdpa_attention import repeat_kv
 from transformers.masking_utils import AttentionMaskInterface, eager_mask
 
-from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats, top_k_logits
+from utils.attn_core import EntityAttention, QueryToken, VisualAttention, mcq_answer_stats, sink_mask, top_k_logits
 
 from .media import MediaItem, Text
 from .qwen import Qwen25VL3B, Qwen3VL2B, Qwen3VL4B
@@ -48,6 +48,176 @@ def sink_dims_for(model_id: str) -> tuple[int, ...]:
             "omonima in lot/retrieval.py) — nessun default: i canali di un "
             "altro modello darebbero una sink_map priva di significato."
         ) from None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Statistiche estese sui sink (opt-in, `full_visual_attention(sink_stats=True)`)
+#
+# Domanda a cui rispondono: i token che la `sink_map` chiama "sink" lo sono
+# DAVVERO? Cioè i sink dims tabulati sono canali outlier su questo modello (e
+# su quali layer), e i token sopra soglia hanno valori estremi lì e non
+# altrove? Tre viste, tutte sui token visivi e su TUTTI i layer (non solo i
+# centrali: dove nasce e dove muore l'outlier è parte della risposta):
+#   1. top-k canali per max |h| e rango dei sink dims fra tutti i canali;
+#   2. istogrammi di |h[d]| / mediana(|h|) per i sink dims e per canali di
+#      CONTROLLO qualsiasi (la stessa forma su un canale a caso = niente sink);
+#   3. |h[d]| / media(|h|) separato fra token sink e non-sink.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Bordi FISSI dell'istogramma di |h[d]| / mediana(|h|): 10^-2..10^4, 5 bin per
+# decade. Fissi e non adattivi perché gli istogrammi di sample, layer e canali
+# diversi vanno sommati offline: con bordi per-sample non si potrebbe. Sei
+# decadi coprono sia un canale normale (rapporto ~1) sia un outlier massivo
+# (centinaia-migliaia di volte la mediana); fuori range finisce nei due bin
+# di underflow/overflow, non si perde nulla.
+SINK_HIST_EDGES = torch.logspace(-2, 4, 31)
+SINK_STATS_QUANTILES = (0.5, 0.9, 0.99)
+# Seed dei canali di controllo: fisso, così i controlli sono gli STESSI su tutti
+# i sample e su tutti gli shard (e sono ricostruibili offline).
+CONTROL_DIMS_SEED = 0
+
+
+def control_dims_for(hidden_size: int, sink_dims: tuple[int, ...], n: int = 3) -> tuple[int, ...]:
+    """`n` canali di controllo deterministici, disgiunti dai sink dims.
+
+    Estratti da una permutazione a seed fisso e non scelti a mano: un canale
+    "scelto perché sembra normale" sarebbe già un'ipotesi. Nulla garantisce
+    che un controllo non sia a sua volta un outlier non tabulato — lo dice il
+    top-k dei canali, loggato accanto.
+    """
+    g = torch.Generator().manual_seed(CONTROL_DIMS_SEED)
+    perm = torch.randperm(hidden_size, generator=g).tolist()
+    return tuple(d for d in perm if d not in set(sink_dims))[:n]
+
+
+def _group_stats(r: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Media/std/quantili di `r` `[L, m, C]` lungo i token (dim 1) → `[L, C]`
+    ciascuno. Gruppo vuoto (`m=0`, es. `sink_map` costante: tutti sopra
+    soglia) → NaN, non un crash: il sample resta loggabile."""
+    L, m, C = r.shape
+    if m == 0:
+        nan = torch.full((L, C), float("nan"), device=r.device)
+        return {"mean": nan, "std": nan, **{f"p{round(q * 100)}": nan for q in SINK_STATS_QUANTILES}}
+    q = torch.quantile(r, torch.tensor(SINK_STATS_QUANTILES, device=r.device), dim=1)  # [nq, L, C]
+    std = r.std(dim=1) if m > 1 else torch.zeros(L, C, device=r.device)
+    return {"mean": r.mean(dim=1), "std": std,
+            **{f"p{round(qq * 100)}": q[i] for i, qq in enumerate(SINK_STATS_QUANTILES)}}
+
+
+def summarize_sink_stats(
+    vals: torch.Tensor,
+    mean_abs: torch.Tensor,
+    median_abs: torch.Tensor,
+    rms: torch.Tensor,
+    chan_maxabs: torch.Tensor,
+    is_sink: torch.Tensor,
+    sink_dims: tuple[int, ...],
+    topk: int = 10,
+    per_token: bool = False,
+) -> dict:
+    """Riduce i tensori per-layer raccolti dagli hook a statistiche compatte.
+
+    Funzione pura (gira sul device dei tensori, nessun `.cpu()`), separata dal
+    forward per poterla testare e dimensionare su tensori sintetici.
+
+    Args:
+        vals: `[L, n_vis, C]` valori CON SEGNO di `h` sui canali osservati:
+            i primi `len(sink_dims)` sono i sink dims, gli altri i controlli.
+        mean_abs / median_abs / rms: `[L, n_vis]` media, mediana (inferiore,
+            `torch.median`) e RMS di `|h|` su TUTTI i canali, per token.
+        chan_maxabs: `[L, D]` max su i token visivi di `|h|`, per canale.
+        is_sink: `[n_vis]` bool, token sink (top-percentile della `sink_map`,
+            stessa definizione di `utils.attn_core.sink_mask`).
+        sink_dims: indici ASSOLUTI dei sink dims (per il rango in `chan_maxabs`).
+        per_token: se `True` allega anche i tensori per-token (dump).
+
+    Returns: dict di tensori —
+        `topk_channels_idx`/`topk_channels_val` `[L, k]` (canali col max |h|
+        più alto), `chan_maxabs_median` `[L]` (scala del layer),
+        `sink_dim_rank` `[L, n_sink_dims]` (rango 0-based fra i D canali, 0 =
+        il più estremo), `hist` `[L, C, nb+2]` conteggi di |h[d]|/mediana(|h|)
+        su `SINK_HIST_EDGES` (bin 0 = underflow, ultimo = overflow),
+        `ratio_mean_abs` `{"sink"|"nonsink": {"mean","std","p50","p90","p99":
+        [L, C]}}` di |h[d]|/media(|h|) per token; con `per_token` anche
+        `per_token` `{"sink_score": [L, n_vis], "values": [L, n_vis, C],
+        "rms": [L, n_vis]}`.
+    """
+    eps = 1e-6
+    absv = vals.abs()
+    L, _, C = absv.shape
+    n_sink_dims = len(sink_dims)
+
+    topv, topi = chan_maxabs.topk(min(topk, chan_maxabs.shape[1]), dim=1)
+    # Rango = quanti canali hanno un max |h| STRETTAMENTE maggiore: 0 = il sink
+    # dim è il canale più estremo del layer, ~D/2 = un canale qualsiasi.
+    sd = torch.tensor(sink_dims, dtype=torch.long, device=chan_maxabs.device)
+    ref = chan_maxabs.index_select(1, sd)  # [L, n_sink_dims]
+    rank = (chan_maxabs[:, None, :] > ref[:, :, None]).sum(dim=-1)  # [L, n_sink_dims]
+
+    edges = SINK_HIST_EDGES.to(absv.device)
+    idx = torch.bucketize(absv / (median_abs[..., None] + eps), edges)  # [L, n_vis, C] in 0..nb+1
+    idx = idx.permute(0, 2, 1)  # [L, C, n_vis]
+    hist = torch.zeros(L, C, len(edges) + 1, dtype=torch.long, device=absv.device)
+    hist.scatter_add_(2, idx, torch.ones_like(idx))
+
+    ratio = absv / (mean_abs[..., None] + eps)  # [L, n_vis, C]
+    mask = is_sink.to(absv.device)
+    out = {
+        "topk_channels_idx": topi,
+        "topk_channels_val": topv,
+        "chan_maxabs_median": chan_maxabs.median(dim=1).values,
+        "sink_dim_rank": rank,
+        "hist": hist,
+        "ratio_mean_abs": {
+            "sink": _group_stats(ratio[:, mask, :]),
+            "nonsink": _group_stats(ratio[:, ~mask, :]),
+        },
+    }
+    if per_token:
+        out["per_token"] = {
+            # Stessa formula dello score della `sink_map` (max dei sink dims su
+            # RMS), ma per layer e in float32 invece che nel dtype del modello.
+            "sink_score": absv[..., :n_sink_dims].amax(dim=-1) / (rms + eps),
+            "values": vals,
+            "rms": rms,
+        }
+    return out
+
+
+def _tensors_to_cpu_once(tree):
+    """Porta su CPU tutti i tensori di un albero dict/list con UN solo
+    trasferimento: concatena i leaf appiattiti in float32, `.cpu()`, e li
+    ri-affetta con forma e dtype originali. I dtype interi qui sono conteggi e
+    indici di canale (< 2^24), rappresentati esattamente in float32."""
+    leaves: list[torch.Tensor] = []
+
+    def collect(node):
+        if isinstance(node, torch.Tensor):
+            leaves.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                collect(v)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                collect(v)
+
+    collect(tree)
+    if not leaves:
+        return tree
+    dev = leaves[0].device
+    flat = torch.cat([t.detach().to(dev, torch.float32).reshape(-1) for t in leaves]).cpu()
+    it = iter(torch.split(flat, [t.numel() for t in leaves]))
+
+    def rebuild(node):
+        if isinstance(node, torch.Tensor):
+            return next(it).reshape(node.shape).to(node.dtype)
+        if isinstance(node, dict):
+            return {k: rebuild(v) for k, v in node.items()}
+        if isinstance(node, (list, tuple)):
+            return type(node)(rebuild(v) for v in node)
+        return node
+
+    return rebuild(tree)
 
 
 # Cosa cattura il prossimo forward (impostato da `full_visual_attention`):
@@ -252,6 +422,10 @@ class QwenAttentionCapture(SupportsSignals):
         text: Text,
         layer_range: tuple[int, int] | None = None,
         answer_letters: list[str] | None = None,
+        sink_stats: bool = False,
+        sink_stats_percentile: float = 25.0,
+        sink_stats_topk: int = 10,
+        sink_stats_per_token: bool = False,
     ) -> VisualAttention:
         """Attenzione di OGNI token della domanda verso i token visivi + sink map.
 
@@ -277,6 +451,19 @@ class QwenAttentionCapture(SupportsSignals):
                 già gira con `logits_to_keep=1` (logit dell'ultimo token,
                 cioè il primo che genererebbe) — riusarli qui è a costo
                 zero. `None`/`[]` (prompt non-MCQ) salta il calcolo.
+            sink_stats: se `True`, un secondo gruppo di hook su TUTTI i layer
+                del decoder raccoglie le statistiche dei canali dei token
+                visivi (vedi `summarize_sink_stats`), allegate a
+                `VisualAttention.sink_stats`. Default `False`: nessun hook in
+                più, codice eseguito e numeri identici a prima. Anche con
+                `True` `attn`/`sink_map`/entropia non cambiano: gli hook
+                leggono l'output del layer senza toccarlo.
+            sink_stats_percentile: soglia sink per lo split sink/non-sink
+                (stessa semantica di `utils.attn_core.sink_mask`).
+            sink_stats_topk: quanti canali top per max |h| loggare per layer.
+            sink_stats_per_token: allega anche i tensori per-token `[L, n_vis,
+                ...]` (per un dump su disco): ~qualche MB a 512 frame, quindi
+                solo quando servono davvero.
 
         Returns:
             `VisualAttention`: `attn` `[n_q, t, grid_h, grid_w]` (heatmap per
@@ -330,6 +517,36 @@ class QwenAttentionCapture(SupportsSignals):
             layers[i].register_forward_hook(make_sink_hook(vis_index, sink_dims_t))
             for i in range(lo, hi)
         ]
+
+        # Statistiche estese (opt-in): hook su TUTTI i layer, tensori per-layer
+        # tenuti sul device (a 512 frame ~11.5k token visivi: pochi MB in
+        # tutto) e ridotti dopo il forward, quando la `sink_map` — che serve a
+        # separare token sink e non-sink — esiste. `.float()` per layer: il
+        # transitorio `[n_vis, D]` in float32 (~95 MB a 512 frame) è il costo
+        # della mediana e dei quantili, che su bf16 non sono affidabili.
+        control_dims: tuple[int, ...] = ()
+        stats_acc: dict[str, list[torch.Tensor]] = {}
+        if sink_stats:
+            control_dims = control_dims_for(cfg.text_config.hidden_size, sink_dims)
+            channels_t = torch.tensor(sink_dims + control_dims, dtype=torch.long)
+            stats_acc = {k: [] for k in ("vals", "mean_abs", "median_abs", "rms", "chan_maxabs")}
+
+            def make_stats_hook(columns: torch.Tensor, channels: torch.Tensor):
+                def _hook(_module, _inputs, output):
+                    hs = output[0] if isinstance(output, tuple) else output
+                    vis = hs[0].index_select(0, columns.to(hs.device)).float()  # [n_vis, D]
+                    a = vis.abs()
+                    stats_acc["vals"].append(vis.index_select(1, channels.to(hs.device)))
+                    stats_acc["mean_abs"].append(a.mean(dim=1))
+                    stats_acc["median_abs"].append(a.median(dim=1).values)
+                    stats_acc["rms"].append(vis.pow(2).mean(dim=1).sqrt())
+                    stats_acc["chan_maxabs"].append(a.amax(dim=0))
+                return _hook
+
+            hooks += [
+                layer.register_forward_hook(make_stats_hook(vis_index, channels_t))
+                for layer in layers
+            ]
 
         set_capture_spans(query_span, vis_index, layer_range)
         try:
@@ -391,6 +608,38 @@ class QwenAttentionCapture(SupportsSignals):
         heatmaps = attn.reshape(attn.shape[0], t, grid_h, grid_w).cpu()
         sink_map = sink_scores.reshape(t, grid_h, grid_w).cpu()
 
+        stats: dict | None = None
+        if sink_stats:
+            if len(stats_acc["vals"]) != n_layers:
+                raise RuntimeError(
+                    f"statistiche sink raccolte su {len(stats_acc['vals'])} layer, "
+                    f"attesi {n_layers}"
+                )
+            dev = stats_acc["vals"][0].device
+            stacked = {k: torch.stack([x.to(dev) for x in v]) for k, v in stats_acc.items()}
+            stats_acc.clear()
+            # Split sink/non-sink con la STESSA maschera che userebbe il filtro
+            # a runtime (`sink_mask` sulla `sink_map` dei layer centrali).
+            is_sink = sink_mask(sink_map, percentile=sink_stats_percentile).flatten()
+            summary = summarize_sink_stats(
+                stacked["vals"], stacked["mean_abs"], stacked["median_abs"], stacked["rms"],
+                stacked["chan_maxabs"], is_sink, sink_dims,
+                topk=sink_stats_topk, per_token=sink_stats_per_token,
+            )
+            del stacked
+            stats = {
+                **_tensors_to_cpu_once(summary),
+                "n_layers": n_layers,
+                "attn_layer_range": (lo, hi),
+                "sink_dims": sink_dims,
+                "control_dims": control_dims,
+                "channels": sink_dims + control_dims,
+                "hist_edges": SINK_HIST_EDGES.clone(),
+                "quantiles": SINK_STATS_QUANTILES,
+                "percentile": float(sink_stats_percentile),
+                "n_sink_tokens": int(is_sink.sum()),
+            }
+
         # Token della domanda → metadati selezionabili a runtime.
         tok = self.processor.tokenizer
         q_lo, q_hi = query_span
@@ -424,6 +673,7 @@ class QwenAttentionCapture(SupportsSignals):
             top_tokens=top_tokens,
             visual_span=visual_span,
             input_ids=input_ids.cpu(),
+            sink_stats=stats,
         )
 
     def generate_with_signals(

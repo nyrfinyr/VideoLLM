@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt | coarse_to_fine)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt | coarse_to_fine | signals_capture)
 
 model:
   qwen2_5_vl_3b:
@@ -290,6 +290,21 @@ strategy:
     sink_filter: false
     sink_percentile: 25.0        # conta solo se sink_filter=true
     sink_border: 0
+
+  # Run di SOLI segnali: un prefill con cattura per sample, nessun intervento,
+  # nessun pass 2. Logga per sample massa d'attenzione per cella (T1),
+  # entropia (T2), statistiche dei canali sink (T4). Richiede
+  # model=qwen3_vl_2b_attn (o altro _attn Qwen3-VL) con
+  # model.fix_videoframes_resize=true, nframes PARI, niente trim. Vedi
+  # strategies/signals_capture.py.
+  signals_capture:
+    name: signals_capture
+    pair_gap_sec: 2.0            # distanza (s) fra i due frame di ogni cella; cella = coppia attorno a un centro uniforme
+    rowsets: [all, question, last_token]   # (all | qopts | question | last_token) righe-query su cui si media la massa per cella
+    sink_percentile: 25.0        # token sink = top-25% della sink_map (split delle statistiche e massa sink-filtrata)
+    sink_topk_channels: 10       # canali top per max |h| loggati per layer
+    sink_dump_dir: null          # (null | path) dump .pt per-token dei primi sample; null = nessun dump
+    sink_dump_limit: 0           # quanti sample dumpare PER PROCESSO (con N shard: fino a N volte tanto)
 
 wandb:
   default:

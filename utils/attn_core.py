@@ -139,10 +139,17 @@ def question_rows(query_tokens: tuple[QueryToken, ...]) -> list[int]:
 # Selettori di righe-query esposti come knob (`attention_highlight`) e come
 # rowset della diagnostica (`attn_explorer.diag_query_rows`). `all` è `[]`,
 # cioè il fallback "tutte le righe" di `AttentionCapture.aggregate`.
+#
+# `last_token` = la sola ULTIMA riga, cioè l'ultimo token del prompt (la coda
+# del generation prompt): è la posizione i cui logit danno la risposta
+# (`logits_to_keep=1`), quindi la sua attenzione è quella che "decide", non
+# quella di chi legge la domanda. Lista non vuota di proposito: `[]`
+# significherebbe "tutte le righe".
 ROW_SELECTORS = {
     "all": lambda qt: [],
     "qopts": question_and_options_rows,
     "question": question_rows,
+    "last_token": lambda qt: [qt[-1].row],
 }
 
 # Valori ammessi per il knob `query_rows` delle strategy: i selettori puri più
@@ -400,6 +407,11 @@ class VisualAttention:
 
     `top_tokens`: top-k token sul vocabolario INTERO (non ristretto alle
     lettere), stessi logit riusati — vedi `utils.attn_core.top_k_logits`.
+
+    `sink_stats`: statistiche estese sui canali degli hidden state visivi, su
+    TUTTI i layer del decoder (verifica "i sink sono davvero sink?"), solo se
+    `full_visual_attention(..., sink_stats=True)`; `None` altrimenti — vedi
+    `models.qwen_attn.summarize_sink_stats` per lo schema.
     """
     attn: torch.Tensor  # [n_q, t, grid_h, grid_w]
     sink_map: torch.Tensor  # [t, grid_h, grid_w]
@@ -416,6 +428,7 @@ class VisualAttention:
     answer_logits: dict[str, float] | None = None
     pred_letter: str | None = None
     top_tokens: list[dict] | None = None
+    sink_stats: dict | None = None
 
     def __post_init__(self):
         if self.sink_map.shape != (self.t, self.grid_h, self.grid_w):

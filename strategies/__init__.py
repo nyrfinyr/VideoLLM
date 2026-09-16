@@ -8,6 +8,7 @@ from .coarse_to_fine import CoarseToFineStrategy
 from .base import SamplingBudget, Strategy
 from .entropy_attention_resample import EntropyAttentionResampleStrategy
 from .entropy_shortcut import EntropyShortcutStrategy
+from .signals_capture import SignalsCaptureStrategy
 from .uniform import UniformStrategy
 from .visual_prompt import VisualPromptStrategy
 
@@ -18,6 +19,7 @@ __all__ = [
     "EntropyAttentionResampleStrategy",
     "EntropyShortcutStrategy",
     "SamplingBudget",
+    "SignalsCaptureStrategy",
     "Strategy",
     "UniformStrategy",
     "VisualPromptStrategy",
