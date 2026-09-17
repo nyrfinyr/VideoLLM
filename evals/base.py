@@ -220,6 +220,33 @@ def mcq_accuracy(answer: int, output: dict) -> dict:
         slug = f"correct_pass1_{_slug(pred_pass1 == answer)}"
         scores[f"correct_{slug}"] = correct
         scores[f"seen_{slug}"] = True
+
+    # PIÙ CONDIZIONI nello stesso sample (`strategies/topk_resample.py`):
+    # `pred` è la baseline (pass 1) e `preds_by_condition` porta la risposta
+    # di ogni pass 2. Ogni condizione emette la propria accuracy E lo split
+    # per correttezza della BASELINE sullo stesso sample, che è ciò che serve
+    # a tarare un gate:
+    #
+    #   r_break = 1 − correct_cond_<n>_base_true.true_fraction   (giusti rotti)
+    #   r_fix   =     correct_cond_<n>_base_false.true_fraction  (sbagliati recuperati)
+    #
+    # Sono numeri INTRA-sample (stesso pass 1 per baseline e condizione),
+    # quindi non risentono di rumore fra run o fra GPU; e i conteggi si
+    # sommano fra shard come tutto il resto. Una condizione che non ha
+    # prodotto una lettera (`None`) viene saltata invece di contare come
+    # errore: sarebbe indistinguibile da una risposta sbagliata.
+    conds = output.get("preds_by_condition")
+    if isinstance(conds, dict):
+        branch = "base_true" if correct else "base_false"
+        for name, cond_pred in conds.items():
+            if cond_pred is None:
+                continue
+            cond_ok = cond_pred == answer
+            slug = _slug(name)
+            scores[f"correct_cond_{slug}"] = cond_ok
+            scores[f"seen_cond_{slug}"] = True
+            scores[f"correct_cond_{slug}_{branch}"] = cond_ok
+            scores[f"seen_cond_{slug}_{branch}"] = True
     return scores
 
 

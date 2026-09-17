@@ -70,6 +70,20 @@ def pair_centers_and_indices(total_frames: int, fps: float, n_pairs: int, gap_se
         raise ValueError(f"gap_sec deve essere >= 0, ricevuto {gap_sec}")
 
     duration = total_frames / fps
+    nominal = [duration * (i + 0.5) / n_pairs for i in range(n_pairs)]
+    return _pairs_from_centers(total_frames, fps, nominal, gap_sec)
+
+
+def _pairs_from_centers(
+    total_frames: int, fps: float, nominal_centers: list[float], gap_sec: float
+) -> tuple[list[float], list[int]]:
+    """Nucleo condiviso: da centri NOMINALI a `(centri effettivi, indici interleaved)`.
+
+    Usato sia dal campionamento uniforme (`pair_centers_and_indices`) sia da
+    quello per regioni del pass 2 (`pairs_in_spans`): la regola su clamp,
+    coppie degeneri e centro effettivo deve essere UNA sola, altrimenti i
+    timestamp del pass 1 e del pass 2 seguirebbero convenzioni diverse.
+    """
     last = total_frames - 1
     t_last = last / fps
 
@@ -79,8 +93,7 @@ def pair_centers_and_indices(total_frames: int, fps: float, n_pairs: int, gap_se
 
     centers: list[float] = []
     indices: list[int] = []
-    for i in range(n_pairs):
-        c = duration * (i + 0.5) / n_pairs
+    for c in nominal_centers:
         a = to_index(c - gap_sec / 2)
         b = to_index(c + gap_sec / 2)
         if a == b and last >= 1:
@@ -95,7 +108,43 @@ def pair_centers_and_indices(total_frames: int, fps: float, n_pairs: int, gap_se
     return centers, indices
 
 
-def _extract_pairs(video_path: str, indices: list[int], target: tuple[int, int] | None) -> tuple[list[str], "Path"]:
+def pairs_in_spans(
+    total_frames: int,
+    fps: float,
+    spans: list[tuple[float, float]],
+    counts: list[int],
+    gap_sec: float,
+) -> tuple[list[float], list[int]]:
+    """Coppie dentro REGIONI disgiunte (pass 2 dello zoom): `counts[j]` coppie
+    uniformi dentro `spans[j]`, poi TUTTE le coppie ordinate per centro.
+
+    Perché coppie anche qui, e ordinate: il processor Qwen3-VL fonde i frame
+    a due a due nell'ordine della lista, quindi una cella del pass 2 resta
+    "un istante" solo se i due frame di ogni coppia sono adiacenti NELLA
+    LISTA. Ordinare per centro (le regioni sono disgiunte, le coppie sono
+    strette) tiene la lista monotona nel tempo senza mai spezzare una coppia:
+    nessuna cella a cavallo di due regioni, che avrebbe un timestamp — la
+    media dei due frame — dentro un buco mai osservato.
+
+    `counts[j] == 0` salta la regione. Regione più corta del gap: i centri si
+    addensano e `_pairs_from_centers` risolve le coppie degeneri come altrove.
+    """
+    if len(spans) != len(counts):
+        raise ValueError(f"{len(spans)} span ma {len(counts)} counts")
+    nominal: list[float] = []
+    for (t0, t1), n in zip(spans, counts):
+        if n <= 0:
+            continue
+        if t1 < t0:
+            raise ValueError(f"span invertito: {(t0, t1)}")
+        nominal += [t0 + (t1 - t0) * (j + 0.5) / n for j in range(n)]
+    nominal.sort()
+    if not nominal:
+        raise ValueError("nessuna coppia da campionare: tutti i counts sono 0")
+    return _pairs_from_centers(total_frames, fps, nominal, gap_sec)
+
+
+def extract_frames(video_path: str, indices: list[int], target: tuple[int, int] | None) -> tuple[list[str], "Path"]:
     """Un PNG per indice (nell'ordine della lista), opzionalmente GIÀ ridimensionato.
 
     Variante di `strategies.attention_marker._extract_all_frames` con due
@@ -178,7 +227,7 @@ def pair_video_frames(
     `image_patch_size` (16 su Qwen3-VL, 14 su Qwen2.5-VL): se passato, i PNG
     sono scritti già alla dimensione finale calcolata da
     `models.qwen.videoframes_target_size` — stesso risultato, molto più veloce
-    (vedi `_extract_pairs`). Con `None` si scrivono a risoluzione nativa e
+    (vedi `extract_frames`). Con `None` si scrivono a risoluzione nativa e
     ridimensiona il modello.
 
     `cache=True` (default) tiene i frame dell'ULTIMO video estratto: una
@@ -235,7 +284,7 @@ def pair_video_frames(
             nframes, height, width, image_patch_size,
             max_pixels=max_pixels, min_pixels=min_pixels,
         )
-    paths, tmp_dir = _extract_pairs(video_path, indices, target)
+    paths, tmp_dir = extract_frames(video_path, indices, target)
     indices = [int(i) for i in indices]
     try:
         media = VideoFrames(
@@ -257,6 +306,88 @@ def pair_video_frames(
     _CACHE = {"key": key, "paths": paths, "indices": indices, "fps": fps,
               "centers": centers, "tmp_dir": tmp_dir}
     return media, None, centers
+
+
+def cells_to_spans(
+    cell_idx: list[int], n_cells: int, duration_sec: float
+) -> list[tuple[float, float]]:
+    """Celle del pass 1 → intervalli di tempo che "possiedono" (pass 2).
+
+    La cella `i` di `n_cells` centri uniformi copre
+    `[D*i/n, D*(i+1)/n]`: è la cella di Voronoi del suo centro
+    `D*(i+0.5)/n`, cioè tutto il tempo più vicino a quel centro che a
+    qualunque altro. Ricampionare lì dentro è esattamente "infittisci dove
+    l'attenzione ha guardato", senza assumere nulla sulla finestra vera.
+
+    Ritorna gli span nell'ordine dato, SENZA fonderli: celle adiacenti danno
+    span adiacenti e le coppie del pass 2 restano dentro la propria cella.
+    """
+    if duration_sec <= 0:
+        raise ValueError(f"durata non valida: {duration_sec}")
+    w = duration_sec / n_cells
+    out = []
+    for i in cell_idx:
+        if not 0 <= i < n_cells:
+            raise ValueError(f"cella {i} fuori da [0, {n_cells})")
+        out.append((i * w, (i + 1) * w))
+    return out
+
+
+def span_video_frames(
+    video_path: str,
+    spans: list[tuple[float, float]],
+    counts: list[int],
+    gap_sec: float,
+    max_pixels: int,
+    min_pixels: int | None,
+    *,
+    image_patch_size: int | None = None,
+) -> tuple["VideoFrames", "Path", list[float]]:
+    """Pass 2: `counts[j]` coppie dentro `spans[j]` → `(VideoFrames, tmp_dir, centri)`.
+
+    Gemella di `pair_video_frames` per le regioni: stessa estrazione in blocco,
+    stesso pre-resize alla dimensione finale, stessi `frames_indices`/`fps`
+    REALI (quindi i timestamp che il processor scrive nel prompt sono i tempi
+    veri dei frame zoomati, non una densità finta iniettata via `sample_fps`).
+
+    Niente cache: a differenza del pass 1 le regioni dipendono dalla DOMANDA,
+    non solo dal video, quindi due domande sullo stesso video non le
+    condividono. `tmp_dir` va sempre ripulita dal chiamante.
+    """
+    import shutil
+
+    import decord
+
+    from models.media import VideoFrames
+    from models.qwen import videoframes_target_size
+
+    n_pairs = sum(max(0, c) for c in counts)
+    if n_pairs < 1:
+        raise ValueError("span_video_frames: budget nullo (tutti i counts a 0)")
+
+    vr = decord.VideoReader(video_path)
+    total_frames = len(vr)
+    fps = float(vr.get_avg_fps())
+    height, width, _ = vr[0].shape
+    del vr
+
+    centers, indices = pairs_in_spans(total_frames, fps, spans, counts, gap_sec)
+    target = None
+    if image_patch_size is not None:
+        target = videoframes_target_size(
+            len(indices), height, width, image_patch_size,
+            max_pixels=max_pixels, min_pixels=min_pixels,
+        )
+    paths, tmp_dir = extract_frames(video_path, indices, target)
+    try:
+        media = VideoFrames(
+            paths, max_pixels=max_pixels, min_pixels=min_pixels,
+            frames_indices=[int(i) for i in indices], fps=fps,
+        )
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return media, tmp_dir, centers
 
 
 def pair_cells_in_window(centers_sec: list[float], gap_sec: float, w0: float, w1: float) -> list[bool]:

@@ -3,7 +3,7 @@ active:
   generation: precise          # (precise | balanced | creative)
   dataset: egoschema           # (egoschema | mvbench | video_mme | lvbench | causal2needles)
   wandb: default                # (default)
-  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt | coarse_to_fine | signals_capture)
+  strategy: uniform             # (uniform | entropy_shortcut | entropy_attention_resample | attention_highlight | attention_marker | visual_prompt | coarse_to_fine | signals_capture | topk_resample)
 
 model:
   qwen2_5_vl_3b:
@@ -305,6 +305,44 @@ strategy:
     sink_topk_channels: 10       # canali top per max |h| loggati per layer
     sink_dump_dir: null          # (null | path) dump .pt per-token dei primi sample; null = nessun dump
     sink_dump_limit: 0           # quanti sample dumpare PER PROCESSO (con N shard: fino a N volte tanto)
+
+  # Ricampionamento nelle TOP-K celle d'attenzione, con baseline appaiata
+  # (il pass 1 È la baseline) e PIÙ condizioni sugli stessi sample. Nessun
+  # gate online: il pass 2 gira sempre e la soglia d'entropia si sceglie
+  # offline out-of-fold. Richiede model=qwen3_vl_2b_attn con
+  # model.fix_videoframes_resize=true, nframes PARI, niente trim.
+  # Vedi strategies/topk_resample.py.
+  topk_resample:
+    name: topk_resample
+    pass1_pair_gap_sec: 2.0      # gap (s) fra i due frame di una cella del pass 1
+    pass2_nframes: 128           # budget del pass 2, PARI (= 2 * coppie), per ogni condizione
+    pass2_pair_gap_sec: 0.5      # gap (s) dentro le regioni zoomate: la cella resta un istante
+    rank_rowset: all             # (all | qopts | question | last_token) righe-query che danno il ranking
+    rank_sink_filtered: false    # true = ranking sulla massa sink-filtrata (misurata PEGGIO della grezza)
+    sink_percentile: 25.0        # conta solo se rank_sink_filtered=true
+    log_rowsets: [all, question] # masse per cella loggate per sample (analisi T1 offline)
+    random_seed: 0               # seed del controllo random (combinato con un hash del sample)
+    # --- il fenomeno sink in QUESTO setting (512 frame a coppie su video lunghi) ---
+    sink_stats: true             # statistiche dei canali degli hidden state su tutti i 28 layer (pass 1)
+    sink_stats_every: 1          # 1 = ogni sample (~40 KB l'uno su Weave); 4 = uno su 4, per il fullset
+    sink_stats_conditions: [k3]  # condizioni del pass 2 che le raccolgono anche loro (regime a 128 frame densi)
+    sink_topk_channels: 10       # canali top per max |h| loggati per layer
+    # Dump per-sample (heatmap intere + sink_map + per-token + i FRAME veri
+    # delle celle calde e di altrettante fredde di controllo): serve a dipingere
+    # le heatmap sulle immagini, vedi scripts/sink_heatmaps.py
+    dump_dir: null               # (null | path) null = nessun dump
+    dump_limit: 0                # quanti sample dumpare PER PROCESSO (con N shard: fino a N volte tanto)
+    dump_cells: 4                # celle calde salvate come frame (più altrettante fredde di controllo)
+    # Una voce per condizione: name, k (celle ricampionate), select
+    # (attention | random), global_fraction (quota di budget lasciata uniforme
+    # su tutto il video). L'ablation di k e il controllo random girano
+    # APPAIATI sugli stessi sample.
+    conditions:
+      - {name: k1, k: 1}
+      - {name: k3, k: 3}
+      - {name: k10, k: 10}
+      - {name: hybrid3, k: 3, global_fraction: 0.5}
+      - {name: rand3, k: 3, select: random}
 
 wandb:
   default:

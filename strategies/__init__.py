@@ -9,6 +9,7 @@ from .base import SamplingBudget, Strategy
 from .entropy_attention_resample import EntropyAttentionResampleStrategy
 from .entropy_shortcut import EntropyShortcutStrategy
 from .signals_capture import SignalsCaptureStrategy
+from .topk_resample import TopkResampleStrategy
 from .uniform import UniformStrategy
 from .visual_prompt import VisualPromptStrategy
 
@@ -21,6 +22,7 @@ __all__ = [
     "SamplingBudget",
     "SignalsCaptureStrategy",
     "Strategy",
+    "TopkResampleStrategy",
     "UniformStrategy",
     "VisualPromptStrategy",
 ]
