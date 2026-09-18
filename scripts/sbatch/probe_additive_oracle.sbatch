@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --array=0-1
-#SBATCH --time=04:00:00
+#SBATCH --time=01:30:00
 #SBATCH --output=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.out
 #SBATCH --error=/homes/avalenza/video-language-model-playground/logs/%x-%A_%a.err
 
@@ -20,7 +20,13 @@
 #   base256    128 celle a coppie (gap 2 s)                       ~31 s
 #   oracle512  base + 256 frame nelle celle della finestra vera   ~57 s
 #   uniform512 256 celle a coppie, stesso budget di oracle512     ~57 s
-# ≈ 145 s/sample → 50 sample per shard ≈ 2 h (walltime 4 h di margine).
+# MISURATO sulla prova da 2 sample (job 110272, A5000): i tre `generate`
+# costano 2.4 + 3.8 + 3.8 s — il prefill NON è il costo. Il tempo per sample è
+# 44-105 s ed è quasi tutto decode + scrittura dei ~1000 PNG (il primo sample
+# include il warmup), più ~4.3 min una tantum di caricamento del modello.
+# 50 sample per shard ≈ 45-55 min: la walltime è 1h30, ~1.7x la stima.
+# Il summary wandb si aggiorna ogni 10 sample, quindi un kill per walltime
+# lascia comunque leggibili i sample già fatti (`n_samples` dice quanti).
 #
 # QUALI SAMPLE: --array=0-1 con LIMIT=50 dà ESATTAMENTE i 100 sample della
 # probe topk 108729 (shuffle seed 42 → shard strided → primi 50 per shard,

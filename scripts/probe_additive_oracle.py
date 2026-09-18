@@ -187,6 +187,45 @@ def dump_timestamps(vlm, messages, indices: list[int], fps: float,
     return check
 
 
+PAIRS = (("uniform512", "oracle512"), ("base256", "oracle512"),
+         ("base256", "uniform512"))
+SUMMARY_EVERY = 10          # ogni quanti sample si aggiorna il summary wandb
+
+
+def build_summary(ok_by_cond, wide_flags, n_done, n_skip, n_fallback, lat, diag,
+                  checks) -> dict:
+    """Tutti i numeri della probe calcolati sui sample fatti FINORA.
+
+    Estratta dalla coda della probe per poterla chiamare anche a metà corsa:
+    su wandb il summary viene sincronizzato in continuo, quindi un job ucciso
+    dalla walltime lascia comunque leggibile quello che ha fatto.
+    """
+    acc = {c: sum(ok_by_cond[c]) / n_done for c in CONDITIONS}
+    out: dict = {
+        "n_samples": n_done, "n_skip": n_skip,
+        **{f"acc_{c}": acc[c] for c in CONDITIONS},
+        **{f"n_correct_{c}": sum(ok_by_cond[c]) for c in CONDITIONS},
+        **{f"n_fallback_{c}": n_fallback[c] for c in CONDITIONS},
+        **{f"latency_{c}": lat[c] / n_done for c in CONDITIONS},
+        **{f"mean_{k}": v / n_done for k, v in diag.items()},
+        "model_latency_mean": sum(lat.values()) / n_done,
+        "n_wide_window": sum(wide_flags),
+        **checks,
+    }
+    for a, b in PAIRS:
+        win, loss, p = mcnemar(ok_by_cond[a], ok_by_cond[b])
+        out.update({f"delta_{a}_to_{b}": acc[b] - acc[a], f"win_{a}_to_{b}": win,
+                    f"loss_{a}_to_{b}": loss, f"p_{a}_to_{b}": p})
+    for label, want in (("stretta", False), ("larga", True)):
+        idx = [j for j, w in enumerate(wide_flags) if w == want]
+        if not idx:
+            continue
+        for c in CONDITIONS:
+            out[f"acc_{c}_{label}"] = sum(ok_by_cond[c][j] for j in idx) / len(idx)
+        out[f"n_{label}"] = len(idx)
+    return out
+
+
 def mcnemar(a: list[bool], b: list[bool]) -> tuple[int, int, float]:
     """`a` → `b`: (recuperati, rotti, p esatto binomiale a due code)."""
     win = sum(1 for x, y in zip(a, b) if not x and y)
@@ -345,36 +384,31 @@ def main() -> int:  # noqa: C901
               f"+{info['n_added_kept']} frame ({info['n_added_in_raw_window']} nella "
               f"finestra grezza) | {dt:.1f}s", flush=True)
         torch.cuda.empty_cache()
+        # Il summary si aggiorna STRADA FACENDO: se il job viene ucciso dalla
+        # walltime (già successo con l'array 76131) i sample già fatti restano
+        # leggibili invece di sparire con il processo. `n_samples` dice sempre
+        # su quanti sample sono calcolati i numeri.
+        if n_done % SUMMARY_EVERY == 0:
+            run.summary.update(build_summary(ok_by_cond, wide_flags, n_done, n_skip,
+                                             n_fallback, lat, diag, checks))
 
     if n_done == 0:
         print("nessun sample completato", file=sys.stderr)
         run.finish(exit_code=1)
         return 1
 
-    acc = {c: sum(ok_by_cond[c]) / n_done for c in CONDITIONS}
+    summary = build_summary(ok_by_cond, wide_flags, n_done, n_skip, n_fallback, lat,
+                            diag, checks)
+    acc = {c: summary[f"acc_{c}"] for c in CONDITIONS}
     print(f"\n=== soffitto additivo su {n_done} sample (skip {n_skip}) ===")
     for c in CONDITIONS:
         print(f"  {c:11s}: {sum(ok_by_cond[c])}/{n_done} = {acc[c]:.3f}"
               f"   (fallback {n_fallback[c]}, {lat[c]/n_done:.1f} s/sample)")
-    summary: dict = {
-        "n_samples": n_done, "n_skip": n_skip,
-        **{f"acc_{c}": acc[c] for c in CONDITIONS},
-        **{f"n_correct_{c}": sum(ok_by_cond[c]) for c in CONDITIONS},
-        **{f"n_fallback_{c}": n_fallback[c] for c in CONDITIONS},
-        **{f"latency_{c}": lat[c] / n_done for c in CONDITIONS},
-        **{f"mean_{k}": v / n_done for k, v in diag.items()},
-        "model_latency_mean": sum(lat.values()) / n_done,
-        "n_wide_window": sum(wide_flags),
-        **checks,
-    }
     print("\n  confronti appaiati (recuperati / rotti, p McNemar esatto):")
-    for a, b in (("uniform512", "oracle512"), ("base256", "oracle512"),
-                 ("base256", "uniform512")):
-        win, loss, p = mcnemar(ok_by_cond[a], ok_by_cond[b])
-        print(f"    {a:11s} → {b:11s}: {acc[b]-acc[a]:+.3f}  +{win} / -{loss}  p={p:.3g}")
-        summary.update({f"delta_{a}_to_{b}": acc[b] - acc[a],
-                        f"win_{a}_to_{b}": win, f"loss_{a}_to_{b}": loss,
-                        f"p_{a}_to_{b}": p})
+    for a, b in PAIRS:
+        print(f"    {a:11s} → {b:11s}: {summary[f'delta_{a}_to_{b}']:+.3f}  "
+              f"+{summary[f'win_{a}_to_{b}']} / -{summary[f'loss_{a}_to_{b}']}  "
+              f"p={summary[f'p_{a}_to_{b}']:.3g}")
     print(f"\n  breakdown per larghezza della finestra (soglia {100*WIDE_WINDOW_FRAC:.0f}% "
           f"del video):")
     for label, want in (("stretta", False), ("larga", True)):
@@ -384,9 +418,6 @@ def main() -> int:  # noqa: C901
         line = "    ".join(f"{c}={sum(ok_by_cond[c][j] for j in idx)}/{len(idx)}"
                            for c in CONDITIONS)
         print(f"    {label:8s} (n={len(idx):3d}): {line}")
-        for c in CONDITIONS:
-            summary[f"acc_{c}_{label}"] = sum(ok_by_cond[c][j] for j in idx) / len(idx)
-        summary[f"n_{label}"] = len(idx)
     print(f"\n  diagnostica: {diag['n_added_kept']/n_done:.0f} frame aggiunti tenuti, "
           f"{diag['n_collision']/n_done:.0f} scartati per collisione, "
           f"{diag['n_added_in_raw_window']/n_done:.0f} dentro la finestra GREZZA, "
