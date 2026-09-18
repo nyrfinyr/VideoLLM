@@ -59,6 +59,10 @@ uv run python .claude/skills/wandb/driver.py <nome-run> --summary-only
 # run con query_rows=entity: tabella domanda → entity estratta, un blocco
 # per sample, per la verifica MANUALE (mostrala all'utente, non riassumerla)
 uv run python .claude/skills/wandb/driver.py <nome-run> --entities
+
+# i campi che una strategy nuova emette per sample, col loro peso (UN call):
+# è così che si decide cosa aggiungere a SAMPLE_FIELDS
+uv run python .claude/skills/wandb/driver.py <nome-run> --show-fields
 ```
 
 Entity di default letta da `conf/config.yaml` (`wandb.default.entity`).
@@ -127,6 +131,16 @@ ritorni il campo, poi si aggiunge il ramo in `check_eval()`.
   `finished` ma senza `mcq_accuracy`, a 83.5 s/sample — troncata dal tempo.
 - Weave stampa a ogni avvio "version has been recalled" e le righe di login:
   rumore, non errori.
+- **I campi per-sample si chiedono per nome (`SAMPLE_FIELDS`), non si scaricano
+  tutti.** Senza proiezione il client tira giù l'output intero di ogni
+  `predict`, e le run con dump allegano `sink_stats.per_token` = ~23 MB di JSON
+  a sample (~0.7 GB in oggetti Python): su una probe da 100 il driver arrivava a
+  15 GB di RSS, veniva OOM-killato e su WSL si portava dietro l'intera VM (la
+  sessione moriva con exit 1, senza log). Con la proiezione gli stessi 100
+  sample stanno in ~130 MB e 36 s. Un check su un campo nuovo va quindi
+  aggiunto **anche** a `SAMPLE_FIELDS`: se ci si scorda, `_Sample` solleva
+  invece di far passare il check in silenzio. `--show-fields` dice cosa c'è.
+  Stessa proiezione in `scripts/analyze_topk_run.py` (`FETCH_COLUMNS`).
 
 ## Troubleshooting
 

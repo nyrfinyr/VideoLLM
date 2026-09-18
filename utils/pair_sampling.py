@@ -390,6 +390,228 @@ def span_video_frames(
     return media, tmp_dir, centers
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Pass ADDITIVO: i frame aggiunti NON sostituiscono la base
+# ─────────────────────────────────────────────────────────────────────────────
+def merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Intervalli ordinati e FUSI quando si toccano o si sovrappongono.
+
+    Serve perché le celle selezionate dal ranking sono spesso adiacenti (a
+    k=10 le 10 celle diventano ~7 regioni): senza fusione il confine fra due
+    celle contigue riceverebbe due mezzi budget e il campionamento uniforme
+    avrebbe un buco proprio lì.
+    """
+    if not spans:
+        return []
+    for a, b in spans:
+        if b < a:
+            raise ValueError(f"span invertito: {(a, b)}")
+    ordered = sorted(spans)
+    out: list[list[float]] = [list(ordered[0])]
+    for a, b in ordered[1:]:
+        if a <= out[-1][1] + 1e-9:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _allocate(n: int, weights: list[float]) -> list[int]:
+    """`n` frame fra regioni di lunghezza `weights`, proporzionale al tempo
+    coperto (metodo dei resti più grandi, quindi la somma fa ESATTAMENTE `n`).
+
+    Proporzionale e non in parti uguali: dopo la fusione le regioni hanno
+    lunghezze diverse, e un budget uguale darebbe densità diverse — cioè
+    proprio la variabile che vogliamo tenere sotto controllo.
+    """
+    tot = sum(weights)
+    if tot <= 0:
+        raise ValueError("regioni di lunghezza nulla")
+    raw = [n * w / tot for w in weights]
+    base = [int(x) for x in raw]
+    order = sorted(range(len(raw)), key=lambda i: base[i] - raw[i])
+    for i in order[: n - sum(base)]:
+        base[i] += 1
+    return base
+
+
+def additive_indices(
+    total_frames: int,
+    fps: float,
+    base_indices: list[int],
+    spans: list[tuple[float, float]],
+    n_added: int,
+) -> tuple[list[int], dict]:
+    """Indici del pass ADDITIVO: `base_indices` PIÙ `n_added` frame uniformi
+    dentro `spans`, ordinati per tempo. Funzione pura.
+
+    Differenze deliberate rispetto al pass 2 sostitutivo (`pairs_in_spans`):
+
+    - i frame aggiunti sono **uniformi dentro la regione, non a coppie**: la
+      struttura a coppie serve a rendere le celle indirizzabili per il
+      ranking del pass 1, e qui non si rilegge nessun ranking;
+    - la base viene tenuta **così com'è**, duplicati inclusi: le sue coppie
+      sono già state decise da `pair_centers_and_indices` e toccarle
+      spezzerebbe la corrispondenza cella ↔ coppia;
+    - un frame aggiunto che cade sullo STESSO indice di uno della base (o di
+      un altro aggiunto) viene **scartato**: ripagarlo non aggiunge
+      informazione e costerebbe token.
+
+    ⚠️ Nella lista risultante il merge temporale del modello (`temporal_patch
+    _size=2`) accoppia frame ADIACENTI NELLA LISTA, quindi le coppie della
+    base non sopravvivono: le celle del pass additivo sono coppie qualsiasi.
+    È accettabile finché sul pass additivo non si rilegge l'attenzione — se
+    un giorno la si rileggesse, le celle non sarebbero più quelle del pass 1.
+
+    La lunghezza finale è PARI (il processor padderebbe duplicando l'ultimo
+    frame): se la dedup lascia un numero dispari si scarta l'aggiunto più
+    ridondante, cioè quello col vicino più vicino nella lista finale.
+
+    Returns: `(indici ordinati, info)` con `info` = conteggi utili al log —
+    `n_base`, `n_added_requested`, `n_added_kept`, `n_collision`, `n_parity`,
+    `spans` (fusi) e `counts` per regione.
+    """
+    if total_frames < 1:
+        raise ValueError(f"total_frames deve essere >= 1, ricevuto {total_frames}")
+    if not fps > 0:
+        raise ValueError(f"fps deve essere > 0, ricevuto {fps}")
+    if len(base_indices) % 2:
+        raise ValueError(f"la base deve avere un numero pari di frame, non {len(base_indices)}")
+    if n_added < 0:
+        raise ValueError(f"n_added deve essere >= 0, ricevuto {n_added}")
+
+    merged_spans = merge_spans(spans)
+    last = total_frames - 1
+    added: list[int] = []
+    counts: list[int] = []
+    if n_added and merged_spans:
+        counts = _allocate(n_added, [b - a for a, b in merged_spans])
+        seen = set(base_indices)
+        for (t0, t1), cnt in zip(merged_spans, counts):
+            if cnt <= 0:
+                continue
+            step = (t1 - t0) / cnt
+            for j in range(cnt):
+                idx = min(max(int(round((t0 + (j + 0.5) * step) * fps)), 0), last)
+                if idx in seen:
+                    continue
+                seen.add(idx)
+                added.append(idx)
+
+    n_collision = n_added - len(added)
+    n_parity = 0
+    out = sorted(base_indices + added)
+    if len(out) % 2 and added:
+        # Il più ridondante = quello col vicino più vicino: toglierlo è la
+        # perdita di informazione minima fra gli aggiunti.
+        pos = {i: k for k, i in enumerate(out)}
+        worst = min(added, key=lambda i: min(
+            (out[pos[i]] - out[pos[i] - 1]) if pos[i] > 0 else 10 ** 9,
+            (out[pos[i] + 1] - out[pos[i]]) if pos[i] + 1 < len(out) else 10 ** 9,
+        ))
+        added.remove(worst)
+        out.remove(worst)
+        n_parity = 1
+    info = {
+        "n_base": len(base_indices),
+        "n_added_requested": n_added,
+        "n_added_kept": len(added),
+        "n_collision": n_collision,
+        "n_parity": n_parity,
+        "n_total": len(out),
+        "spans": merged_spans,
+        "counts": counts,
+        "added_indices": added,
+    }
+    return out, info
+
+
+def frames_for_plans(
+    video_path: str,
+    plans: dict[str, list[int]],
+    max_pixels: int,
+    min_pixels: int | None,
+    *,
+    image_patch_size: int | None = None,
+) -> tuple[dict[str, "VideoFrames"], "Path", float]:
+    """Più liste di frame dello stesso video, con UN SOLO decode e UN SOLO set
+    di PNG condiviso.
+
+    Il pass additivo confronta condizioni che si sovrappongono quasi del tutto
+    (base ⊂ additivo, e l'uniforme a budget pieno ricampiona gli stessi
+    istanti): estrarle una per una vorrebbe dire decodificare lo stesso video
+    tre volte e riscrivere gli stessi frame. Qui l'unione degli indici passa
+    da `extract_frames` una volta sola — che già legge in blocco e deduplica —
+    e ogni piano riceve la sua `VideoFrames` con i PNG condivisi, i propri
+    `frames_indices` e l'fps REALE.
+
+    ⚠️ Condizione di validità: i piani devono finire alla STESSA dimensione,
+    altrimenti i PNG condivisi sarebbero giusti per uno e sbagliati per gli
+    altri. Con `max_pixels` esplicito (preset lvbench: 50176) è sempre vero —
+    il tetto derivato dal budget totale non morde nemmeno a 1024 frame — ma è
+    una proprietà del preset, non una legge: qui viene VERIFICATA e, se cade,
+    la funzione solleva invece di far girare il modello su pixel diversi dal
+    previsto.
+
+    Returns: `({nome: VideoFrames}, tmp_dir da cancellare, fps)`.
+    """
+    import decord
+
+    from models.media import VideoFrames
+    from models.qwen import videoframes_target_size
+
+    if not plans:
+        raise ValueError("nessun piano di frame")
+    for name, idx in plans.items():
+        if not idx:
+            raise ValueError(f"piano {name!r} vuoto")
+        if len(idx) % 2:
+            raise ValueError(f"piano {name!r}: {len(idx)} frame, deve essere PARI")
+
+    vr = decord.VideoReader(video_path)
+    total_frames = len(vr)
+    fps = float(vr.get_avg_fps())
+    height, width, _ = vr[0].shape
+    del vr
+
+    target = None
+    if image_patch_size is not None:
+        targets = {
+            name: videoframes_target_size(
+                len(idx), height, width, image_patch_size,
+                max_pixels=max_pixels, min_pixels=min_pixels,
+            )
+            for name, idx in plans.items()
+        }
+        if len(set(targets.values())) > 1:
+            raise RuntimeError(
+                "i piani finirebbero a dimensioni diverse "
+                f"({targets}): i PNG non sono condivisibili. Serve un'estrazione "
+                "per piano, oppure un `max_pixels` che morda su tutti i budget."
+            )
+        target = next(iter(targets.values()))
+
+    last = total_frames - 1
+    plans = {n: [min(max(int(i), 0), last) for i in idx] for n, idx in plans.items()}
+    union = sorted({i for idx in plans.values() for i in idx})
+    paths, tmp_dir = extract_frames(video_path, union, target)
+    by_index = dict(zip(union, paths))
+    try:
+        media = {
+            name: VideoFrames(
+                [by_index[i] for i in idx], max_pixels=max_pixels, min_pixels=min_pixels,
+                frames_indices=list(idx), fps=fps,
+            )
+            for name, idx in plans.items()
+        }
+    except Exception:
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return media, tmp_dir, fps
+
+
 def pair_cells_in_window(centers_sec: list[float], gap_sec: float, w0: float, w1: float) -> list[bool]:
     """Per l'analisi offline: cella i vera se [c_i − gap/2, c_i + gap/2] interseca [w0, w1].
 

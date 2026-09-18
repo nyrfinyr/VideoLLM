@@ -114,6 +114,138 @@ def is_eval_run(run) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # Weave: gli output per-sample (solo per le run di eval)
 # ─────────────────────────────────────────────────────────────────────────────
+# I campi per-sample che i check leggono, e SOLO quelli: la richiesta a Weave è
+# PROIETTATA su questa lista (`columns=`), il resto dell'output non attraversa
+# mai la rete.
+#
+# Senza proiezione il client scarica l'output INTERO di ogni `predict`, e non è
+# un dettaglio: le run con dump attivo allegano `sink_stats.per_token`
+# (`values [L, n_vis, C]`) = ~23 MB di JSON a sample, ~0.7 GB una volta
+# deserializzati in liste Python. Su una probe da 100 sample (10 dumpati) il
+# driver è arrivato a 15 GB di RSS, ha saturato RAM e swap ed è stato
+# OOM-killato portandosi dietro l'intera VM WSL. Con la proiezione gli stessi
+# 100 sample stanno in ~130 MB.
+#
+# Aggiungere un check su un campo nuovo = aggiungerlo QUI, altrimenti
+# `_Sample` solleva invece di far saltare il check in silenzio. `--show-fields`
+# stampa i campi che una run emette davvero, con il loro peso.
+SAMPLE_FIELDS = (
+    # pass 1/2 e parsing
+    "pred", "pred_fallback",
+    # selettore di righe-query / entity
+    "n_query_rows", "n_query_tokens", "query_rows_mode",
+    "entity_mapped", "entity_raw", "entity_phrases",
+    # coarse_to_fine
+    "n_steps", "gate_closed", "zoomed", "final_depth", "final_span_sec",
+    "video_duration_sec",
+    # ranking e filtro sink
+    "peak_cell", "peak_cell_sink_filtered",
+    # blocchi/timestamp
+    "block_sizes", "t_cells",
+    # copertura dell'intervento
+    "marked", "highlighted", "resampled",
+    "marked_skip_reason", "highlight_skip_reason",
+    # campi ri-emessi dalla strategy, per VERIFICARE l'accoppiamento eval↔run
+    "cell_select", "sink_filter", "resample_kind",
+)
+
+
+class _Sample(dict):
+    """I campi per-sample di un `predict`, con due garanzie che i check danno
+    per scontate.
+
+    1. **Leggere un campo non proiettato è un errore, non un check saltato.**
+       Chi aggiunge un ramo in `check_eval()` per un campo nuovo e si scorda
+       `SAMPLE_FIELDS` otterrebbe altrimenti un check che non scatta mai: il
+       modo peggiore di sbagliare, perché il report resta verde.
+    2. **`None` non è `assente`.** Weave restituisce OGNI colonna chiesta, anche
+       quando la strategy non emette quel campo: arriva `None`. I check
+       distinguono i due casi (`marked` a `None` su tutti i sample darebbe
+       "NESSUN sample toccato dall'intervento", `cell_select` a `None`
+       farebbe rifiutare l'accoppiamento), quindi le chiavi `None` vengono
+       tolte in costruzione — con l'eccezione di `pred`, dove `None` significa
+       "risposta non parseata" ed è esattamente ciò che il check cerca.
+    """
+
+    _KEEP_NONE = ("pred",)
+
+    @classmethod
+    def from_call(cls, c) -> "_Sample":
+        o = cls((k, v) for k, v in dict(c.output).items()
+                if v is not None or k in cls._KEEP_NONE)
+        # `_question` viene dagli INPUT del call (la strategy non la ri-emette
+        # in output): serve a --entities per affiancare domanda ed estrazione.
+        dict.__setitem__(o, "_question", dict(c.inputs or {}).get("question"))
+        return o
+
+    @staticmethod
+    def _assert_projected(key) -> None:
+        if isinstance(key, str) and not key.startswith("_") and key not in SAMPLE_FIELDS:
+            raise RuntimeError(
+                f"il campo per-sample {key!r} non è in SAMPLE_FIELDS: la richiesta a "
+                f"Weave non lo ha chiesto, quindi non c'è. Aggiungilo a SAMPLE_FIELDS "
+                f"(vedi il commento sopra) invece di leggere un dict incompleto."
+            )
+
+    def get(self, key, default=None):
+        self._assert_projected(key)
+        return super().get(key, default)
+
+    def __contains__(self, key) -> bool:
+        self._assert_projected(key)
+        return super().__contains__(key)
+
+    def __missing__(self, key):
+        self._assert_projected(key)
+        raise KeyError(key)
+
+
+def show_fields(entity: str, project: str, run) -> int:
+    """I campi che questa run emette per sample, col peso di ciascuno.
+
+    Scarica UN SOLO call senza proiezione: serve a scoprire cosa ritorna una
+    strategy nuova (per poi aggiungerlo a `SAMPLE_FIELDS`) senza tirare giù
+    tutti i sample. Su una run con dump quel singolo payload può pesare
+    decine di MB — uno solo è sostenibile, cento no.
+    """
+    import weave
+
+    client = weave.init(f"{entity}/{project}")
+    ev = _evaluations(client, entity, project, run)[:1]
+    if not ev:
+        print("nessuna Evaluation weave vicina a questa run", file=sys.stderr)
+        return 1
+    prefix = f"weave:///{entity}/{project}/op"
+    calls = list(client.get_calls(
+        filter={"op_names": [f"{prefix}/predict:*"], "trace_ids": [ev[0].trace_id]}, limit=1))
+    if not calls or not calls[0].output:
+        print("il primo predict non ha output", file=sys.stderr)
+        return 1
+    out = dict(calls[0].output)
+    print(f"\ncampi per-sample di un `predict` ({len(out)}), peso JSON:")
+    for k, v in sorted(out.items(), key=lambda kv: -len(json.dumps(kv[1], default=str))):
+        mb = len(json.dumps(v, default=str)) / 1e6
+        flag = "" if k in SAMPLE_FIELDS else "   ← NON in SAMPLE_FIELDS (non viene scaricato)"
+        print(f"  {k:<28} {mb:8.3f} MB{flag}")
+    return 0
+
+
+def _evaluations(client, entity: str, project: str, run) -> list:
+    """Le Evaluation weave compatibili con la run, la più vicina nel tempo per
+    prima. Weave non registra il run id da nessuna parte: l'unico aggancio è
+    la vicinanza temporale (poi VERIFICATA sui campi per-sample)."""
+    prefix = f"weave:///{entity}/{project}/op"
+    t_run = dt.datetime.fromisoformat(run.created_at.replace("Z", "+00:00"))
+    evs = list(client.get_calls(
+        filter={"op_names": [f"{prefix}/Evaluation.evaluate:*"]},
+        limit=40, sort_by=[{"field": "started_at", "direction": "desc"}],
+    ))
+    return sorted(
+        (e for e in evs if e.started_at >= t_run - dt.timedelta(seconds=30)),
+        key=lambda e: abs((e.started_at - t_run).total_seconds()),
+    )
+
+
 def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
     """Output di ogni `predict` della run, via Weave. `[]` se non trovati.
 
@@ -131,16 +263,7 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
 
     client = weave.init(f"{entity}/{project}")
     prefix = f"weave:///{entity}/{project}/op"
-    t_run = dt.datetime.fromisoformat(run.created_at.replace("Z", "+00:00"))
-
-    evs = list(client.get_calls(
-        filter={"op_names": [f"{prefix}/Evaluation.evaluate:*"]},
-        limit=40, sort_by=[{"field": "started_at", "direction": "desc"}],
-    ))
-    cands = sorted(
-        (e for e in evs if e.started_at >= t_run - dt.timedelta(seconds=30)),
-        key=lambda e: abs((e.started_at - t_run).total_seconds()),
-    )
+    cands = _evaluations(client, entity, project, run)
     if not cands:
         print("⚠️  nessuna Evaluation weave vicina a questa run: niente dati per-sample "
               "(la run è morta prima di iniziare l'eval?)", file=sys.stderr)
@@ -151,11 +274,11 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
         calls = list(client.get_calls(
             filter={"op_names": [f"{prefix}/predict:*"], "trace_ids": [ev.trace_id]},
             limit=5000,
+            # La proiezione è ciò che tiene in piedi la macchina: vedi il
+            # commento su SAMPLE_FIELDS.
+            columns=["inputs.question"] + [f"output.{k}" for k in SAMPLE_FIELDS],
         ))
-        # `_question` viene dagli INPUT del call (la strategy non la ri-emette
-        # in output): serve a --entities per affiancare domanda ed estrazione.
-        outs = [{**dict(c.output), "_question": dict(c.inputs or {}).get("question")}
-                for c in calls if c.output]
+        outs = [_Sample.from_call(c) for c in calls if c.output]
         if not outs:
             continue
         ok, checked = True, []
@@ -538,6 +661,10 @@ def main() -> int:
     p.add_argument("--entities", action="store_true",
                    help="stampa per ogni sample domanda + entity estratta "
                         "(run con query_rows=entity), per la verifica manuale")
+    p.add_argument("--show-fields", action="store_true",
+                   help="i campi che la run emette per sample, col loro peso (UN solo "
+                        "call): per scoprire cosa ritorna una strategy nuova e decidere "
+                        "cosa aggiungere a SAMPLE_FIELDS")
     p.add_argument("--shard-size", type=int, default=None, metavar="N",
                    help="sample per shard del fullset, per estrapolare la walltime "
                         "da una probe (Video-MME a 3 shard: 900)")
@@ -563,6 +690,8 @@ def main() -> int:
     describe(run, project)
     if not is_eval_run(run):
         return report_generic(run)
+    if a.show_fields:
+        return show_fields(entity, project, run)
     if a.entities and a.summary_only:
         p.error("--entities richiede i dati per-sample: incompatibile con --summary-only")
     outs = [] if a.summary_only else per_sample_outputs(entity, project, run)

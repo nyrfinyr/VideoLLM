@@ -62,6 +62,41 @@ MAX_TRUE_CELLS_FRAC = 25 / 256
 # ─────────────────────────────────────────────────────────────────────────────
 # Fetch
 # ─────────────────────────────────────────────────────────────────────────────
+# Le colonne chieste a Weave, e SOLO quelle. La proiezione non è un'ottimizzazione:
+# `sink_stats.per_token` (`values [L, n_vis, C]`) pesa ~23 MB di JSON a sample —
+# ~0.7 GB una volta deserializzato — e i sample dumpati ce l'hanno tutti.
+# Scaricando l'output intero, 100 sample facevano arrivare il processo a 15 GB di
+# RSS: OOM del processo e, su WSL, morte dell'intera VM. Qui `per_token` non
+# serve (le prove sui sink usano solo le riduzioni), quindi i campi di
+# `sink_stats` si chiedono uno per uno. Con la proiezione gli stessi 100 sample
+# stanno in ~150 MB.
+#
+# Un campo chiesto ma non emesso dalla strategy torna `None` (nessun errore):
+# aggiungerne uno qui è sempre sicuro, dimenticarlo no — l'analisi lo vedrebbe
+# assente e salterebbe la sua sezione in silenzio.
+FETCH_COLUMNS = [
+    "inputs.example",
+    "output.scores",
+    # geometria del pass 1 e etichette T1
+    "output.output.pair_centers_sec", "output.output.pair_gap_sec",
+    # risposta e distribuzione del pass 1: baseline appaiata e confidenza
+    # (l'entropia da sola non è l'unica statistica con cui si può gattare)
+    "output.output.pred", "output.output.answer_probs",
+    # massa per cella (grezza e sink-filtrata), per rowset
+    "output.output.rowsets",
+    # condizioni del pass 2 e gate d'entropia
+    "output.output.conditions", "output.output.preds_by_condition",
+    "output.output.answer_entropy",
+    # i sink in questo setting
+    "output.output.sink_mass_curve_pcts", "output.output.sink_border_share",
+    "output.output.border_share_uniform", "output.output.attn_sink_cell_corr",
+    "output.output.sink_stats.sink_dims", "output.output.sink_stats.control_dims",
+    "output.output.sink_stats.sink_dim_rank", "output.output.sink_stats.ratio_mean_abs",
+    "output.output.sink_stats.channels", "output.output.sink_stats.n_layers",
+    "output.output.sink_stats.attn_layer_range",
+]
+
+
 def fetch_samples(name: str, project: str | None) -> list[dict]:
     """Per-sample della run: output di `predict` uniti alla riga del dataset.
 
@@ -90,6 +125,7 @@ def fetch_samples(name: str, project: str | None) -> list[dict]:
     calls = list(client.get_calls(
         filter={"op_names": [f"{prefix}/Evaluation.predict_and_score:*"], "trace_ids": [ev.trace_id]},
         limit=5000,
+        columns=FETCH_COLUMNS,
     ))
     rows = []
     for c in calls:
@@ -97,7 +133,7 @@ def fetch_samples(name: str, project: str | None) -> list[dict]:
         out = dict(c.output or {})
         # Weave chiama "output" il dict che `predict` ritorna (non
         # "model_output": quello è il nome nella UI, non nel payload).
-        model_out = dict(out.get("output") or out.get("model_output") or {})
+        model_out = _present(dict(out.get("output") or out.get("model_output") or {}))
         if not model_out:
             continue
         scores = (out.get("scores") or {}).get("mcq_accuracy") or {}
@@ -112,6 +148,25 @@ def fetch_samples(name: str, project: str | None) -> list[dict]:
         })
     print(f"run {name}: {len(rows)} sample (eval weave {ev.id})")
     return rows
+
+
+def _present(out: dict) -> dict:
+    """Toglie le chiavi a `None`, cioè i campi che la strategy NON emette.
+
+    Weave restituisce ogni colonna chiesta anche quando non esiste: senza
+    questa potatura `sink_stats` risulterebbe presente ma pieno di `None` su
+    una run che non lo logga, e le prove sui sink fallirebbero invece di
+    saltare.
+    """
+    out = {k: v for k, v in out.items() if v is not None}
+    ss = out.get("sink_stats")
+    if isinstance(ss, dict):
+        ss = {k: v for k, v in dict(ss).items() if v is not None}
+        if ss:
+            out["sink_stats"] = ss
+        else:
+            out.pop("sink_stats")
+    return out
 
 
 def _plain(x):
