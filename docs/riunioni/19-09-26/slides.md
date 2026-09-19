@@ -85,58 +85,20 @@ layout: default
 
 # 2 · Il gate d'entropia
 
-<div class="text-xs opacity-60 pb-1">
-Entropia del pass 1 sulle 4 opzioni (0–2 bit). AUROC = quanto separa le risposte <b>sbagliate</b>; 0.5 = inutile.
+<div class="text-xs opacity-60 pb-2">
+<b>H</b> = entropia (log2) della softmax <b>ristretta alle 4 lettere candidate</b>, al pass 1 — 0 bit = certezza assoluta, 2 bit = le quattro opzioni equiprobabili · <code>signals_512p</code>, <code>additive</code>, <code>entropy_shift_24</code>
 </div>
 
-<div class="text-sm pt-1">
+<div class="text-sm pb-1"><b>AUROC(H)</b> = Pr( H di una risposta <b>sbagliata</b> &gt; H di una risposta <b>giusta</b> ), prese a caso una per gruppo; pareggi contati 0.5. <b>0.5 = H non distingue</b>, 1.0 = separazione perfetta.</div>
 
-| dataset · run | n | accuracy | H mediana | AUROC(H) |
-|---|---:|---:|---:|---:|
-| Video-MME · `entropy_shift_24` | 2700 | 55.0% | 0.826 | **0.746** |
-| LVBench · `additive` pass 1 | 200 | 35.0% | 1.345 | 0.592 |
-| LVBench · `signals_512p` | 100 | 43.0% | 1.389 | 0.547 |
+| dataset · run | n | accuracy | H mediana | 2^H | H se giusta | H se sbagliata | distanza | AUROC(H) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Video-MME · `entropy_shift_24` | 2700 | 55.0% | 0.826 | 1.77 di 4 | 0.566 | 1.119 | **0.553** | **0.746** |
+| LVBench · `additive` pass 1 | 200 | 35.0% | 1.345 | 2.54 di 4 | 1.040 | 1.263 | 0.223 | 0.592 |
+| LVBench · `signals_512p` | 100 | 43.0% | 1.389 | 2.62 di 4 | 1.112 | 1.220 | 0.108 | 0.547 |
 
-</div>
-
-<div class="pt-3 text-sm pb-1"><b>Tabella entropia → risposta corretta</b>, per quantile di H</div>
-
-<div class="grid grid-cols-2 gap-5">
-
-<div>
-
-<div class="text-xs pb-1">Video-MME (n = 2700)</div>
-
-| quantile | soglia H | acc sotto | acc sopra | Δ |
-|---:|---:|---:|---:|---:|
-| 0.1 | 0.002 | **96.7%** | 50.4% | **+46.3** |
-| 0.2 | 0.031 | 90.9% | 46.0% | +44.9 |
-| 0.3 | 0.165 | 85.8% | 41.8% | +44.0 |
-| 0.5 | 0.825 | 73.0% | 37.0% | +35.9 |
-| 0.7 | 1.316 | 64.2% | 33.5% | +30.7 |
-| 0.9 | 1.741 | 57.6% | 31.9% | +25.7 |
-
-</div>
-
-<div>
-
-<div class="text-xs pb-1">LVBench (n = 200)</div>
-
-| quantile | soglia H | acc sotto | acc sopra | Δ |
-|---:|---:|---:|---:|---:|
-| 0.1 | 0.064 | 65.0% | 31.7% | +33.3 |
-| 0.2 | 0.572 | 55.0% | 30.0% | +25.0 |
-| 0.3 | 0.887 | 45.0% | 30.7% | +14.3 |
-| 0.5 | 1.340 | 41.0% | 29.0% | **+12.0** |
-| 0.7 | 1.649 | 37.9% | 28.3% | +9.5 |
-| 0.9 | 1.845 | 36.7% | 20.0% | +16.7 |
-
-</div>
-
-</div>
-
-<div class="pt-3" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:5px 12px;font-size:0.82rem">
-Il segnale <b>non si trasferisce</b>: su LVBench il salto esiste solo nel primo quintile e sparisce in mezzo alla distribuzione. Le scale sono diverse (H mediana 0.83 vs 1.39), quindi <b>una soglia assoluta non porta</b>: si trasferisce il <b>quantile</b>, scelto out-of-fold e raggruppato per video.
+<div class="pt-2 text-xs opacity-60">
+<b>2^H</b> = fra quante delle 4 opzioni il modello sta di fatto esitando. <b>distanza</b> = quanto si separano le due entropie medie: è ciò che AUROC misura.
 </div>
 
 <style scoped>
@@ -151,37 +113,38 @@ layout: default
 
 # 3 · Accuracy per question type — LVBench
 
-<div class="text-sm pt-2">
-
-| arm | frame | n | tot | entity recog. | event underst. | key info retr. | reasoning | summariz. | temporal ground. |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `signals_512p` | 512 | 100 | 43.0% | 53.8% | 38.2% | 46.7% | 28.6% | 25.0% | 50.0% |
-| `topk` | 512 | 100 | 45.0% | 53.8% | 44.1% | 53.3% | 28.6% | 25.0% | 50.0% |
-| `additive` pass 1 | 256 | 200 | 35.0% | 39.1% | 26.4% | 41.5% | 31.0% | 37.5% | 30.4% |
-
+<div class="text-xs opacity-60 pb-2">
+In attesa del full-set. Le righe sono le quattro misure appaiate che la run <code>lvbench-additive-full</code> produce sullo stesso sample.
 </div>
-
-<div class="pt-4 text-sm pb-1"><b>Gli n per tipo</b> — il motivo per cui la tabella sopra non si può leggere</div>
 
 <div class="text-sm">
 
-| tipo | n su 100 | n su 200 | 1 sample vale |
-|---|---:|---:|---:|
-| entity recognition | 52 | 92 | 1.1 pp |
-| event understanding | 34 | 72 | 1.4 pp |
-| key information retrieval | 15 | 41 | 2.4 pp |
-| reasoning | 14 | 29 | 3.4 pp |
-| temporal grounding | 8 | 23 | **4.3 pp** |
-| summarization | **4** | **8** | **12.5 pp** |
+| condizione | frame | n | tot | entity recog. | event underst. | key info retr. | reasoning | summariz. | temporal ground. |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline (pass 1) | 256 | 1548 | — | — | — | — | — | — | — |
+| **k10** | 512 | 1548 | — | — | — | — | — | — | — |
+| k5 | 512 | 1548 | — | — | — | — | — | — | — |
+| **rand10** (controllo) | 512 | 1548 | — | — | — | — | — | — | — |
 
 </div>
 
-<div class="pt-3" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:5px 12px;font-size:0.82rem">
-Quattro tipi su sei hanno n &lt; 30. Con 4 sample <code>summarization</code> si muove di 25 punti per ogni risposta che cambia: 0.250 e 0.375 non sono misure. <b>È il punto che ha più bisogno del full-set.</b>
+<div class="pt-4 text-sm pb-1"><b>Perché la tabella è vuota</b> — gli n per tipo di oggi, e quelli attesi sul full-set</div>
+
+<div class="text-sm">
+
+| tipo | n oggi (su 200) | 1 sample vale | n atteso (su 1548) | 1 sample varrà |
+|---|---:|---:|---:|---:|
+| entity recognition | 92 | 1.1 pp | ≈ 712 | 0.14 pp |
+| event understanding | 72 | 1.4 pp | ≈ 557 | 0.18 pp |
+| key information retrieval | 41 | 2.4 pp | ≈ 317 | 0.32 pp |
+| reasoning | 29 | 3.4 pp | ≈ 224 | 0.45 pp |
+| temporal grounding | 23 | **4.3 pp** | ≈ 178 | 0.56 pp |
+| summarization | **8** | **12.5 pp** | ≈ 62 | 1.61 pp |
+
 </div>
 
 <div class="pt-2 text-xs opacity-60">
-Le tre run non sono confrontabili fra loro: frame e sample diversi. <code>additive</code> è il <b>pass 1</b>, cioè la baseline senza frame aggiunti.
+I <code>question_type</code> sono <b>multi-label</b>: un sample può contare in più tipi, quindi la colonna somma a più del numero di sample (265 su 200). Gli <b>n attesi</b> sono la proporzione di oggi riscalata a 1548, non una misura: gli shard sono strided su una lista shuffled, quindi il mix dei tipi resta lo stesso in attesa.
 </div>
 
 <style scoped>
@@ -399,6 +362,101 @@ Su LVBench con Qwen3-VL-2B <b>non esiste nessuna run full-set</b>: tutte probe d
 .slidev-layout table th,
 .slidev-layout table td { padding: 0.14rem 0.4rem; }
 .slidev-layout table { margin: 0.15rem 0; font-size: 0.72rem; }
+</style>
+
+---
+layout: default
+---
+
+# Il metodo · campionamento a coppie e arm additivo
+
+<div class="grid grid-cols-2 gap-6 pt-1">
+
+<div>
+
+<div class="text-sm pb-1"><b>1 · Celle indirizzabili</b> — <code>utils/pair_sampling.py</code></div>
+
+<div class="text-xs opacity-70 pb-2">
+Qwen3-VL fonde i frame <b>a due a due</b> (<code>temporal_patch_size=2</code>): una cella d'attenzione è una coppia di frame <b>adiacenti nella lista</b>. Campionando uniformemente su LVBench (mediana 71 min) i due frame di una cella distano minuti — la cella non corrisponde a nessun istante.
+</div>
+
+<div class="pb-1" style="display:flex;gap:1px;align-items:flex-end">
+<div v-for="i in 24" :key="'u'+i" style="width:11px;height:20px;border-radius:1px;background:#e3e6ea;border:1px solid #d0d4d9"></div>
+</div>
+<div class="text-xs opacity-60 pb-3">uniforme: le coppie cadono a caso nel tempo</div>
+
+<div class="pb-1" style="display:flex;gap:7px;align-items:flex-end">
+<div v-for="i in 8" :key="'p'+i" style="display:flex;gap:1px">
+<div style="width:11px;height:20px;border-radius:1px;background:#c9ced4;border:1px solid #b6bcc3"></div>
+<div style="width:11px;height:20px;border-radius:1px;background:#c9ced4;border:1px solid #b6bcc3"></div>
+</div>
+</div>
+<div class="text-xs opacity-60">a coppie: centri uniformi <code>c_i = D·(i+0.5)/n</code>, due frame a <code>c_i ∓ gap/2</code> (gap = 2 s)</div>
+
+<div class="pt-3 text-xs opacity-70">
+Ogni cella <b>è</b> una coppia e il suo timestamp è <code>c_i</code>, lo stesso che il processor scrive nel prompt. Le celle diventano <b>indirizzabili</b>: «la cella 37 è al secondo 1024». È ciò che rende misurabile T1 e possibile il puntamento.
+</div>
+
+</div>
+
+<div>
+
+<div class="text-sm pb-1"><b>2 · Arm additivo top-k</b> — <code>strategies/additive_topk.py</code></div>
+
+<div class="text-xs opacity-70 pb-2">
+L'arm <b>sostitutivo</b> (<code>topk_resample</code>) è stato falsificato: rimpiazzare 512 frame con 128 butta più contesto di quanto la zoomata aggiunga — un miss costa −11.9 pp, un hit vale +23, e con hit@1 al 17% il conto è negativo. Qui il termine negativo <b>sparisce per costruzione</b>: la base resta, i frame mirati si <b>sommano</b>.
+</div>
+
+<div class="pb-1" style="display:flex;gap:1px;align-items:flex-end;height:26px">
+<div v-for="i in 32" :key="'b'+i" style="width:8px;height:18px;border-radius:1px;background:#e3e6ea;border:1px solid #d0d4d9"></div>
+</div>
+<div class="text-xs opacity-60 pb-2">pass 1 · 256 frame base = 128 celle → ranking per massa d'attenzione</div>
+
+<div class="pb-1" style="display:flex;gap:1px;align-items:flex-end;height:30px">
+<div v-for="i in 32" :key="'a'+i" :style="`width:8px;height:18px;border-radius:1px;background:${[9,10,21].includes(i)?'#f5c6c6':'#e3e6ea'};border:1px solid ${[9,10,21].includes(i)?'#c0392b':'#d0d4d9'}`"></div>
+</div>
+<div class="pb-1" style="display:flex;gap:1px;align-items:flex-start;height:16px">
+<div v-for="i in 32" :key="'x'+i" style="width:8px;display:flex;gap:0.5px;justify-content:center">
+<div v-if="[9,10,21].includes(i)" v-for="j in 5" :key="j" style="width:1px;height:13px;background:#c0392b"></div>
+</div>
+</div>
+<div class="text-xs opacity-60">pass additivo · 256 frame in più, solo dentro le top-k celle</div>
+
+<div class="pt-3 text-xs opacity-70">
+La regione di una cella è la sua <b>cella di Voronoi</b> <code>[D·i/n, D·(i+1)/n]</code>; celle adiacenti vengono <b>fuse</b> e il budget si divide in proporzione alla durata di ogni regione. Gli aggiunti sono <b>uniformi dentro la regione, non a coppie</b>: sul pass additivo non si rilegge nessun ranking. Un aggiunto che cade su un indice già presente viene scartato.
+</div>
+
+</div>
+
+</div>
+
+<div class="pt-3 grid grid-cols-2 gap-6">
+
+<div class="text-xs">
+
+**Il gate già passato** — probe oracolo, 92 sample, iso-budget 512 frame
+
+| condizione | accuracy | Δ |
+|---|---:|---:|
+| base256 | 41.3% | — |
+| uniform512 | 41.3% | **+0.0** |
+| oracle512 | 54.3% | **+13.0 pp** |
+
+</div>
+
+<div class="text-xs opacity-70" style="padding-top:14px">
+Raddoppiare i frame <b>uniformemente</b> vale esattamente zero: tutto il guadagno sta nel <i>dove</i>. L'arm sostituisce l'oracolo col puntatore vero.
+<div class="pt-2">
+⚠️ Nella lista unita il modello accoppia frame <b>adiacenti nella lista</b>: le coppie della base non sopravvivono, quindi le celle del pass additivo <b>non</b> sono quelle del pass 1. Accettabile finché lì non si rilegge l'attenzione.
+</div>
+</div>
+
+</div>
+
+<style scoped>
+.slidev-layout table th,
+.slidev-layout table td { padding: 0.12rem 0.35rem; }
+.slidev-layout table { margin: 0.15rem 0; font-size: 0.7rem; }
 </style>
 
 ---
