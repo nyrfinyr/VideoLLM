@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import bisect
-import datetime as dt
 import json
 import math
 import random
@@ -112,16 +111,19 @@ def fetch_samples(name: str, project: str | None) -> list[dict]:
     run, proj = driver.find_run(entity, project or "lvbench", name)
     client = weave.init(f"{entity}/{proj}")
     prefix = f"weave:///{entity}/{proj}/op"
-    t_run = dt.datetime.fromisoformat(run.created_at.replace("Z", "+00:00"))
-    evs = list(client.get_calls(
-        filter={"op_names": [f"{prefix}/Evaluation.evaluate:*"]},
-        limit=40, sort_by=[{"field": "started_at", "direction": "desc"}],
-    ))
-    cands = sorted((e for e in evs if e.started_at >= t_run - dt.timedelta(seconds=30)),
-                   key=lambda e: abs((e.started_at - t_run).total_seconds()))
+    # L'accoppiamento run↔evaluation passa da `driver`, che lo VERIFICA sulla
+    # firma numerica (`model_latency.mean`, `correct.true_count`) invece di
+    # prendere la più vicina nel tempo. Su un array SLURM la differenza non è
+    # accademica: i 4 shard partono nello stesso secondo con config identica,
+    # e "la più vicina" è la stessa eval per tutti e quattro.
+    cands = driver._evaluations(client, entity, proj, run)
     if not cands:
         sys.exit("nessuna Evaluation weave vicina alla run (morta prima dell'eval?)")
     ev = cands[0]
+    if driver._fingerprint_matches(ev, run) is False:
+        sys.exit(f"l'Evaluation più plausibile ({ev.display_name}) ha aggregati DIVERSI "
+                 f"da quelli del summary di {name}: nessuna eval della finestra è di "
+                 f"questa run, non analizzo i sample di un altro shard.")
     calls = list(client.get_calls(
         filter={"op_names": [f"{prefix}/Evaluation.predict_and_score:*"], "trace_ids": [ev.trace_id]},
         limit=5000,
