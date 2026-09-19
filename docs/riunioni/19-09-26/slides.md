@@ -63,28 +63,35 @@ hit@1 reale <b>12/69</b> contro 1.1 attesi — binomiale <b>p = 7.8e-10</b>
 
 <div>
 
-<div class="text-sm pb-1"><b>La soglia no</b> — massa in multipli della quota uniforme</div>
+<div class="text-sm pb-1"><b>La soglia</b> — massa in multipli della quota uniforme</div>
 
-| τ | Pr(a&gt;τ \| W_T) | Pr(a&lt;τ \| W_F) | J | celle &gt;τ |
-|---:|---:|---:|---:|---:|
-| 0.50 | 0.836 | 0.305 | 0.141 | 179 |
-| 0.75 | 0.691 | 0.553 | 0.243 | 116 |
-| **0.93** | **0.615** | **0.672** | **0.286** | **~82** |
-| 1.25 | 0.469 | 0.798 | 0.267 | 53 |
-| 2.00 | 0.280 | 0.918 | 0.198 | 22 |
-| 3.00 | 0.171 | 0.964 | 0.135 | 10 |
-| 5.00 | 0.087 | 0.988 | 0.075 | 3 |
+| τ | Pr(a&gt;τ \| W_T) | Pr(a&lt;τ \| W_F) | J | celle/sample | precis. |
+|---:|---:|---:|---:|---:|---:|
+| 0.50 | 0.836 | 0.305 | 0.141 | 179 | 1.9% |
+| **0.93** | **0.615** | **0.672** | **0.286** | **85** | **2.9%** |
+| 1.50 | 0.418 | 0.854 | 0.273 | 38 | 4.3% |
+| 3.00 | 0.171 | 0.964 | 0.135 | 10 | 6.9% |
+| 5.00 | 0.087 | 0.988 | 0.075 | 3 | 10.4% |
+| *a caso* | | | | | *1.56%* |
 
-<div class="pt-2 text-xs opacity-60">
-275 celle vere contro 17.389 false (1.6%). Al massimo di Youden restano <b>82 celle su 256</b> sopra soglia.
+<div class="pt-1 text-xs opacity-60">
+275 celle vere contro 17.389 false. Il massimo di Youden (τ=0.93) tiene <b>85 celle su 256</b> con precisione 2.9%: J pesa sensibilità e specificità allo stesso modo, e con prevalenza 1.6% la specificità è quasi gratis.
 </div>
+
+<div class="pt-3 text-sm pb-1"><b>A parità di celle, soglia ≡ top-k</b></div>
+
+| budget | precisione | recall | hit |
+|---|---:|---:|---:|
+| top-5 · soglia τ=4.19 | 9.6% · 9.9% | 12.0% · 12.4% | 38% · 39% |
+| top-10 · soglia τ=2.98 | 7.2% · 7.0% | 18.2% · 17.5% | 52% · 52% |
+| top-25 · soglia τ=1.87 | 5.0% · 4.9% | 31.3% · 30.9% | 67% · 65% |
 
 </div>
 
 </div>
 
 <div class="pt-2" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:5px 12px;font-size:0.82rem">
-Il segnale c'è ed è significativo, ma la forma utilizzabile è il <b>ranking</b> (top-k), non il thresholding. <code>sink_filtered</code> peggiora su ogni rowset.
+Il segnale c'è ed è significativo. Soglia e top-k <b>ordinano ugualmente bene</b>: a fallire non è la soglia ma <b>Youden come criterio</b>, il cui ottimo tiene un terzo delle celle. Si sceglie il top-k perché <b>fissa il budget</b> su ogni sample, non perché ordini meglio. <code>sink_filtered</code> peggiora su ogni rowset.
 </div>
 
 <style scoped>
