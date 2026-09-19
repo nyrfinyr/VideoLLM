@@ -145,6 +145,8 @@ SAMPLE_FIELDS = (
     # copertura dell'intervento
     "marked", "highlighted", "resampled",
     "marked_skip_reason", "highlight_skip_reason",
+    # ablation additive: la predizione di OGNI condizione sullo stesso sample
+    "preds_by_condition",
     # campi ri-emessi dalla strategy, per VERIFICARE l'accoppiamento eval↔run
     "cell_select", "sink_filter", "resample_kind",
 )
@@ -230,19 +232,78 @@ def show_fields(entity: str, project: str, run) -> int:
     return 0
 
 
+def _summary_fingerprint(ev) -> dict:
+    """La firma numerica di una Evaluation weave: gli aggregati che finiscono
+    IDENTICI nel summary wandb della run corrispondente.
+
+    Weave non registra il run id da nessuna parte, ma l'output di
+    `Evaluation.evaluate` contiene gli stessi numeri che il logger scrive nel
+    summary: `model_latency.mean` → `model_latency_mean`, e
+    `<scorer>.correct.true_count` → `n_correct`. Sono l'unico aggancio
+    affidabile quando N shard dello stesso arm partono nello stesso secondo:
+    lì la config è identica e la vicinanza temporale non distingue nulla.
+    `{}` se l'eval è morta prima di produrre un output aggregato.
+    """
+    out = ev.output if isinstance(ev.output, dict) else {}
+    fp: dict = {}
+    lat = (out.get("model_latency") or {}).get("mean")
+    if isinstance(lat, (int, float)):
+        fp["model_latency_mean"] = float(lat)
+    for v in out.values():
+        if isinstance(v, dict) and isinstance(v.get("correct"), dict):
+            c = v["correct"].get("true_count")
+            if isinstance(c, int):
+                fp["n_correct"] = c
+            break
+    return fp
+
+
+def _fingerprint_matches(ev, run) -> bool | None:
+    """`True`/`False` se la firma dell'eval combacia col summary della run,
+    `None` se non c'è niente da confrontare (eval o run senza aggregati).
+
+    La latency passa da JSON e torna arrotondata nell'ultima cifra
+    (107.22037262916564 nel summary, ...65 in Weave): il confronto è relativo,
+    non per uguaglianza.
+    """
+    fp = _summary_fingerprint(ev)
+    if not fp:
+        return None
+    s = run.summary
+    compared = False
+    for key, got in fp.items():
+        want = s.get(key)
+        if want is None:
+            continue
+        compared = True
+        if isinstance(got, float):
+            if abs(got - float(want)) > 1e-6 * max(1.0, abs(got)):
+                return False
+        elif got != want:
+            return False
+    return compared or None
+
+
 def _evaluations(client, entity: str, project: str, run) -> list:
-    """Le Evaluation weave compatibili con la run, la più vicina nel tempo per
-    prima. Weave non registra il run id da nessuna parte: l'unico aggancio è
-    la vicinanza temporale (poi VERIFICATA sui campi per-sample)."""
+    """Le Evaluation weave compatibili con la run, la più probabile per prima.
+
+    Weave non registra il run id da nessuna parte. La finestra temporale fa da
+    primo filtro, ma NON da criterio: gli shard di un array SLURM partono nello
+    stesso secondo e l'eval più vicina nel tempo è la stessa per tutti. Chi ha
+    la firma numerica giusta (`_fingerprint_matches`) viene prima di chiunque
+    altro; a parità, decide la vicinanza.
+    """
     prefix = f"weave:///{entity}/{project}/op"
     t_run = dt.datetime.fromisoformat(run.created_at.replace("Z", "+00:00"))
     evs = list(client.get_calls(
         filter={"op_names": [f"{prefix}/Evaluation.evaluate:*"]},
         limit=40, sort_by=[{"field": "started_at", "direction": "desc"}],
     ))
+    near = [e for e in evs if e.started_at >= t_run - dt.timedelta(seconds=30)]
     return sorted(
-        (e for e in evs if e.started_at >= t_run - dt.timedelta(seconds=30)),
-        key=lambda e: abs((e.started_at - t_run).total_seconds()),
+        near,
+        key=lambda e: (_fingerprint_matches(e, run) is not True,
+                       abs((e.started_at - t_run).total_seconds())),
     )
 
 
@@ -250,14 +311,21 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
     """Output di ogni `predict` della run, via Weave. `[]` se non trovati.
 
     ⚠️ Weave NON registra il run id di wandb da nessuna parte (gli `attributes`
-    dei call contengono solo versione python/OS). Il collegamento run wandb →
-    evaluation weave si può fare SOLO per vicinanza temporale.
+    dei call contengono solo versione python/OS). La finestra temporale
+    restringe i candidati; a scegliere fra loro sono due verifiche, in ordine
+    di forza:
 
-    Per non fidarsi di quell'euristica, l'accoppiamento viene poi VERIFICATO
-    contro la config della run: i campi che la strategy ri-emette per sample
-    (`cell_select`, `sink_filter`, ...) devono coincidere con
-    `config.strategy.*`. Due arm lanciati a pochi secondi l'uno dall'altro
-    (attention vs random) si distinguono esattamente così.
+    1. **La firma numerica** (`_fingerprint_matches`): `model_latency.mean` e
+       `correct.true_count` dell'eval contro `model_latency_mean`/`n_correct`
+       del summary. Distingue anche N shard dello stesso arm partiti nello
+       stesso secondo con config identica — dove la vicinanza temporale
+       sceglierebbe la stessa eval per tutti.
+    2. **I campi ri-emessi dalla strategy** (`cell_select`, `sink_filter`,
+       `resample_kind`) contro `config.strategy.*`: distingue due arm diversi
+       (attention vs random) quando la firma non è disponibile.
+
+    Se nessun candidato passa, i sample NON vengono restituiti: meglio saltare
+    i check per-sample che riportare i numeri di un'altra run.
     """
     import weave
 
@@ -269,8 +337,32 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
               "(la run è morta prima di iniziare l'eval?)", file=sys.stderr)
         return []
 
+    verdicts = [_fingerprint_matches(ev, run) for ev in cands]
+    matched = [ev for ev, v in zip(cands, verdicts) if v is True]
+    comparable = [ev for ev, v in zip(cands, verdicts) if v is not None]
+
+    if matched:
+        # La firma ha deciso: gli altri candidati non sono di questa run.
+        pool, fp_note = matched, "n_correct+model_latency_mean"
+        if len(matched) > 1:
+            fp_note += " (più eval con la STESSA firma: indistinguibili)"
+    elif comparable:
+        # Almeno un candidato aveva aggregati confrontabili e NESSUNO combacia:
+        # l'eval di questa run non è nella finestra. Questo è esattamente il
+        # caso in cui la vecchia euristica restituiva i sample di un altro
+        # shard senza accorgersene.
+        print(f"⚠️  {len(comparable)} Evaluation weave nella finestra, nessuna con "
+              f"model_latency_mean/n_correct uguali a quelli del summary di questa run: "
+              f"l'eval di questa run non è fra queste. Salto i check per-sample invece "
+              f"di riportare numeri di un'altra run.", file=sys.stderr)
+        return []
+    else:
+        # Nessun aggregato da confrontare (eval vecchie, output assente):
+        # si ripiega sui campi della strategy, come prima.
+        pool, fp_note = cands, ""
+
     strategy_cfg = run.config.get("strategy", {}) or {}
-    for ev in cands[:6]:
+    for ev in pool[:6]:
         calls = list(client.get_calls(
             filter={"op_names": [f"{prefix}/predict:*"], "trace_ids": [ev.trace_id]},
             limit=5000,
@@ -294,12 +386,12 @@ def per_sample_outputs(entity: str, project: str, run) -> list[dict]:
                 ok = False
                 break
         if ok:
-            # Onestà del messaggio: senza campi da confrontare l'accoppiamento
-            # NON è verificato, è solo il più vicino nel tempo. Conta quando
-            # più eval partono nella stessa finestra.
-            how = (f"accoppiamento verificato su {'/'.join(checked)}" if checked else
-                   "⚠️ accoppiamento per SOLA vicinanza temporale: config.strategy non ha "
-                   "campi ri-emessi per sample da confrontare")
+            # Onestà del messaggio: si dichiara su COSA è stato verificato, e
+            # quando non è stato verificato affatto.
+            proofs = [p for p in (fp_note, "/".join(checked)) if p]
+            how = (f"accoppiamento verificato su {' + '.join(proofs)}" if proofs else
+                   "⚠️ accoppiamento per SOLA vicinanza temporale: né aggregati né campi "
+                   "per-sample da confrontare")
             print(f"weave: evaluation {ev.display_name} ({ev.started_at:%Y-%m-%d %H:%M:%S}) "
                   f"→ {len(outs)} sample [{how}]")
             return outs
@@ -353,6 +445,94 @@ def _entity_degenerate(o: dict) -> bool:
 
 def _vals(outs: list[dict], key: str) -> list:
     return [o[key] for o in outs if o.get(key) is not None]
+
+
+def _cond_names(s, strat) -> list[str]:
+    """I nomi delle condizioni dell'ablation additive, nell'ordine in cui la
+    config le dichiara (il summary è un dict piatto e ordinato alfabeticamente,
+    che mette `k10` prima di `k5` e perde l'ordine voluto)."""
+    from_summary = {k[len("mcq_accuracy_cond_"):] for k in s.keys()
+                    if k.startswith("mcq_accuracy_cond_")
+                    and not k.endswith(("_base_true", "_base_false"))}
+    declared = [c.get("name") for c in (strat.get("conditions") or [])
+                if isinstance(c, dict) and c.get("name") in from_summary]
+    return declared + sorted(from_summary - set(declared))
+
+
+def _conditions_table(r: "Report", s, strat) -> None:
+    """Il confronto fra le condizioni di `additive_topk`, che è il punto
+    dell'esperimento e che il resto del report non mostra: `mcq_accuracy` da
+    solo è il PASS 1 (il base senza frame aggiunti), non l'arm.
+
+    Sta tutto nel summary (`mcq_accuracy_cond_*`, `n_correct_cond_*_base_*`):
+    non serve Weave. Le due colonne che contano non sono l'accuracy totale ma
+    la sua scomposizione: quanto la condizione RECUPERA dove il base sbaglia e
+    quanto RITIENE dove il base già azzecca — un arm può guadagnare sul primo
+    e restituire tutto sul secondo.
+    """
+    names = _cond_names(s, strat)
+    if not names:
+        return
+    base_c, base_n = s.get("n_correct"), s.get("n_samples")
+    if not base_n:
+        return
+    r.add("INFO", "  conditions", f"base (pass 1, nessuna aggiunta) = "
+                                  f"{base_c/base_n:.4f} ({base_c}/{base_n})")
+    for name in names:
+        c = s.get(f"n_correct_cond_{name}")
+        n = s.get(f"n_samples_cond_{name}")
+        if not n:
+            continue
+        parts = [f"{c/n:.4f} ({c}/{n})", f"Δbase {c - base_c:+d}"]
+        for lbl, suf in (("recupera", "base_false"), ("ritiene", "base_true")):
+            cc = s.get(f"n_correct_cond_{name}_{suf}")
+            nn = s.get(f"n_samples_cond_{name}_{suf}")
+            if nn:
+                parts.append(f"{lbl} {cc}/{nn} ({100*cc/nn:.1f}%)")
+        r.add("INFO", f"    {name}", " | ".join(parts))
+    # Un delta va letto contro il rumore, non in assoluto: su n sample un
+    # sample vale 100/n pp, e i confronti fra condizioni sono APPAIATI (stessi
+    # sample), quindi contano i sample che cambiano, non le accuracy.
+    r.add("INFO", "    (scala)", f"su {base_n} sample 1 sample = {100/base_n:.1f} pp; "
+                                 f"i confronti fra condizioni sono appaiati")
+
+
+def _check_conditions_distinct(r: "Report", outs: list[dict]) -> None:
+    """Due condizioni che predicono IDENTICO su ogni sample non sono due
+    condizioni: o ricevono lo stesso input, o l'aggiunta di frame non arriva al
+    forward. È un errore silenzioso — le accuracy restano plausibili e il
+    report resta verde — quindi va guardato per COPPIE, non sui totali.
+
+    Il campo è `preds_by_condition` (nome condizione → predizione del pass 2).
+    """
+    pbc = [o["preds_by_condition"] for o in outs
+           if isinstance(o.get("preds_by_condition"), dict)]
+    if len(pbc) < 2:
+        return
+    names = sorted({k for d in pbc for k in d})
+    if len(names) < 2:
+        return
+    ident = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            both = [d for d in pbc if a in d and b in d]
+            if not both:
+                continue
+            diff = sum(1 for d in both if d[a] != d[b])
+            if diff == 0:
+                ident.append(f"{a}={b} su tutti i {len(both)}")
+            else:
+                r.add("INFO", f"  {a} vs {b}",
+                      f"predizioni diverse su {diff}/{len(both)} sample "
+                      f"({100*diff/len(both):.0f}%)")
+    if ident:
+        r.add("FAIL", "condizioni distinte",
+              "; ".join(ident) + " — due condizioni con la STESSA predizione su ogni "
+              "sample ricevono lo stesso input: l'aggiunta di frame non sta arrivando "
+              "al forward")
+    else:
+        r.add("PASS", "condizioni distinte",
+              f"{len(names)} condizioni, nessuna coppia identica su tutti i sample")
 
 
 def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
@@ -507,6 +687,9 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                 r.add("PASS", "blocchi/timestamp", f"blocchi tutti pari e somma(block_sizes)/2 "
                                                    f"== t_cells su {len(bs)}/{n} sample marcati")
 
+        # --- le condizioni si distinguono davvero? --------------------------
+        _check_conditions_distinct(r, outs)
+
         # --- copertura dell'intervento --------------------------------------
         for key in ("marked", "highlighted", "resampled"):
             vals = [o[key] for o in outs if key in o]
@@ -550,6 +733,7 @@ def check_eval(run, outs: list[dict], shard_size: int | None = None) -> Report:
                 r.add("INFO", f"  {k.replace('mcq_accuracy_', '')}",
                       f"{s[k]:.4f} ({s.get(k.replace('mcq_accuracy','n_correct'))}/"
                       f"{s.get(k.replace('mcq_accuracy','n_samples'))})")
+        _conditions_table(r, s, strat)
     return r
 
 
