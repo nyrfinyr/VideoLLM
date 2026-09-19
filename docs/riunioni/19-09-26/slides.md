@@ -28,70 +28,49 @@ layout: default
 
 # 1 · L'attenzione trova la finestra?
 
-<div class="text-xs opacity-60 pb-1">
-Pr(a &gt; τ | window_T) &gt; Pr(a &gt; τ | window_F) — <code>signals_512p</code>, 512 frame, 256 celle, 69/100 sample usabili, mediana 2 celle vere (caso top-1 = 1.6%)
+<div class="text-xs opacity-60 pb-2">
+Pr(a &gt; τ | window_T) &gt; Pr(a &gt; τ | window_F) — <code>signals_512p</code>, 512 frame, 256 celle temporali, 69/100 sample usabili, mediana 2 celle vere per sample (caso top-1 = 1.6%)
 </div>
 
-<div class="grid grid-cols-2 gap-5 pt-1">
+<div class="text-sm pb-1"><b>Il ranking funziona</b> — AUC = Pr(cella dentro la finestra &gt; cella fuori); hit@k = la finestra è fra le k celle più attenzionate</div>
+
+| rowset · massa | AUC | rango mediano | hit@1 | hit@5 | hit@10 | hit@25 |
+|---|---:|---:|---:|---:|---:|---:|
+| `all` raw | **0.775** | **10** | **17%** | 38% | **52%** | 67% |
+| `all` sink-filtered | 0.758 | 11 | 17% | 36% | 49% | 61% |
+| `question` raw | 0.742 | 13 | 16% | 36% | 48% | 62% |
+| `last_token` raw | 0.746 | 25 | 4% | 10% | 25% | 51% |
+| *caso* | *0.500* | *128* | *1.6%* | *7%* | *13%* | *26%* |
+
+<div class="grid grid-cols-2 gap-6 pt-4">
 
 <div>
 
-<div class="text-sm pb-1"><b>Il ranking funziona</b></div>
-
-| rowset · massa | AUC | hit@1 | hit@5 | hit@10 | hit@25 |
-|---|---:|---:|---:|---:|---:|
-| `all` raw | **0.775** | **17%** | 38% | **52%** | 67% |
-| `all` sink-filt. | 0.758 | 17% | 36% | 49% | 61% |
-| `question` raw | 0.742 | 16% | 36% | 48% | 62% |
-| `last_token` raw | 0.746 | 4% | 10% | 25% | 51% |
-| *caso* | *0.500* | *1.6%* | *7%* | *13%* | *26%* |
-
-<div class="pt-2 text-xs">
+<div class="text-sm pb-1"><b>Non è un artefatto</b></div>
 
 | controllo | AUC | hit@1 |
 |---|---:|---:|
-| posizione (profilo medio) | 0.552 | 1% |
-| permutazione (altro sample) | 0.518 ±0.025 | 2.3% |
-
-</div>
+| posizione | 0.552 | 1% |
+| permutazione | 0.518 ±0.025 | 2.3% |
 
 <div class="pt-1 text-xs opacity-60">
-hit@1 reale <b>12/69</b> contro 1.1 attesi — binomiale <b>p = 7.8e-10</b>
+<b>posizione</b>: un profilo medio, identico per ogni sample — sa solo <i>dove</i> di solito va l'attenzione, non guarda il video. <b>permutazione</b>: il vettore d'attenzione di un altro sample, 200 giri.
 </div>
 
 </div>
 
-<div>
+<div class="text-sm">
 
-<div class="text-sm pb-1"><b>La soglia</b> — massa in multipli della quota uniforme</div>
+<div class="pb-1"><b>Il test diretto</b></div>
 
-| τ | Pr(a&gt;τ \| W_T) | Pr(a&lt;τ \| W_F) | J | celle/sample | precis. |
-|---:|---:|---:|---:|---:|---:|
-| 0.50 | 0.836 | 0.305 | 0.141 | 179 | 1.9% |
-| **0.93** | **0.615** | **0.672** | **0.286** | **85** | **2.9%** |
-| 1.50 | 0.418 | 0.854 | 0.273 | 38 | 4.3% |
-| 3.00 | 0.171 | 0.964 | 0.135 | 10 | 6.9% |
-| 5.00 | 0.087 | 0.988 | 0.075 | 3 | 10.4% |
-| *a caso* | | | | | *1.56%* |
-
-<div class="pt-1 text-xs opacity-60">
-275 celle vere contro 17.389 false. Il massimo di Youden (τ=0.93) tiene <b>85 celle su 256</b> con precisione 2.9%: J pesa sensibilità e specificità allo stesso modo, e con prevalenza 1.6% la specificità è quasi gratis.
-</div>
-
-<div class="pt-3 text-sm pb-1"><b>A parità di celle, soglia ≡ top-k</b></div>
-
-| budget | precisione | recall | hit |
-|---|---:|---:|---:|
-| top-5 · soglia τ=4.19 | 9.6% · 9.9% | 12.0% · 12.4% | 38% · 39% |
-| top-10 · soglia τ=2.98 | 7.2% · 7.0% | 18.2% · 17.5% | 52% · 52% |
-| top-25 · soglia τ=1.87 | 5.0% · 4.9% | 31.3% · 30.9% | 67% · 65% |
+hit@1 reale **12/69** contro **1.1** attesi dal caso — binomiale **p = 7.8·10⁻¹⁰**
 
 </div>
 
 </div>
 
-<div class="pt-2" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:5px 12px;font-size:0.82rem">
-Il segnale c'è ed è significativo. Soglia e top-k <b>ordinano ugualmente bene</b>: a fallire non è la soglia ma <b>Youden come criterio</b>, il cui ottimo tiene un terzo delle celle. Si sceglie il top-k perché <b>fissa il budget</b> su ogni sample, non perché ordini meglio. <code>sink_filtered</code> peggiora su ogni rowset.
+<div class="pt-4" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:6px 12px;font-size:0.82rem">
+La disuguaglianza vale ed è robusta: il bias di posizione spiega quasi nulla (AUC 0.552) e non basta un vettore d'attenzione qualsiasi (0.518), serve quello di <i>quel</i> video. Il segnale resta però <b>debole in assoluto</b>: col top-10 la finestra entra nel 52% dei sample contro il 13% del caso. <code>sink_filtered</code> peggiora su ogni rowset.
 </div>
 
 <style scoped>
