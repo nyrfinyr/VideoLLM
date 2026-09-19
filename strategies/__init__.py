@@ -2,6 +2,7 @@
 per side-effect di registrazione (`Strategy.get` scansiona
 `__subclasses__()`), stesso pattern di `evals/__init__.py`.
 """
+from .additive_topk import AdditiveTopkStrategy
 from .attention_highlight import AttentionHighlightStrategy
 from .attention_marker import AttentionMarkerStrategy
 from .coarse_to_fine import CoarseToFineStrategy
@@ -14,6 +15,7 @@ from .uniform import UniformStrategy
 from .visual_prompt import VisualPromptStrategy
 
 __all__ = [
+    "AdditiveTopkStrategy",
     "AttentionHighlightStrategy",
     "AttentionMarkerStrategy",
     "CoarseToFineStrategy",

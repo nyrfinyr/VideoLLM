@@ -312,6 +312,31 @@ strategy:
   # offline out-of-fold. Richiede model=qwen3_vl_2b_attn con
   # model.fix_videoframes_resize=true, nframes PARI, niente trim.
   # Vedi strategies/topk_resample.py.
+  additive_topk:
+    name: additive_topk
+    # I frame mirati si AGGIUNGONO alla base invece di sostituirla. Gate
+    # passato dalla probe oracolo 110308/09: a parità di budget totale,
+    # 256 frame uniformi in più valgono 0.0 pp, gli stessi 256 nella finestra
+    # vera valgono +13.0 pp (p=0.0075). Vedi strategies/additive_topk.py.
+    # Budget: `dataset.nframes` è la BASE (256 = 128 celle), `n_added` i frame
+    # mirati. Totale per condizione = nframes + n_added = 512, iso-budget con
+    # il 512 uniforme già misurato.
+    n_added: 256                 # frame aggiunti, PARI, uniformi dentro le regioni
+    pass1_pair_gap_sec: 2.0      # gap (s) fra i due frame di una cella della base
+    rank_rowset: all             # (all | qopts | question | last_token) righe-query che danno il ranking
+    rank_sink_filtered: false    # il ranking sink-filtrato ha misurato PEGGIO del grezzo (AUC 0.759 vs 0.775)
+    sink_percentile: 25.0        # conta solo se rank_sink_filtered=true
+    log_rowsets: [all]           # masse per cella loggate per sample (hit@k offline a questa granularità)
+    random_seed: 0               # seed del controllo random (combinato con un hash del sample)
+    # k10 è la condizione attesa migliore: la dose-risposta dell'oracolo dice
+    # che paga la COPERTURA (hit@10 59% vs hit@5 42%), non la densità.
+    # `rand10` NON è opzionale: senza, un guadagno non si distingue
+    # dall'effetto di infittire una regione qualsiasi.
+    conditions:
+      - {name: k10, k: 10}
+      - {name: k5, k: 5}
+      - {name: rand10, k: 10, select: random}
+
   topk_resample:
     name: topk_resample
     pass1_pair_gap_sec: 2.0      # gap (s) fra i due frame di una cella del pass 1
