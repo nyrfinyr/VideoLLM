@@ -157,84 +157,24 @@ I <code>question_type</code> sono <b>multi-label</b>: un sample può contare in 
 layout: default
 ---
 
-# 4 · I token «sink»
+# 4 · I token «sink» e l'attenzione della domanda
 
-<div class="text-xs opacity-60 pb-1">
-<code>signals_512p</code>, 100/100 sample, 28 layer, hidden 2048. Candidati <code>1793 · 1999 · 1401</code> contro controlli a caso <code>684 · 1316 · 1939</code>.
+<div class="text-xs opacity-60 pb-3">
+<code>signals_512p</code> · 100 sample · 512 frame · rowset <code>all</code> · <b>sink score</b> del token = max |h[d]| sulle dimensioni target <code>1793 · 1999 · 1401</code>, diviso rms(|h|) del token · <b>rapporto</b> = massa d'attenzione ÷ quota di token, <b>1.00× = il bucket riceve esattamente la sua parte</b>
 </div>
 
-<div class="grid grid-cols-2 gap-5 pt-1">
+<div class="text-base">
 
-<div>
+| token visivi, per sink score | quota di token | massa d'attenzione della domanda | rapporto |
+|---|---:|---:|---:|
+| top 1% | 1% | 0.8% | **0.83×** |
+| 1–2% | 1% | 0.7% | **0.75×** |
+| 2–5% | 3% | 2.1% | **0.71×** |
+| 5–10% | 5% | 3.6% | **0.71×** |
+| 10–25% | 15% | 11.2% | **0.75×** |
+| 25–50% | 25% | 20.8% | **0.83×** |
+| 50–100% | 50% | 60.8% | **1.22×** |
 
-<div class="text-sm pb-1"><b>I canali esistono</b> — distribuzione di <b>|h[d]| / mediana(|h|)</b> sui token visivi, layer 7–21</div>
-
-| canale | intervallo modale | quota &gt; 50× |
-|---|---|---:|
-| d1999 · candidato | 100–158× — 63.2% | **99.84%** |
-| d1793 · candidato | 40–63× — 45.9% | **62.07%** |
-| d1401 · candidato | 6–10× — 25.7% | 0.00% |
-| d684 · controllo | 2–3× — 21.9% | 0.00% |
-| d1316 · controllo | 3–4× — 22.7% | 0.00% |
-| d1939 · controllo | 2–3× — 21.9% | 0.00% |
-
-<div class="pt-1 text-xs opacity-60">
-<b>h</b> = lo stato nascosto del token (2048 canali); <b>h[d]</b> è il valore del canale <i>d</i>. Il rapporto alla mediana degli altri canali dello <i>stesso</i> token rende confrontabili layer e sample: <b>1× = canale normale</b>.
-</div>
-
-<div class="pt-3 text-sm pb-1"><b>I token no</b> — |h[d]| / <b>media</b>(|h|), per gruppo di token</div>
-
-| canale | token sink | token non-sink |
-|---|---:|---:|
-| d1999 | 58.91 | 47.08 |
-| d1793 | 20.41 | 18.89 |
-| d1401 | 2.45 | 2.25 |
-| d684 · ctrl | 0.79 | 0.75 |
-
-<div class="pt-1 text-xs opacity-60">
-Il canale è acceso su <b>tutti</b> i token: è una proprietà del layer, non di un sottoinsieme.
-</div>
-
-</div>
-
-<div>
-
-<div class="text-sm pb-1"><b>La prova che chiude</b> — massa d'attenzione sui top-p% token per sink score</div>
-
-| rowset | p=1% | p=2% | p=5% | p=10% | p=25% | p=50% |
-|---|---:|---:|---:|---:|---:|---:|
-| `all` | 0.8% | 1.6% | 3.7% | 7.2% | 18.4% | 39.2% |
-| `question` | 0.7% | 1.4% | 3.3% | 6.5% | 16.8% | 37.0% |
-| `last_token` | 1.1% | 2.1% | 4.6% | 8.8% | 22.3% | 47.2% |
-| *atteso se fossero sink* | *&gt;1%* | *&gt;2%* | *&gt;5%* | *&gt;10%* | *&gt;25%* | *&gt;50%* |
-
-<div class="pt-2" style="display:flex;gap:16px;align-items:flex-end;height:82px;padding-left:6px">
-<div v-for="(p, i) in [1,2,5,10,25,50]" :key="i" style="display:flex;flex-direction:column;align-items:center;gap:2px">
-<div style="display:flex;gap:3px;align-items:flex-end;height:66px">
-<div :style="`width:15px;height:${p*1.3}px;background:#d0d4d9;border-radius:1px`"></div>
-<div :style="`width:15px;height:${[0.8,1.6,3.7,7.2,18.4,39.2][i]*1.3}px;background:#c0392b;border-radius:1px`"></div>
-</div>
-<div style="font-size:0.58rem;opacity:0.6;white-space:nowrap">p={{ p }}%</div>
-</div>
-</div>
-
-<div class="text-xs opacity-60" style="padding-left:6px">
-<span style="color:#98a0a8">&#9609;</span> quota attesa &nbsp;&nbsp; <span style="color:#c0392b">&#9609;</span> massa misurata &nbsp;&nbsp; sempre sotto la diagonale
-</div>
-
-<div class="pt-3 text-sm pb-1"><b>Heatmap</b> — nessuna struttura</div>
-
-| mappa | intervallo | escursione |
-|---|---|---:|
-| temporale (256 celle) | 26.07 – 29.02 | 11% |
-| spaziale (griglia 5×9) | 26.06 – 28.46 | 9% |
-
-</div>
-
-</div>
-
-<div class="pt-2" style="border-left:3px solid #c0392b;background:#fbfbfc;padding:5px 12px;font-size:0.82rem">
-I <b>canali</b> outlier esistono, i <b>token</b> sink no: assorbono <i>meno</i> attenzione di quanta ne spetterebbe loro a caso. Non c'è un percentile giusto perché non c'è niente da filtrare.
 </div>
 
 <style scoped>
