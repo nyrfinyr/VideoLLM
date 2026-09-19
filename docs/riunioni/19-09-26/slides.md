@@ -167,18 +167,22 @@ layout: default
 
 <div>
 
-<div class="text-sm pb-1"><b>I canali esistono</b> — distribuzione di |h[d]|, layer 7–21</div>
+<div class="text-sm pb-1"><b>I canali esistono</b> — distribuzione di <b>|h[d]| / mediana(|h|)</b> sui token visivi, layer 7–21</div>
 
-| canale | intervallo modale | quota \|h\|&gt;50 |
+| canale | intervallo modale | quota &gt; 50× |
 |---|---|---:|
-| d1999 · candidato | \[100, 158) — 63.2% | **99.84%** |
-| d1793 · candidato | \[40, 63) — 45.9% | **62.07%** |
-| d1401 · candidato | \[6, 10) — 25.7% | 0.00% |
-| d684 · controllo | \[2, 3) — 21.9% | 0.00% |
-| d1316 · controllo | \[3, 4) — 22.7% | 0.00% |
-| d1939 · controllo | \[2, 3) — 21.9% | 0.00% |
+| d1999 · candidato | 100–158× — 63.2% | **99.84%** |
+| d1793 · candidato | 40–63× — 45.9% | **62.07%** |
+| d1401 · candidato | 6–10× — 25.7% | 0.00% |
+| d684 · controllo | 2–3× — 21.9% | 0.00% |
+| d1316 · controllo | 3–4× — 22.7% | 0.00% |
+| d1939 · controllo | 2–3× — 21.9% | 0.00% |
 
-<div class="pt-3 text-sm pb-1"><b>I token no</b> — |h[d]| / media(|h|)</div>
+<div class="pt-1 text-xs opacity-60">
+<b>h</b> = lo stato nascosto del token (2048 canali); <b>h[d]</b> è il valore del canale <i>d</i>. Il rapporto alla mediana degli altri canali dello <i>stesso</i> token rende confrontabili layer e sample: <b>1× = canale normale</b>.
+</div>
+
+<div class="pt-3 text-sm pb-1"><b>I token no</b> — |h[d]| / <b>media</b>(|h|), per gruppo di token</div>
 
 | canale | token sink | token non-sink |
 |---|---:|---:|
@@ -202,7 +206,7 @@ Il canale è acceso su <b>tutti</b> i token: è una proprietà del layer, non di
 | `all` | 0.8% | 1.6% | 3.7% | 7.2% | 18.4% | 39.2% |
 | `question` | 0.7% | 1.4% | 3.3% | 6.5% | 16.8% | 37.0% |
 | `last_token` | 1.1% | 2.1% | 4.6% | 8.8% | 22.3% | 47.2% |
-| *atteso se pozzi* | *&gt;1%* | *&gt;2%* | *&gt;5%* | *&gt;10%* | *&gt;25%* | *&gt;50%* |
+| *atteso se fossero sink* | *&gt;1%* | *&gt;2%* | *&gt;5%* | *&gt;10%* | *&gt;25%* | *&gt;50%* |
 
 <div class="pt-2" style="display:flex;gap:16px;align-items:flex-end;height:82px;padding-left:6px">
 <div v-for="(p, i) in [1,2,5,10,25,50]" :key="i" style="display:flex;flex-direction:column;align-items:center;gap:2px">
@@ -457,81 +461,4 @@ Raddoppiare i frame <b>uniformemente</b> vale esattamente zero: tutto il guadagn
 .slidev-layout table th,
 .slidev-layout table td { padding: 0.12rem 0.35rem; }
 .slidev-layout table { margin: 0.15rem 0; font-size: 0.7rem; }
-</style>
-
----
-layout: default
----
-
-# La run che chiude i due punti aperti
-
-<div class="text-sm pt-1">
-
-```bash
-LIMIT=null GROUP=lvbench-additive-full sbatch --array=0-23 scripts/sbatch/lvbench_additive.sbatch
-```
-
-</div>
-
-<div class="grid grid-cols-2 gap-5 pt-3">
-
-<div>
-
-<div class="text-sm pb-1"><b>Tre condizioni appaiate, un solo decode</b></div>
-
-| condizione | cosa vede | metrica |
-|---|---|---|
-| baseline | 256 frame della base | `mcq_accuracy` |
-| **k10** | + 256 nelle top-10 celle | `..._cond_k10` |
-| k5 | + 256 nelle top-5 | `..._cond_k5` |
-| **rand10** | + 256 in 10 celle **a caso** | `..._cond_rand10` |
-
-<div class="pt-2 text-xs opacity-60">
-<code>rand10</code> è il controllo che decide se l'arm è un arm. Già validato: centra la finestra nel <b>9%</b> dei casi contro il <b>57%</b> di <code>k10</code>.
-</div>
-
-<div class="pt-3 text-sm pb-1"><b>Costo</b></div>
-
-| | |
-|---|---:|
-| sample | 1548 (full-set) |
-| shard | 24 × ~65 sample |
-| per shard | 1.98 h (limite 3 h) |
-| totale | **47 GPU-h** |
-
-</div>
-
-<div>
-
-<div class="text-sm pb-1"><b>Cosa chiude</b></div>
-
-| punto | serve? | perché |
-|---|---|---|
-| 2 · gate entropia | no | 2700 + 300 sample già misurati |
-| 4 · sink | no | la prova è netta su 100 sample |
-| 6 · task type VMME | no | già full-set |
-| 7 · tabella | no | consegnata |
-| 1 · attenzione/finestra | in parte | il verso è solido, la soglia no |
-| **3 · task type LVBench** | **sì** | 4 tipi su 6 con n &lt; 30 |
-| **oracolo full-set** | **sì** | due probe, segni opposti |
-
-<div class="pt-3 text-sm pb-1"><b>La contraddizione da sciogliere</b></div>
-
-| probe | n | esito |
-|---|---:|---|
-| `probe_additive_oracle` | 92 | oracle512 **+13.0 pp** su uniform512 |
-| `probe_oracle_ceiling` | 100 | oracle 30% contro baseline **32%** |
-
-<div class="pt-2 text-xs opacity-60">
-Nella stessa probe, <code>uniform512</code> = <code>base256</code> <b>esattamente</b> su entrambi gli shard: raddoppiare i frame uniformi vale zero, tutto il guadagno sta nel <i>dove</i>.
-</div>
-
-</div>
-
-</div>
-
-<style scoped>
-.slidev-layout table th,
-.slidev-layout table td { padding: 0.14rem 0.4rem; }
-.slidev-layout table { margin: 0.15rem 0; font-size: 0.72rem; }
 </style>
