@@ -34,8 +34,15 @@
 #   --array=0-3            → 200 sample (i 100 di sempre + 100 nuovi, la
 #                 selezione è shuffle 42 → shard strided → primi 50), che è la
 #                 numerosità per cui un +7 pp è misurabile.
-# ⚠️ Non cambiare LIMIT: con LIMIT=50 e N shard i sample sono i primi 50*N
-#    della stessa lista, quindi i confronti con le run precedenti reggono.
+#   LIMIT=null --array=0-23 → FULL-SET, tutti i 1548 sample di LVBench, ~65 per
+#                 shard. È l'unica configurazione in cui `mcq_accuracy` è un
+#                 numero di benchmark invece che di una probe; le altre due
+#                 restano subset e il loro n va sempre riportato.
+# ⚠️ Non cambiare LIMIT per cambiare la NUMEROSITÀ di una probe: con LIMIT=50 e
+#    N shard i sample sono i primi 50*N della stessa lista, quindi i confronti
+#    con le run precedenti reggono. LIMIT=null è l'eccezione: toglie il
+#    troncamento e prende il dataset intero (shuffle → shard → nessun limit),
+#    quindi NON è un superset "primi K" di nessuna probe.
 #
 # ANALISI PRE-REGISTRATA (da fissare ora, non dopo aver visto i numeri):
 #   primaria    delta di k10 contro la baseline appaiata, McNemar esatto;
@@ -54,6 +61,8 @@
 # Uso:
 #     sbatch scripts/sbatch/lvbench_additive.sbatch                  # 100 sample
 #     sbatch --array=0-3 scripts/sbatch/lvbench_additive.sbatch      # 200 sample
+#     LIMIT=null GROUP=lvbench-additive-full \
+#         sbatch --array=0-23 scripts/sbatch/lvbench_additive.sbatch # FULL-SET 1548
 #     LIMIT=2 sbatch --array=0 --time=00:40:00 scripts/sbatch/lvbench_additive.sbatch
 #
 # PRIMA ESECUZIONE: LIMIT=2 --array=0. Il codice nuovo (strategy + piano dei
@@ -92,11 +101,30 @@ export PYTHONUNBUFFERED=1
 LIMIT="${LIMIT:-50}"
 BASE="${BASE:-256}"
 ADDED="${ADDED:-256}"
-N_TOT=$((SLURM_ARRAY_TASK_COUNT * LIMIT))
 GROUP="${GROUP:-lvbench-additive}"
+# I rowset loggati per sample (`cell_mass_raw` per ciascuno, ~2 KB a sample):
+# servono all'analisi T1 offline, che confronta il ranking dei tre selettori di
+# righe-query contro la finestra annotata. Tenerli tutti e tre costa niente e
+# non si rifà una run da 47 GPU-h per una colonna mancante.
+ROWSETS="${ROWSETS:-[all,question,last_token]}"
+
+# `LIMIT=null` = nessun troncamento, cioè il dataset intero diviso fra gli
+# shard. `utils/samples.py` applica shuffle → shard → limit in quest'ordine,
+# quindi con limit assente ogni shard tiene la sua fetta strided per intero.
+# Il nome della run porta `full` invece di `n<K>` perché il totale non è
+# SLURM_ARRAY_TASK_COUNT * LIMIT e scriverlo lì sarebbe una bugia.
+if [ "${LIMIT}" = "null" ]; then
+    N_TAG="full"
+else
+    N_TAG="n$((SLURM_ARRAY_TASK_COUNT * LIMIT))"
+fi
 
 echo "ARM additivo: base=${BASE} + aggiunti=${ADDED} per condizione (totale $((BASE+ADDED)) frame)"
-echo "${LIMIT} sample per shard x ${SLURM_ARRAY_TASK_COUNT} shard = ${N_TOT} sample"
+if [ "${LIMIT}" = "null" ]; then
+    echo "FULL-SET: nessun limit, ${SLURM_ARRAY_TASK_COUNT} shard sul dataset intero"
+else
+    echo "${LIMIT} sample per shard x ${SLURM_ARRAY_TASK_COUNT} shard = $((SLURM_ARRAY_TASK_COUNT * LIMIT)) sample"
+fi
 
 uv run python main.py \
     model=qwen3_vl_2b_attn \
@@ -108,12 +136,13 @@ uv run python main.py \
     dataset.use_time_reference=false \
     strategy=additive_topk \
     strategy.n_added="${ADDED}" \
+    strategy.log_rowsets="${ROWSETS}" \
     hf_home=/work/tesi_avalenza/hf \
     shard=${SLURM_ARRAY_TASK_ID} \
     num_shards=${SLURM_ARRAY_TASK_COUNT} \
     limit="${LIMIT}" \
     shuffle=true \
     wandb.group=${GROUP} \
-    wandb.name=qwen3_vl_2b_attn-additive-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_n${N_TOT} \
+    wandb.name=qwen3_vl_2b_attn-additive-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${N_TAG} \
     wandb.tags=[lvbench,qwen3_vl_2b,additive_topk] \
     "$@"
