@@ -1,0 +1,29 @@
+/* Deck denso di tabelle: la scala di default del tema è troppo grande. */
+.slidev-layout h1 {
+  font-size: 1.7rem;
+  line-height: 1.25;
+  margin-bottom: 0.2rem;
+}
+.slidev-layout table {
+  font-size: 0.8rem;
+  line-height: 1.25;
+  width: 100%;
+  margin: 0.35rem 0;
+}
+.slidev-layout th,
+.slidev-layout td {
+  padding: 0.3rem 0.5rem;
+}
+.slidev-layout table code {
+  font-size: 0.95em;
+  padding: 0 0.2em;
+}
+.slidev-layout p,
+.slidev-layout li {
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.slidev-layout .text-xs,
+.slidev-layout .text-xs p {
+  font-size: 0.72rem;
+}
